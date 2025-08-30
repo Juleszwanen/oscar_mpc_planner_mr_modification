@@ -41,6 +41,7 @@ namespace MPCPlanner
 
     state.set("spline", closest_s); // We need to initialize the spline state here
 
+    // JULES: This is what it is all about we update the current_path_segment of th module_data
     module_data.current_path_segment = _closest_segment;
 
     if (_add_road_constraints)

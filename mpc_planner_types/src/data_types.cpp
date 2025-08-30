@@ -82,6 +82,7 @@ namespace MPCPlanner
     Trajectory::Trajectory(double dt, int length) : dt(dt)
     {
         positions.reserve(length);
+        orientations.reserve(length);
     }
 
     void Trajectory::add(const Eigen::Vector2d &p)
@@ -92,6 +93,11 @@ namespace MPCPlanner
     void Trajectory::add(const double x, const double y)
     {
         positions.push_back(Eigen::Vector2d(x, y));
+    }
+
+    void Trajectory::add_orientation(const double psi)
+    {
+        orientations.push_back(psi);
     }
 
     FixedSizeTrajectory::FixedSizeTrajectory(int size)

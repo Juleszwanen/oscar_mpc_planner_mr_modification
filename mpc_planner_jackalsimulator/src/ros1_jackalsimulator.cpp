@@ -225,6 +225,7 @@ void JackalPlanner::loop(const ros::TimerEvent &event)
     LOG_DEBUG("============= End Loop =============");
 }
 
+// It is not so clear when either statePoseCallback or stateCallback is used?
 void JackalPlanner::stateCallback(const nav_msgs::Odometry::ConstPtr &msg)
 {
     _state.set("x", msg->pose.pose.position.x);
@@ -307,20 +308,28 @@ void JackalPlanner::obstacleCallback(const mpc_planner_msgs::ObstacleArray::Cons
             Eigen::Vector2d(obstacle.pose.position.x, obstacle.pose.position.y),
             RosTools::quaternionToAngle(obstacle.pose),
             CONFIG["obstacle_radius"].as<double>());
+        // get the last dynamic obstacle we created via
         auto &dynamic_obstacle = _data.dynamic_obstacles.back();
 
-        if (obstacle.probabilities.size() == 0) // No Predictions!
+        // Jules: this means there is no obstacle probably
+        if (obstacle.probabilities.size() == 0)
+        {   // No Predictions!
+            // JULES DIT NIET VERGETEN TE VERWIJDEREN
+            // ROS_ERROR("We dont use predictions");
+            
             continue;
-
+        }    
         // Save the prediction
         if (obstacle.probabilities.size() == 1) // One mode
         {
             dynamic_obstacle.prediction = Prediction(PredictionType::GAUSSIAN);
-
+            // ROS_ERROR("We DOOOOO use predictions");
+            // the mode is a message type that contains a mean of type nav_msgs/Path which is just an array of /geometry_msgs/PoseStamped poses
             const auto &mode = obstacle.gaussians[0];
             for (size_t k = 0; k < mode.mean.poses.size(); k++)
             {
                 // Add prediction at time step k (position, orientation, major/minor bivariate Gaussian size)
+                // Jules Add all the poses which we predict for that obstacle/pedestrain agent to the dynamic_obstacle data holder, also add the uncertainty for each pose
                 dynamic_obstacle.prediction.modes[0].emplace_back(
                     Eigen::Vector2d(mode.mean.poses[k].pose.position.x, mode.mean.poses[k].pose.position.y),
                     RosTools::quaternionToAngle(mode.mean.poses[k].pose.orientation),

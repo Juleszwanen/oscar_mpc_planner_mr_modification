@@ -116,11 +116,13 @@ namespace MPCPlanner
     {
         double dt;
         std::vector<Eigen::Vector2d> positions;
+        std::vector<double>          orientations;  // JULES deze heb jij zelf toegevoegd om de orientatie van een positie in een traject te weten
 
-        Trajectory(double dt = 0., int length = 10);
+        Trajectory(double dt = 0., int length = 10); 
 
         void add(const Eigen::Vector2d &p);
         void add(const double x, const double y);
+        void add_orientation(const double psi);   // JULES deze heb jij zelf toegevoegd om de orientatie van een positie in een traject te weten
     };
 
     struct FixedSizeTrajectory

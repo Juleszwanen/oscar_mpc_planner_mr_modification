@@ -98,7 +98,7 @@ def configuration_tmpc(settings):
         settings, 
         constraint_submodule=EllipsoidConstraintModule # This configures the obstacle avoidance used in each planner
     ))
-    # modules.add_module(GuidanceConstraintModule(settings, constraint_submodule=GaussianConstraintModule))
+    # modules.add_module(GuidanceConstraintModule(settings, constraint_submodule=GaussianConstraintModule)) <- when this is commented we dont even use the GuassianConstraintModule
 
     return model, modules
 
@@ -121,7 +121,7 @@ def configuration_lmpcc(settings):
 
     return model, modules
 
-
+# JULES: load the settings described in mpc_planner_jackalsimulator/config/settings.yaml
 settings = load_settings()
 
 # model, modules = configuration_basic(settings)

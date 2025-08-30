@@ -129,6 +129,8 @@ namespace MPCPlanner
                     if (exit_flag != EXIT_CODE_NOT_OPTIMIZED_YET)
                         break;
                 }
+                // When no module provides costum optimization or something unexpected happens when there is a module with an optimiza module
+                // it's the default optimization strategy when no module (/can claim) claims responsibility for solving the problem! 
                 if (exit_flag == EXIT_CODE_NOT_OPTIMIZED_YET)
                     exit_flag = _solver->solve();
                 BENCHMARKERS.getBenchmarker("optimization").stop();
@@ -146,9 +148,11 @@ namespace MPCPlanner
         }
 
         _output.success = true;
-        for (int k = 1; k < _solver->N; k++)
+        for (int k = 1; k < _solver->N; k++){
             _output.trajectory.add(_solver->getOutput(k, "x"), _solver->getOutput(k, "y"));
-
+            _output.trajectory.add_orientation(_solver->getOutput(k, "psi")); // JULES dit heb jij toegevoed om ervoor te zorgen dat we de orientatie van elke punt in de trajectory ook hebben deze hebben we later nodig voor het passen van een traject asl obstacle
+        }
+            
         if (_output.success && CONFIG["debug_limits"].as<bool>())
             _solver->printIfBoundLimited();
 
@@ -173,6 +177,7 @@ namespace MPCPlanner
             module->onDataReceived(data, std::forward<std::string>(data_name));
     }
 
+    // Visualize everything inside the planner
     void Planner::visualize(const State &state, const RealTimeData &data)
     {
         PROFILE_SCOPE("Planner::Visualize");
