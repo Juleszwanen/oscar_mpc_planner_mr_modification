@@ -762,6 +762,7 @@ void JulesJackalPlanner::publishPose()
     _pose_pub.publish(pose);
 }
 
+// Publishes the trajectory we are following with 20 hz(equal to the control level loop)
 void JulesJackalPlanner::publishCurrentTrajectory(MPCPlanner::PlannerOutput output)
 {
     nav_msgs::Path ros_trajectory_msg;
@@ -785,7 +786,6 @@ void JulesJackalPlanner::publishCurrentTrajectory(MPCPlanner::PlannerOutput outp
         ros_trajectory_msg.poses.back().pose.position.y = position(1);
         // there is no z-component so we set it to 1
         ros_trajectory_msg.poses.back().pose.position.z = 1;
-        
 
         ros_trajectory_msg.poses.back().pose.orientation = RosTools::angleToQuaternion(output.trajectory.orientations.at(k));
         ros_trajectory_msg.poses.back().header.stamp = ros_time + ros::Duration(k * output.trajectory.dt);
