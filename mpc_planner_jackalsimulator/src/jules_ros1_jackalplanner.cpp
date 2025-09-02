@@ -83,7 +83,9 @@ JulesJackalPlanner::JulesJackalPlanner(ros::NodeHandle &nh, ros::NodeHandle &pnh
     // 6) Wire ROS I/O (all topics are relative → namespace-friendly).
     //    WHY: lets you launch multiple robots under different namespaces.
     this->initializeSubscribersAndPublishers(nh, pnh);
-
+    const auto node_name = ros::this_node::getNamespace().substr(1);
+    const std::string saving_name = node_name + "_planner" + ".json";
+    RosTools::Instrumentor::Get().BeginSession("mpc_planner_jackalsimulator", saving_name);
     // 7) Start the control loop timer.
     //    WHY: drives periodic calls to `loop()` at `_control_frequency` Hz.
     //    Guard against zero/negative frequency by clamping to ≥1.0 Hz.
@@ -100,6 +102,7 @@ JulesJackalPlanner::JulesJackalPlanner(ros::NodeHandle &nh, ros::NodeHandle &pnh
 JulesJackalPlanner::~JulesJackalPlanner()
 {
     LOG_INFO("Stopped JulesJackalPlanner");
+    RosTools::Instrumentor::Get().EndSession();
 }
 
 // ----------------------------------------------------------------------------
@@ -235,6 +238,9 @@ void JulesJackalPlanner::initializeSubscribersAndPublishers(ros::NodeHandle &nh,
 // ----------------------------------------------------------------------------
 void JulesJackalPlanner::loop(const ros::TimerEvent & /*event*/)
 {
+    const auto ns = ros::this_node::getNamespace();
+    const std::string profiling_name = ns + "_" + "planningLoop";
+    PROFILE_SCOPE(profiling_name.c_str());
     // Timestamp the beginning of this planning cycle (used by internal profiling).
     _data.planning_start_time = std::chrono::system_clock::now();
 
@@ -640,6 +646,9 @@ void JulesJackalPlanner::pathCallback(const nav_msgs::Path::ConstPtr &msg)
 void JulesJackalPlanner::obstacleCallback(const mpc_planner_msgs::ObstacleArray::ConstPtr &msg)
 {
     // Start fresh each message; the solver expects the latest snapshot.
+    const auto ns = ros::this_node::getNamespace();
+    const std::string profiling_name = ns + "_" + "ObstacleCallback";
+    PROFILE_SCOPE(profiling_name.c_str());
     _data.dynamic_obstacles.clear();
 
     for (const auto &obstacle : msg->obstacles)
@@ -765,6 +774,9 @@ void JulesJackalPlanner::publishPose()
 // Publishes the trajectory we are following with 20 hz(equal to the control level loop)
 void JulesJackalPlanner::publishCurrentTrajectory(MPCPlanner::PlannerOutput output)
 {
+    const auto ns = ros::this_node::getNamespace();
+    const std::string profiling_name = ns + "_" + "PublishCurrentTrajectory";
+    PROFILE_SCOPE(profiling_name.c_str());
     nav_msgs::Path ros_trajectory_msg;
 
     auto ros_time = ros::Time::now();
