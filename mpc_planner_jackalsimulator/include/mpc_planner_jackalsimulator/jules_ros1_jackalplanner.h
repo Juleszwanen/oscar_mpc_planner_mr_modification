@@ -54,7 +54,9 @@ public:
     void publishPose();
     void publishCurrentTrajectory(MPCPlanner::PlannerOutput output);
     void visualize();
-    bool objectiveReached() const;
+    bool objectiveReached(MPCPlanner::State _state, MPCPlanner::RealTimeData _data) const;
+    void applyBrakingCommand(geometry_msgs::Twist& cmd);
+    void publishObjectiveReachedEvent();
 
 private:
     bool isPathTheSame(const nav_msgs::Path::ConstPtr &msg) const;
@@ -90,5 +92,6 @@ private:
 
     // Goal cache
     bool _goal_received{false};
+    bool _goal_reached{false};
     Eigen::Vector2d _goal_xy{0.0, 0.0};
 };

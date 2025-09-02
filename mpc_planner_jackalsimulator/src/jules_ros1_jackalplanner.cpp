@@ -86,6 +86,7 @@ JulesJackalPlanner::JulesJackalPlanner(ros::NodeHandle &nh, ros::NodeHandle &pnh
     const auto node_name = ros::this_node::getNamespace().substr(1);
     const std::string saving_name = node_name + "_planner" + ".json";
     RosTools::Instrumentor::Get().BeginSession("mpc_planner_jackalsimulator", saving_name);
+
     // 7) Start the control loop timer.
     //    WHY: drives periodic calls to `loop()` at `_control_frequency` Hz.
     //    Guard against zero/negative frequency by clamping to ≥1.0 Hz.
@@ -241,6 +242,7 @@ void JulesJackalPlanner::loop(const ros::TimerEvent & /*event*/)
     const auto ns = ros::this_node::getNamespace();
     const std::string profiling_name = ns + "_" + "planningLoop";
     PROFILE_SCOPE(profiling_name.c_str());
+
     // Timestamp the beginning of this planning cycle (used by internal profiling).
     _data.planning_start_time = std::chrono::system_clock::now();
 
@@ -250,40 +252,49 @@ void JulesJackalPlanner::loop(const ros::TimerEvent & /*event*/)
     if (CONFIG["debug_output"].as<bool>())
         _state.print();
 
-    // Run the MPC using the latest state & data assembled by the callbacks.
-    // `_state` holds (x, y, psi, v), `_data` holds goal/path/obstacles/footprint.
-    // The state and the data are filled via the different callback functions
-    // The output cotains besides a succes boolean als a trajectory which it triews to follow
-    auto output = _planner->solveMPC(_state, _data);
-    LOG_MARK("Success: " << output.success);
-
     geometry_msgs::Twist cmd;
 
-    if (_enable_output && output.success)
+    // Check if we just reached the goal (transition)
+    if (!_goal_reached && this->objectiveReached(_state, _data))
     {
-        // Extract the first applicable controls from the solution following
-        // the repo’s convention: u0 = w, x1 = v (next-step linear speed).
-        cmd.linear.x = _planner->getSolution(1, "v");
-        cmd.angular.z = _planner->getSolution(0, "w");
-
-        LOG_VALUE_DEBUG("Commanded v", cmd.linear.x);
-        LOG_VALUE_DEBUG("Commanded w", cmd.angular.z);
+        applyBrakingCommand(cmd);
+        _goal_reached = true;
+        publishObjectiveReachedEvent();
+        const auto message = ros::this_node::getNamespace().substr(1) + " Goal reached - applying braking";
+        LOG_INFO(message);
     }
+    // Already at goal - maintain stopped state
+    else if (_goal_reached)
+    {
+        cmd.linear.x = 0.0;
+        cmd.angular.z = 0.0;
+        const auto message = ros::this_node::getNamespace().substr(1) + " Maintaining stopped state at goal";
+        LOG_DEBUG(message);
+    }
+    // Normal operation - run solver
     else
     {
-        // ---------------------- FAIL-SAFE BRAKING ----------------------
-        // If the solver failed or output is disabled, slow down smoothly
-        // instead of issuing stale/unsafe commands.
-        double deceleration = CONFIG["deceleration_at_infeasible"].as<double>();
-        double velocity_after_braking;
-        double velocity;
-        double dt = 1. / CONFIG["control_frequency"].as<double>();
+        // Run the MPC using the latest state & data assembled by the callbacks.
+        auto output = _planner->solveMPC(_state, _data);
+        LOG_MARK("Success: " << output.success);
 
-        velocity = _state.get("v");
-        velocity_after_braking = velocity - deceleration * dt; // Brake with the given deceleration
-        cmd.linear.x = std::max(velocity_after_braking, 0.);   // Don't drive backwards when braking
-        cmd.angular.z = 0.0;
-        // ----------------------------------------------------------------
+        if (_enable_output && output.success)
+        {
+            // Extract the first applicable controls from the solution
+            cmd.linear.x = _planner->getSolution(1, "v");
+            cmd.angular.z = _planner->getSolution(0, "w");
+            LOG_VALUE_DEBUG("Commanded v", cmd.linear.x);
+            LOG_VALUE_DEBUG("Commanded w", cmd.angular.z);
+        }
+        else
+        {
+            // Fail-safe braking if solver failed or output disabled
+            applyBrakingCommand(cmd);
+            LOG_DEBUG("Solver failed or output disabled - applying braking");
+        }
+
+        // Publish trajectory only during normal operation
+        this->publishCurrentTrajectory(output);
     }
 
     // Publish the velocity command to the robot’s differential drive.
@@ -291,22 +302,12 @@ void JulesJackalPlanner::loop(const ros::TimerEvent & /*event*/)
 
     // Keep downstream consumers updated with our current pose (for RViz/aggregator).
     this->publishPose();
-    // Publish the trajectory a robot is about to follow
-    this->publishCurrentTrajectory(output);
 
     // Built-in planner visuals (predicted trajectory, footprints, etc.), if available.
     _planner->visualize(_state, _data);
 
     // Quick heading ray for sanity checking.
     visualize();
-
-    // Notify a supervisor that this robot considers the goal reached.
-    if (objectiveReached())
-    {
-        std_msgs::Bool done;
-        done.data = true;
-        _objective_pub.publish(done);
-    }
 
     LOG_DEBUG("============= End Loop =============");
 }
@@ -807,29 +808,6 @@ void JulesJackalPlanner::publishCurrentTrajectory(MPCPlanner::PlannerOutput outp
     _trajectory_pub.publish(ros_trajectory_msg);
 }
 
-// THIS MIGHT BE USEFULL LATER
-// void JulesJackalPlanner::publishPoseWithQuarternion()
-// {
-//     nav_msgs::Odometry nav_pose_msg;
-//     nav_pose_msg.header.stamp = ros::Time::now();
-//     nav_pose_msg.header.frame_id = _global_frame;
-
-//     nav_pose_msg.child_frame_id = ros::this_node::getNamespace() + "/base_link";
-//     // Read back from internal state so what we publish is consistent with the
-//     // values the MPC used/updated this cycle.
-//     nav_pose_msg.pose.position.x = _state.get("x");
-//     nav_pose_msg.pose.position.y = _state.get("y");
-//     nav_pose_msg.pose.position.z = 0;
-
-//     double psi = _state.get("psi"); //get the orientation
-//     nav_pose_msg.pose.orientation = RosTools::angleToQuaternion(psi);
-
-//     nav_pose_msg.twist.x =
-//     nav_pose_msg.twist.y =
-
-//     _pose_pub.publish(pose);
-// }
-
 // ----------------------------------------------------------------------------
 // PURPOSE
 //   Publish a simple RViz-friendly visualization of the robot’s heading as a
@@ -911,13 +889,39 @@ void JulesJackalPlanner::visualize()
 //   - Add “hold time” hysteresis: require the condition to be true for N cycles.
 //   - Add a minimum speed threshold to ensure you’re not just passing by.
 // ----------------------------------------------------------------------------
-bool JulesJackalPlanner::objectiveReached() const
+bool JulesJackalPlanner::objectiveReached(MPCPlanner::State _state, MPCPlanner::RealTimeData _data) const
 {
-    if (!_goal_received)
-        return false;
+    // check if the objective for each robot is reached if it is reached then we return 0.
+    bool objective_reached = _planner->isObjectiveReached(_state, _data);
+    return objective_reached;
+}
 
-    const Eigen::Vector2d p(_state.get("x"), _state.get("y"));
-    return (p - _goal_xy).norm() <= _goal_tolerance;
+// ----------------------------------------------------------------------------
+// PURPOSE
+//   Apply consistent braking command to smoothly decelerate the robot.
+//   Used both when goal is reached and when solver fails.
+// ----------------------------------------------------------------------------
+void JulesJackalPlanner::applyBrakingCommand(geometry_msgs::Twist &cmd)
+{
+    double deceleration = CONFIG["deceleration_at_infeasible"].as<double>();
+    double dt = 1. / CONFIG["control_frequency"].as<double>();
+    double velocity = _state.get("v");
+    double velocity_after_braking = velocity - deceleration * dt;
+
+    cmd.linear.x = std::max(velocity_after_braking, 0.0); // Don't drive backwards
+    cmd.angular.z = 0.0;
+}
+
+// ----------------------------------------------------------------------------
+// PURPOSE
+//   Publish objective reached event once when transitioning to goal reached state.
+// ----------------------------------------------------------------------------
+void JulesJackalPlanner::publishObjectiveReachedEvent()
+{
+    std_msgs::Bool event;
+    event.data = true;
+    _objective_pub.publish(event);
+    LOG_INFO("Objective reached - published event");
 }
 
 // ----------------------------------------------------------------------------
