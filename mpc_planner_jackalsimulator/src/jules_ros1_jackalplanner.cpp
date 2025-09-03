@@ -87,6 +87,17 @@ JulesJackalPlanner::JulesJackalPlanner(ros::NodeHandle &nh, ros::NodeHandle &pnh
     const std::string saving_name = node_name + "_planner" + ".json";
     RosTools::Instrumentor::Get().BeginSession("mpc_planner_jackalsimulator", saving_name);
 
+    // Robot synchronization setup
+    bool wait_for_sync;
+    nh.param<bool>("/wait_for_sync", wait_for_sync, false);
+
+    ros::Duration(3).sleep(); // Rember that this blocks all callbacks of this node, but this should give the whole system and the other nodes some startup time
+
+    if (wait_for_sync)
+    {
+        waitForAllRobotsReady(nh); // Pass the existing handle
+    }
+
     // 7) Start the control loop timer.
     //    WHY: drives periodic calls to `loop()` at `_control_frequency` Hz.
     //    Guard against zero/negative frequency by clamping to ≥1.0 Hz.
@@ -188,7 +199,7 @@ void JulesJackalPlanner::initializeSubscribersAndPublishers(ros::NodeHandle &nh,
     // Publish the trajectory we are going to follow
     _trajectory_pub = nh.advertise<nav_msgs::Path>("output/current_trajectory", 1);
 
-    // Event flag so a supervisor can detect per-robot completion.
+    // Event flag which is published so a supervisor can detect per-robot completion.
     _objective_pub = nh.advertise<std_msgs::Bool>("events/objective_reached", 1);
 }
 
@@ -650,6 +661,7 @@ void JulesJackalPlanner::obstacleCallback(const mpc_planner_msgs::ObstacleArray:
     const auto ns = ros::this_node::getNamespace();
     const std::string profiling_name = ns + "_" + "ObstacleCallback";
     PROFILE_SCOPE(profiling_name.c_str());
+    LOG_DEBUG(profiling_name);
     _data.dynamic_obstacles.clear();
 
     for (const auto &obstacle : msg->obstacles)
@@ -775,10 +787,12 @@ void JulesJackalPlanner::publishPose()
 // Publishes the trajectory we are following with 20 hz(equal to the control level loop)
 void JulesJackalPlanner::publishCurrentTrajectory(MPCPlanner::PlannerOutput output)
 {
+
     const auto ns = ros::this_node::getNamespace();
     const std::string profiling_name = ns + "_" + "PublishCurrentTrajectory";
     PROFILE_SCOPE(profiling_name.c_str());
     nav_msgs::Path ros_trajectory_msg;
+    LOG_DEBUG(profiling_name);
 
     auto ros_time = ros::Time::now();
     ros_trajectory_msg.header.stamp = ros_time;
@@ -922,6 +936,84 @@ void JulesJackalPlanner::publishObjectiveReachedEvent()
     event.data = true;
     _objective_pub.publish(event);
     LOG_INFO("Objective reached - published event");
+}
+
+// ----------------------------------------------------------------------------
+// PURPOSE
+//   Wait for all robots in the system to be ready before starting the control loop.
+//   Uses ROS parameters to coordinate synchronized startup across multiple robots.
+//
+// WHY THIS EXISTS
+//   In multi-robot scenarios, simultaneous startup prevents timing issues and
+//   ensures all robots begin their control loops at the same time for better
+//   coordination and predictable behavior.
+//
+// HOW IT WORKS
+//   1) Read the list of all robots from the global parameter `/robot_ns_list`
+//   2) Set this robot's ready flag as a parameter: `/<namespace>/ready_to_start = true`
+//   3) Poll all robots' ready flags until everyone is ready
+//   4) Return when all robots have signaled readiness
+//
+// PARAMETERS
+//   - `/robot_ns_list`: Array of robot namespaces (e.g., ["jackal1", "jackal2"])
+//   - `/<robot_ns>/ready_to_start`: Per-robot ready flag (set to true when ready)
+//
+// ASSUMPTIONS
+//   - All robots use the same `/robot_ns_list` parameter
+//   - Robot namespaces match the entries in the list
+//   - ROS parameter server is accessible to all robots
+//
+// SIDE EFFECTS
+//   - Sets this robot's ready parameter
+//   - Blocks execution until all robots are ready
+//   - Returns immediately if robot_ns_list is not found (fail-safe)
+//
+// EXTENSIONS
+//   - Add timeout mechanism to prevent infinite waiting
+//   - Add heartbeat mechanism for fault detection
+//   - Support dynamic robot addition/removal
+// ----------------------------------------------------------------------------
+void JulesJackalPlanner::waitForAllRobotsReady(ros::NodeHandle &nh)
+{
+    std::string my_namespace = ros::this_node::getNamespace();
+
+    // Get list of all robots from global parameter
+    std::vector<std::string> robot_list;
+    if (!nh.getParam("/robot_ns_list", robot_list))
+    {
+        LOG_WARN("No robot_ns_list found, starting immediately");
+        return;
+    }
+
+    // Set my ready flag
+    std::string my_ready_param = my_namespace + "/ready_to_start";
+    nh.setParam(my_ready_param, true);
+    LOG_INFO("Robot " + my_namespace + " marked as ready, waiting for others...");
+
+    // Wait for all robots to be ready
+    ros::Rate check_rate(10); // Check 10 times per second
+    while (ros::ok())
+    {
+        bool all_ready = true;
+        for (const auto &robot_ns : robot_list)
+        {
+            bool robot_ready = false;
+            std::string robot_param = "/" + robot_ns + "/ready_to_start";
+            if (!nh.getParam(robot_param, robot_ready) || !robot_ready)
+            {
+                all_ready = false;
+                break;
+            }
+        }
+
+        if (all_ready)
+        {
+            LOG_INFO("All robots ready! Starting control loop...");
+            break;
+        }
+
+        check_rate.sleep();
+    }
 }
 
 // ----------------------------------------------------------------------------
