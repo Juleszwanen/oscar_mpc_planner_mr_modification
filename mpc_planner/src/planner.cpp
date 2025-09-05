@@ -144,7 +144,7 @@ namespace MPCPlanner
             _output.success = false;
             LOG_WARN_THROTTLE(500, "MPC failed: " + _solver->explainExitFlag(exit_flag));
 
-            return _output;
+            return _output; // Jules: Here we return an empty output
         }
 
         _output.success = true;

@@ -167,7 +167,7 @@ void JulesJackalPlanner::initializeSubscribersAndPublishers(ros::NodeHandle &nh,
 
     // Required ground truth pose from Gazebo (standard quaternion in orientation).
     _state_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>(
-        "input/state_pose", 5,
+        "input/state_pose", 1,
         boost::bind(&JulesJackalPlanner::statePoseCallback, this, _1));
 
     // Goal input (typically from RViz "2D Nav Goal").
@@ -257,7 +257,7 @@ void JulesJackalPlanner::loop(const ros::TimerEvent & /*event*/)
     // Timestamp the beginning of this planning cycle (used by internal profiling).
     _data.planning_start_time = std::chrono::system_clock::now();
 
-    LOG_DEBUG("============= Loop =============");
+    LOG_DEBUG(ns + "============= Loop =============");
 
     // Optional verbose state print for debugging if enabled in config.
     if (CONFIG["debug_output"].as<bool>())
@@ -304,7 +304,7 @@ void JulesJackalPlanner::loop(const ros::TimerEvent & /*event*/)
             LOG_DEBUG("Solver failed or output disabled - applying braking");
         }
 
-        // Publish trajectory only during normal operation
+        // Publish tra_outputjectory only during normal operation
         this->publishCurrentTrajectory(output);
     }
 
@@ -320,7 +320,7 @@ void JulesJackalPlanner::loop(const ros::TimerEvent & /*event*/)
     // Quick heading ray for sanity checking.
     visualize();
 
-    LOG_DEBUG("============= End Loop =============");
+    LOG_DEBUG(ns + "============= End Loop =============");
 }
 
 void JulesJackalPlanner::stateCallback(const nav_msgs::Odometry::ConstPtr &msg)
@@ -676,7 +676,8 @@ void JulesJackalPlanner::obstacleCallback(const mpc_planner_msgs::ObstacleArray:
             Eigen::Vector2d(obstacle.pose.position.x, obstacle.pose.position.y),
             RosTools::quaternionToAngle(obstacle.pose),
             CONFIG["obstacle_radius"].as<double>());
-        auto &dyn = _data.dynamic_obstacles.back();
+
+        auto &dyn = _data.dynamic_obstacles.back(); // ret
 
         // Single-mode Gaussian predictions if provided; otherwise deterministic.
         // We treat "has probabilities AND exactly one gaussian" as "one-mode"
@@ -815,7 +816,7 @@ void JulesJackalPlanner::publishCurrentTrajectory(MPCPlanner::PlannerOutput outp
         ros_trajectory_msg.poses.back().pose.position.z = 1;
 
         ros_trajectory_msg.poses.back().pose.orientation = RosTools::angleToQuaternion(output.trajectory.orientations.at(k));
-        ros_trajectory_msg.poses.back().header.stamp = ros_time + ros::Duration(k * output.trajectory.dt);
+        ros_trajectory_msg.poses.back().header.stamp = ros_time + ros::Duration(k * output.trajectory.dt); // dt is set by the solver remember _solver->dt
         k++;
     }
 
