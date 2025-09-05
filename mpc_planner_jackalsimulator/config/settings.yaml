@@ -24,7 +24,7 @@ solver_settings:
   tolstat: 1e-3 # Stationary tolerance
 
 recording:
-  enable: true # Record data if true
+  enable: false # Record data if true
   folder: /workspace/src/mpc_planner/data # Data location
   file: none # File name for the experiment
   timestamp: false # Add a timestamp
@@ -37,7 +37,7 @@ robot:
   length: 0.65 # [m]
   width: 0.65 # [m]
   com_to_back: 0.0 # [m] Distance from center of mass to the back of the robot
-obstacle_radius: 0.4 # [m] Radius of obstacles (not used when provided in the obstacle message)
+obstacle_radius: 0.325 # [m] Radius of obstacles (not used when provided in the obstacle message), normally it is set to 0.4
 
 linearized_constraints:
   add_halfspaces: 0  # Add static constraints in T-MPC (e.g., for road boundaries)

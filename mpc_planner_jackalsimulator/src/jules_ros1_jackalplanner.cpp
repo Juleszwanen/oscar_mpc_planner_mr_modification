@@ -83,6 +83,20 @@ JulesJackalPlanner::JulesJackalPlanner(ros::NodeHandle &nh, ros::NodeHandle &pnh
     // 6) Wire ROS I/O (all topics are relative → namespace-friendly).
     //    WHY: lets you launch multiple robots under different namespaces.
     this->initializeSubscribersAndPublishers(nh, pnh);
+    const auto node_name = ros::this_node::getNamespace().substr(1);
+    const std::string saving_name = node_name + "_planner" + ".json";
+    RosTools::Instrumentor::Get().BeginSession("mpc_planner_jackalsimulator", saving_name);
+
+    // Robot synchronization setup
+    bool wait_for_sync;
+    nh.param<bool>("/wait_for_sync", wait_for_sync, false);
+
+    ros::Duration(3).sleep(); // Rember that this blocks all callbacks of this node, but this should give the whole system and the other nodes some startup time
+
+    if (wait_for_sync)
+    {
+        waitForAllRobotsReady(nh); // Pass the existing handle
+    }
 
     // 7) Start the control loop timer.
     //    WHY: drives periodic calls to `loop()` at `_control_frequency` Hz.
@@ -100,6 +114,7 @@ JulesJackalPlanner::JulesJackalPlanner(ros::NodeHandle &nh, ros::NodeHandle &pnh
 JulesJackalPlanner::~JulesJackalPlanner()
 {
     LOG_INFO("Stopped JulesJackalPlanner");
+    RosTools::Instrumentor::Get().EndSession();
 }
 
 // ----------------------------------------------------------------------------
@@ -152,7 +167,7 @@ void JulesJackalPlanner::initializeSubscribersAndPublishers(ros::NodeHandle &nh,
 
     // Required ground truth pose from Gazebo (standard quaternion in orientation).
     _state_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>(
-        "input/state_pose", 5,
+        "input/state_pose", 1,
         boost::bind(&JulesJackalPlanner::statePoseCallback, this, _1));
 
     // Goal input (typically from RViz "2D Nav Goal").
@@ -184,7 +199,7 @@ void JulesJackalPlanner::initializeSubscribersAndPublishers(ros::NodeHandle &nh,
     // Publish the trajectory we are going to follow
     _trajectory_pub = nh.advertise<nav_msgs::Path>("output/current_trajectory", 1);
 
-    // Event flag so a supervisor can detect per-robot completion.
+    // Event flag which is published so a supervisor can detect per-robot completion.
     _objective_pub = nh.advertise<std_msgs::Bool>("events/objective_reached", 1);
 }
 
@@ -235,49 +250,62 @@ void JulesJackalPlanner::initializeSubscribersAndPublishers(ros::NodeHandle &nh,
 // ----------------------------------------------------------------------------
 void JulesJackalPlanner::loop(const ros::TimerEvent & /*event*/)
 {
+    const auto ns = ros::this_node::getNamespace();
+    const std::string profiling_name = ns + "_" + "planningLoop";
+    PROFILE_SCOPE(profiling_name.c_str());
+
     // Timestamp the beginning of this planning cycle (used by internal profiling).
     _data.planning_start_time = std::chrono::system_clock::now();
 
-    LOG_DEBUG("============= Loop =============");
+    LOG_DEBUG(ns + "============= Loop =============");
 
     // Optional verbose state print for debugging if enabled in config.
     if (CONFIG["debug_output"].as<bool>())
         _state.print();
 
-    // Run the MPC using the latest state & data assembled by the callbacks.
-    // `_state` holds (x, y, psi, v), `_data` holds goal/path/obstacles/footprint.
-    // The state and the data are filled via the different callback functions
-    // The output cotains besides a succes boolean als a trajectory which it triews to follow
-    auto output = _planner->solveMPC(_state, _data);
-    LOG_MARK("Success: " << output.success);
-
     geometry_msgs::Twist cmd;
 
-    if (_enable_output && output.success)
+    // Check if we just reached the goal (transition)
+    if (!_goal_reached && this->objectiveReached(_state, _data))
     {
-        // Extract the first applicable controls from the solution following
-        // the repo’s convention: u0 = w, x1 = v (next-step linear speed).
-        cmd.linear.x = _planner->getSolution(1, "v");
-        cmd.angular.z = _planner->getSolution(0, "w");
-
-        LOG_VALUE_DEBUG("Commanded v", cmd.linear.x);
-        LOG_VALUE_DEBUG("Commanded w", cmd.angular.z);
+        applyBrakingCommand(cmd);
+        _goal_reached = true;
+        publishObjectiveReachedEvent();
+        const auto message = ros::this_node::getNamespace().substr(1) + " Goal reached - applying braking";
+        LOG_INFO(message);
     }
+    // Already at goal - maintain stopped state
+    else if (_goal_reached)
+    {
+        cmd.linear.x = 0.0;
+        cmd.angular.z = 0.0;
+        const auto message = ros::this_node::getNamespace().substr(1) + " Maintaining stopped state at goal";
+        LOG_DEBUG(message);
+    }
+    // Normal operation - run solver
     else
     {
-        // ---------------------- FAIL-SAFE BRAKING ----------------------
-        // If the solver failed or output is disabled, slow down smoothly
-        // instead of issuing stale/unsafe commands.
-        double deceleration = CONFIG["deceleration_at_infeasible"].as<double>();
-        double velocity_after_braking;
-        double velocity;
-        double dt = 1. / CONFIG["control_frequency"].as<double>();
+        // Run the MPC using the latest state & data assembled by the callbacks.
+        auto output = _planner->solveMPC(_state, _data);
+        LOG_MARK("Success: " << output.success);
 
-        velocity = _state.get("v");
-        velocity_after_braking = velocity - deceleration * dt; // Brake with the given deceleration
-        cmd.linear.x = std::max(velocity_after_braking, 0.);   // Don't drive backwards when braking
-        cmd.angular.z = 0.0;
-        // ----------------------------------------------------------------
+        if (_enable_output && output.success)
+        {
+            // Extract the first applicable controls from the solution
+            cmd.linear.x = _planner->getSolution(1, "v");
+            cmd.angular.z = _planner->getSolution(0, "w");
+            LOG_VALUE_DEBUG("Commanded v", cmd.linear.x);
+            LOG_VALUE_DEBUG("Commanded w", cmd.angular.z);
+        }
+        else
+        {
+            // Fail-safe braking if solver failed or output disabled
+            applyBrakingCommand(cmd);
+            LOG_DEBUG("Solver failed or output disabled - applying braking");
+        }
+
+        // Publish tra_outputjectory only during normal operation
+        this->publishCurrentTrajectory(output);
     }
 
     // Publish the velocity command to the robot’s differential drive.
@@ -285,8 +313,6 @@ void JulesJackalPlanner::loop(const ros::TimerEvent & /*event*/)
 
     // Keep downstream consumers updated with our current pose (for RViz/aggregator).
     this->publishPose();
-    // Publish the trajectory a robot is about to follow
-    this->publishCurrentTrajectory(output);
 
     // Built-in planner visuals (predicted trajectory, footprints, etc.), if available.
     _planner->visualize(_state, _data);
@@ -294,15 +320,7 @@ void JulesJackalPlanner::loop(const ros::TimerEvent & /*event*/)
     // Quick heading ray for sanity checking.
     visualize();
 
-    // Notify a supervisor that this robot considers the goal reached.
-    if (objectiveReached())
-    {
-        std_msgs::Bool done;
-        done.data = true;
-        _objective_pub.publish(done);
-    }
-
-    LOG_DEBUG("============= End Loop =============");
+    LOG_DEBUG(ns + "============= End Loop =============");
 }
 
 void JulesJackalPlanner::stateCallback(const nav_msgs::Odometry::ConstPtr &msg)
@@ -640,6 +658,10 @@ void JulesJackalPlanner::pathCallback(const nav_msgs::Path::ConstPtr &msg)
 void JulesJackalPlanner::obstacleCallback(const mpc_planner_msgs::ObstacleArray::ConstPtr &msg)
 {
     // Start fresh each message; the solver expects the latest snapshot.
+    const auto ns = ros::this_node::getNamespace();
+    const std::string profiling_name = ns + "_" + "ObstacleCallback";
+    PROFILE_SCOPE(profiling_name.c_str());
+    LOG_DEBUG(profiling_name);
     _data.dynamic_obstacles.clear();
 
     for (const auto &obstacle : msg->obstacles)
@@ -654,7 +676,8 @@ void JulesJackalPlanner::obstacleCallback(const mpc_planner_msgs::ObstacleArray:
             Eigen::Vector2d(obstacle.pose.position.x, obstacle.pose.position.y),
             RosTools::quaternionToAngle(obstacle.pose),
             CONFIG["obstacle_radius"].as<double>());
-        auto &dyn = _data.dynamic_obstacles.back();
+
+        auto &dyn = _data.dynamic_obstacles.back(); // ret
 
         // Single-mode Gaussian predictions if provided; otherwise deterministic.
         // We treat "has probabilities AND exactly one gaussian" as "one-mode"
@@ -765,7 +788,12 @@ void JulesJackalPlanner::publishPose()
 // Publishes the trajectory we are following with 20 hz(equal to the control level loop)
 void JulesJackalPlanner::publishCurrentTrajectory(MPCPlanner::PlannerOutput output)
 {
+
+    const auto ns = ros::this_node::getNamespace();
+    const std::string profiling_name = ns + "_" + "PublishCurrentTrajectory";
+    PROFILE_SCOPE(profiling_name.c_str());
     nav_msgs::Path ros_trajectory_msg;
+    LOG_DEBUG(profiling_name);
 
     auto ros_time = ros::Time::now();
     ros_trajectory_msg.header.stamp = ros_time;
@@ -788,35 +816,12 @@ void JulesJackalPlanner::publishCurrentTrajectory(MPCPlanner::PlannerOutput outp
         ros_trajectory_msg.poses.back().pose.position.z = 1;
 
         ros_trajectory_msg.poses.back().pose.orientation = RosTools::angleToQuaternion(output.trajectory.orientations.at(k));
-        ros_trajectory_msg.poses.back().header.stamp = ros_time + ros::Duration(k * output.trajectory.dt);
+        ros_trajectory_msg.poses.back().header.stamp = ros_time + ros::Duration(k * output.trajectory.dt); // dt is set by the solver remember _solver->dt
         k++;
     }
 
     _trajectory_pub.publish(ros_trajectory_msg);
 }
-
-// THIS MIGHT BE USEFULL LATER
-// void JulesJackalPlanner::publishPoseWithQuarternion()
-// {
-//     nav_msgs::Odometry nav_pose_msg;
-//     nav_pose_msg.header.stamp = ros::Time::now();
-//     nav_pose_msg.header.frame_id = _global_frame;
-
-//     nav_pose_msg.child_frame_id = ros::this_node::getNamespace() + "/base_link";
-//     // Read back from internal state so what we publish is consistent with the
-//     // values the MPC used/updated this cycle.
-//     nav_pose_msg.pose.position.x = _state.get("x");
-//     nav_pose_msg.pose.position.y = _state.get("y");
-//     nav_pose_msg.pose.position.z = 0;
-
-//     double psi = _state.get("psi"); //get the orientation
-//     nav_pose_msg.pose.orientation = RosTools::angleToQuaternion(psi);
-
-//     nav_pose_msg.twist.x =
-//     nav_pose_msg.twist.y =
-
-//     _pose_pub.publish(pose);
-// }
 
 // ----------------------------------------------------------------------------
 // PURPOSE
@@ -899,13 +904,117 @@ void JulesJackalPlanner::visualize()
 //   - Add “hold time” hysteresis: require the condition to be true for N cycles.
 //   - Add a minimum speed threshold to ensure you’re not just passing by.
 // ----------------------------------------------------------------------------
-bool JulesJackalPlanner::objectiveReached() const
+bool JulesJackalPlanner::objectiveReached(MPCPlanner::State _state, MPCPlanner::RealTimeData _data) const
 {
-    if (!_goal_received)
-        return false;
+    // check if the objective for each robot is reached if it is reached then we return 0.
+    bool objective_reached = _planner->isObjectiveReached(_state, _data);
+    return objective_reached;
+}
 
-    const Eigen::Vector2d p(_state.get("x"), _state.get("y"));
-    return (p - _goal_xy).norm() <= _goal_tolerance;
+// ----------------------------------------------------------------------------
+// PURPOSE
+//   Apply consistent braking command to smoothly decelerate the robot.
+//   Used both when goal is reached and when solver fails.
+// ----------------------------------------------------------------------------
+void JulesJackalPlanner::applyBrakingCommand(geometry_msgs::Twist &cmd)
+{
+    double deceleration = CONFIG["deceleration_at_infeasible"].as<double>();
+    double dt = 1. / CONFIG["control_frequency"].as<double>();
+    double velocity = _state.get("v");
+    double velocity_after_braking = velocity - deceleration * dt;
+
+    cmd.linear.x = std::max(velocity_after_braking, 0.0); // Don't drive backwards
+    cmd.angular.z = 0.0;
+}
+
+// ----------------------------------------------------------------------------
+// PURPOSE
+//   Publish objective reached event once when transitioning to goal reached state.
+// ----------------------------------------------------------------------------
+void JulesJackalPlanner::publishObjectiveReachedEvent()
+{
+    std_msgs::Bool event;
+    event.data = true;
+    _objective_pub.publish(event);
+    LOG_INFO("Objective reached - published event");
+}
+
+// ----------------------------------------------------------------------------
+// PURPOSE
+//   Wait for all robots in the system to be ready before starting the control loop.
+//   Uses ROS parameters to coordinate synchronized startup across multiple robots.
+//
+// WHY THIS EXISTS
+//   In multi-robot scenarios, simultaneous startup prevents timing issues and
+//   ensures all robots begin their control loops at the same time for better
+//   coordination and predictable behavior.
+//
+// HOW IT WORKS
+//   1) Read the list of all robots from the global parameter `/robot_ns_list`
+//   2) Set this robot's ready flag as a parameter: `/<namespace>/ready_to_start = true`
+//   3) Poll all robots' ready flags until everyone is ready
+//   4) Return when all robots have signaled readiness
+//
+// PARAMETERS
+//   - `/robot_ns_list`: Array of robot namespaces (e.g., ["jackal1", "jackal2"])
+//   - `/<robot_ns>/ready_to_start`: Per-robot ready flag (set to true when ready)
+//
+// ASSUMPTIONS
+//   - All robots use the same `/robot_ns_list` parameter
+//   - Robot namespaces match the entries in the list
+//   - ROS parameter server is accessible to all robots
+//
+// SIDE EFFECTS
+//   - Sets this robot's ready parameter
+//   - Blocks execution until all robots are ready
+//   - Returns immediately if robot_ns_list is not found (fail-safe)
+//
+// EXTENSIONS
+//   - Add timeout mechanism to prevent infinite waiting
+//   - Add heartbeat mechanism for fault detection
+//   - Support dynamic robot addition/removal
+// ----------------------------------------------------------------------------
+void JulesJackalPlanner::waitForAllRobotsReady(ros::NodeHandle &nh)
+{
+    std::string my_namespace = ros::this_node::getNamespace();
+
+    // Get list of all robots from global parameter
+    std::vector<std::string> robot_list;
+    if (!nh.getParam("/robot_ns_list", robot_list))
+    {
+        LOG_WARN("No robot_ns_list found, starting immediately");
+        return;
+    }
+
+    // Set my ready flag
+    std::string my_ready_param = my_namespace + "/ready_to_start";
+    nh.setParam(my_ready_param, true);
+    LOG_INFO("Robot " + my_namespace + " marked as ready, waiting for others...");
+
+    // Wait for all robots to be ready
+    ros::Rate check_rate(10); // Check 10 times per second
+    while (ros::ok())
+    {
+        bool all_ready = true;
+        for (const auto &robot_ns : robot_list)
+        {
+            bool robot_ready = false;
+            std::string robot_param = "/" + robot_ns + "/ready_to_start";
+            if (!nh.getParam(robot_param, robot_ready) || !robot_ready)
+            {
+                all_ready = false;
+                break;
+            }
+        }
+
+        if (all_ready)
+        {
+            LOG_INFO("All robots ready! Starting control loop...");
+            break;
+        }
+
+        check_rate.sleep();
+    }
 }
 
 // ----------------------------------------------------------------------------
