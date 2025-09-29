@@ -45,6 +45,8 @@ namespace MPCPlanner
         void saveData(State &state, RealTimeData &data);
         void visualize(const State &state, const RealTimeData &data);
 
+        void visualizeObstaclePredictionsPlanner(const State &state, const RealTimeData &data, bool include_time = false);
+
         void reset(State &state, RealTimeData &data, bool success = true);
 
         bool isObjectiveReached(const State &state, const RealTimeData &data) const;

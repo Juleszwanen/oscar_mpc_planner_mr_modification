@@ -5,19 +5,28 @@ find_package(catkin REQUIRED COMPONENTS
   nav_msgs
   std_msgs
   geometry_msgs
+  message_generation
 )
 
 include_directories(include)
 
 add_message_files(
-  DIRECTORY msg
-  FILES Gaussian.msg ObstacleGMM.msg ObstacleArray.msg
+  FILES 
+  Gaussian.msg 
+  ObstacleGMM.msg 
+  ObstacleArray.msg
+)
+
+## Declare services
+add_service_files(
+  FILES
+  GetOtherTrajectories.srv
 )
 
 generate_messages(DEPENDENCIES nav_msgs std_msgs geometry_msgs)
 
 catkin_package(
-  DEPENDS nav_msgs std_msgs geometry_msgs
+  DEPENDS message_runtime nav_msgs std_msgs geometry_msgs 
 )
 
 install(DIRECTORY include/

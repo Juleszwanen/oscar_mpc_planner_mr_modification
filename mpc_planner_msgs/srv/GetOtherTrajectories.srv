@@ -1,0 +1,8 @@
+# Request - Robot asking for another robot's trajectory
+std_msgs/Header    request_header          # Standard timestamp + frame_id
+string             requesting_robot_id     # Who is asking (namespace without /)
+geometry_msgs/Pose requesting_robot_pose   # Current pose for context
+---
+# Response - Providing the requested trajectory  
+mpc_planner_msgs/ObstacleArray  obstacle_trajectories
+

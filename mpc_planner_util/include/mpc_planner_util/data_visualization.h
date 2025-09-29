@@ -40,6 +40,10 @@ namespace MPCPlanner
                                                                const std::string &topic_name,
                                                                bool publish = false, double alpha = 0.3);
 
+    RosTools::ROSMarkerPublisher &visualizeObstaclePredictionsWithTime(const std::vector<DynamicObstacle> &obstacles,
+                                                                       const std::string &topic_name,
+                                                                       bool publish, double alpha, const double dt = 0.2);
+
     RosTools::ROSMarkerPublisher &visualizeLinearConstraint(double a1, double a2, double b, int k, int N,
                                                             const std::string &topic_name,
                                                             bool publish = false, double alpha = 1.0, double thickness = 0.1);
