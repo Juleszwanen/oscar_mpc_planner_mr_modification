@@ -77,6 +77,7 @@ public:
     void waitForAllRobotsReady(ros::NodeHandle &nh);
     void initializeOtherRobotsAsObstacles(const std::set<std::string> &_other_robot_nss, MPCPlanner::RealTimeData &_data, const double);
     bool objectiveReached(MPCPlanner::State _state, MPCPlanner::RealTimeData _data) const;
+    void buildOutputFromBrakingCommand(MPCPlanner::PlannerOutput &output, const geometry_msgs::Twist &cmd);
     std::set<std::string> identifyOtherRobotNamespaces(const std::vector<std::string> &all_namespaces);
 
     // Debug logging functions
@@ -98,6 +99,9 @@ private:
 
     MPCPlanner::State _state;
     MPCPlanner::RealTimeData _data;
+
+    // dynamic reconfigure instance
+    std::unique_ptr<JackalsimulatorReconfigure> _reconfigure;
 
     // ROS Subscribers
     ros::Subscriber _state_sub;

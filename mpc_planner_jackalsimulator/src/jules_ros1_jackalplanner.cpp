@@ -61,6 +61,7 @@ JulesJackalPlanner::JulesJackalPlanner(ros::NodeHandle &nh, ros::NodeHandle &pnh
     this->initializeSubscribersAndPublishers(nh, pnh);
 
     // Robot synchronization
+    _reconfigure = std::make_unique<JackalsimulatorReconfigure>(); // Initialize RQT reconfigure
 
     ros::Duration(3).sleep(); // Rember that this blocks all callbacks of this node, but this should give the whole system and the other nodes some startup timeq
     // Give system startup time
@@ -169,7 +170,7 @@ void JulesJackalPlanner::loop(const ros::TimerEvent & /*event*/)
         // LOG_HEADER(_ego_robot_ns + ": Planning for the first time");
         LOG_INFO(_ego_robot_ns + ": State x: " + std::to_string(_state.get("x")));
         LOG_INFO(_ego_robot_ns + ": State y: " + std::to_string(_state.get("y")));
-        LOG_INFO(_ego_robot_ns + ": State y: " + std::to_string(_state.get("psi")));
+        LOG_INFO(_ego_robot_ns + ": State psi[radians]: " + std::to_string(_state.get("psi")));
         applyDummyObstacleCommand();
         _planning_for_the_frist_time = false;
         this->logDataState(_ego_robot_ns + ": Planning for the first time");
@@ -224,6 +225,7 @@ void JulesJackalPlanner::loop(const ros::TimerEvent & /*event*/)
         else
         {
             applyBrakingCommand(cmd);
+            buildOutputFromBrakingCommand(output, cmd);
             LOG_WARN(_ego_robot_ns + ": Solver failed or output disabled - applying braking");
         }
 
@@ -1026,9 +1028,42 @@ bool JulesJackalPlanner::isPathTheSame(const nav_msgs::Path::ConstPtr &msg) cons
     // Same length and first points match within tolerance → consider unchanged.
     return true;
 }
-// void JulesJackalPlanner::buildOutputFromBrakingCommand(MPCPlanner::PlannerOutput output)
-// {
-// }
+void JulesJackalPlanner::buildOutputFromBrakingCommand(MPCPlanner::PlannerOutput &output, const geometry_msgs::Twist &cmd)
+{
+    // Build output when the MPC could not solve
+    if (output.success)
+    {
+        LOG_WARN("Creating a braking command while the MPC solve was signaled as successful");
+        return;
+    }
+
+    const auto &new_speed = cmd.linear.x;
+    const auto &orientation = _state.get("psi");
+
+    const auto &new_vx = std::cos(orientation) * new_speed;
+    const auto &new_vy = std::sin(orientation) * new_speed;
+
+    const Eigen::Vector2d new_velocity(new_vx, new_vy);
+    const Eigen::Vector2d current_position(_state.get("x"), _state.get("y"));
+
+    MPCPlanner::Prediction const_vel_prediction = MPCPlanner::getConstantVelocityPrediction(current_position,
+                                                                                            new_velocity,
+                                                                                            CONFIG["integrator_step"].as<double>(),
+                                                                                            CONFIG["N"].as<int>());
+
+    const int N = CONFIG["N"].as<int>();
+    output.trajectory.positions.clear();
+    output.trajectory.orientations.clear();
+    output.trajectory.positions.reserve(N);
+    output.trajectory.orientations.reserve(N);
+    output.trajectory.dt = CONFIG["integrator_step"].as<double>();
+
+    for (const auto &predstep : const_vel_prediction.modes[0])
+    {
+        output.trajectory.positions.push_back(predstep.position);
+        output.trajectory.orientations.push_back(orientation);
+    }
+}
 
 int main(int argc, char **argv)
 {

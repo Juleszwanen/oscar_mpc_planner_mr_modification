@@ -24,7 +24,7 @@ solver_settings:
   tolstat: 1e-3 # Stationary tolerance
 
 recording:
-  enable: true # Record data if true
+  enable: false # Record data if true
   folder: /workspace/src/mpc_planner/data # Data location
   file: none # File name for the experiment
   timestamp: false # Add a timestamp
