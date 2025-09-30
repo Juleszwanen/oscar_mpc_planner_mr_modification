@@ -21,6 +21,7 @@ namespace MPCPlanner
 
         std::vector<DynamicObstacle> dynamic_obstacles;
         std::map<std::string, DynamicObstacle> trajectory_dynamic_obstacles;
+        std::vector<DynamicObstacle>  dynamic_obs_plus_trajectory_obs;
 
         costmap_2d::Costmap2D *costmap{nullptr}; // Costmap for static obstacles
 

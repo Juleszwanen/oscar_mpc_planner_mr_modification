@@ -49,6 +49,7 @@ public:
 
     // Planning loop functions
     void loop(const ros::TimerEvent &event);
+    void loopDirectTrajectory(const ros::TimerEvent &event);
     void loopWithService(const ros::TimerEvent &event);
 
     // Callbacks
@@ -76,6 +77,7 @@ public:
     void visualize();
     void waitForAllRobotsReady(ros::NodeHandle &nh);
     void initializeOtherRobotsAsObstacles(const std::set<std::string> &_other_robot_nss, MPCPlanner::RealTimeData &_data, const double);
+    void updateRobotObstaclesFromTrajectories();
     bool objectiveReached(MPCPlanner::State _state, MPCPlanner::RealTimeData _data) const;
     void buildOutputFromBrakingCommand(MPCPlanner::PlannerOutput &output, const geometry_msgs::Twist &cmd);
     std::set<std::string> identifyOtherRobotNamespaces(const std::vector<std::string> &all_namespaces);
@@ -126,8 +128,10 @@ private:
     std::string _global_frame{"map"};
     std::string _ego_robot_ns;
     int _ego_robot_id{-1};
-    std::set<std::string> _other_robot_nss;  // List of namespaces of all other robots in the area excluding ego robot ns
-    std::vector<std::string> _robot_ns_list; // List of namespaces of all robots in the area
+    std::set<std::string> _other_robot_nss;         // List of namespaces of all other robots in the area excluding ego robot ns
+    std::vector<std::string> _robot_ns_list;        // List of namespaces of all robots in the area
+    bool _immediate_robot_robot_communication{true}; // This boolean can turn on and off immideate robot to robot communication, which means there is no central aggregator in between
+
 
     bool _enable_output{true};
     double _control_frequency{20.0};
@@ -135,6 +139,7 @@ private:
     double _goal_tolerance{0.5};
     bool _received_obstacle_callback_first_time{true};
     bool _planning_for_the_frist_time{true};
+    bool _first_direct_trajectory_cb_received{false};
 
     // Goal cache
     bool _goal_received{false};

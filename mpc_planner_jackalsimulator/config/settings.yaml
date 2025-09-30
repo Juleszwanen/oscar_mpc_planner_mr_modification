@@ -4,7 +4,7 @@ integrator_step: 0.2 # [s] Integration step
 n_discs: 1 # Number of discs to model the robot with
 
 enable_output: true # Enable output to the robot
-control_frequency: 20 # [Hz] Control frequency of the MPC
+control_frequency: 1 # [Hz] Control frequency of the MPC 20-> normal
 
 debug_output: false # Show debug output
 debug_limits: false # Show when state/input limits are hit

@@ -61,9 +61,9 @@ JulesJackalPlanner::JulesJackalPlanner(ros::NodeHandle &nh, ros::NodeHandle &pnh
     this->initializeSubscribersAndPublishers(nh, pnh);
 
     // Robot synchronization
-    _reconfigure = std::make_unique<JackalsimulatorReconfigure>(); // Initialize RQT reconfigure
+    // _reconfigure = std::make_unique<JackalsimulatorReconfigure>(); // Initialize RQT reconfigure
 
-    ros::Duration(3).sleep(); // Rember that this blocks all callbacks of this node, but this should give the whole system and the other nodes some startup timeq
+    ros::Duration(5).sleep(); // Rember that this blocks all callbacks of this node, but this should give the whole system and the other nodes some startup timeq
     // Give system startup time
     if (wait_for_sync)
     {
@@ -77,7 +77,7 @@ JulesJackalPlanner::JulesJackalPlanner(ros::NodeHandle &nh, ros::NodeHandle &pnh
     // Start control loop timer
     _timer = nh.createTimer(
         ros::Duration(1.0 / CONFIG["control_frequency"].as<double>()),
-        &JulesJackalPlanner::loop,
+        &JulesJackalPlanner::loopDirectTrajectory,
         this);
 
     // LOG_INFO(_ego_robot_ns + ": CONSTRUCTOR: dynamic_obstacles size = " + std::to_string(_data.dynamic_obstacles.size()));
@@ -225,11 +225,12 @@ void JulesJackalPlanner::loop(const ros::TimerEvent & /*event*/)
         else
         {
             applyBrakingCommand(cmd);
-            buildOutputFromBrakingCommand(output, cmd);
+            buildOutputFromBrakingCommand(output, cmd); // Fills in the output object with a braking trajectory
             LOG_WARN(_ego_robot_ns + ": Solver failed or output disabled - applying braking");
         }
 
         this->publishCurrentTrajectory(output);
+        this->publishDirectTrajectory(output);
     }
 
     // Publish the velocity command to the robot’s differential drive.
@@ -249,7 +250,112 @@ void JulesJackalPlanner::loop(const ros::TimerEvent & /*event*/)
 
     LOG_DEBUG(_ego_robot_ns + ": ============= End Loop =============");
 }
+void JulesJackalPlanner::loopDirectTrajectory(const ros::TimerEvent & /*event*/)
+{
+    LOG_DEBUG(_ego_robot_ns + "============= Loop Start =============");
+    LOG_DEBUG(_ego_robot_ns + ": Obstacles: dynamic=" + std::to_string(_data.dynamic_obstacles.size()) +
+              ", trajectory=" + std::to_string(_data.trajectory_dynamic_obstacles.size()));
 
+    if (_planning_for_the_frist_time)
+    {
+        LOG_INFO(_ego_robot_ns + ": INITIAL PLANNING - State: [" +
+                 std::to_string(_state.get("x")) + ", " +
+                 std::to_string(_state.get("y")) + ", " +
+                 std::to_string(_state.get("psi")) + "]");
+        LOG_INFO(_ego_robot_ns + ": Waiting for trajectory callbacks, applying dummy command");
+
+        applyDummyObstacleCommand();
+        _planning_for_the_frist_time = false;
+        this->logDataState(_ego_robot_ns + ": Initial planning complete");
+        LOG_INFO(_ego_robot_ns + ": ============= End INITIAL Loop =============");
+        return;
+    }
+
+    _data.planning_start_time = std::chrono::system_clock::now();
+
+    // Update existing robot obstacles in place - more efficient than clearing and rebuilding
+    LOG_DEBUG(_ego_robot_ns + ": Updating robot obstacles from trajectories...");
+    updateRobotObstaclesFromTrajectories();
+
+    LOG_DEBUG(_ego_robot_ns + ": Ensuring obstacle size and notifying planner...");
+    MPCPlanner::ensureObstacleSize(_data.dynamic_obstacles, _state);
+    this->logDataState(_ego_robot_ns + ": Initial planning complete");
+    _planner->onDataReceived(_data, "dynamic obstacles");
+
+    // _planner->visualizeObstaclePredictionsPlanner(_state, _data, true);
+
+    if (CONFIG["debug_output"].as<bool>())
+        _state.print();
+
+    geometry_msgs::Twist cmd;
+
+    // Goal reached - apply braking
+    if (!_goal_reached && this->objectiveReached(_state, _data))
+    {
+        applyBrakingCommand(cmd);
+        _goal_reached = true;
+        publishObjectiveReachedEvent();
+        LOG_INFO(_ego_robot_ns + ": GOAL REACHED - Applying braking command");
+    }
+
+    // Maintain stopped state at goal
+    else if (_goal_reached)
+    {
+        cmd.linear.x = 0.0;
+        cmd.angular.z = 0.0;
+        LOG_DEBUG(_ego_robot_ns + ": Maintaining stopped state at goal");
+    }
+    // Normal MPC operation
+    else
+    {
+        if (_data.dynamic_obstacles.empty())
+        {
+            LOG_WARN(_ego_robot_ns + ": No dynamic obstacles - planning in free space");
+        }
+
+        LOG_DEBUG(_ego_robot_ns + ": Calling MPC solver with " + std::to_string(_data.dynamic_obstacles.size()) + " obstacles");
+        auto output = _planner->solveMPC(_state, _data);
+
+        if (output.success)
+        {
+            LOG_DEBUG(_ego_robot_ns + ": MPC solver SUCCESS");
+        }
+        else
+        {
+            LOG_WARN(_ego_robot_ns + ": MPC solver FAILED");
+        }
+
+        if (_enable_output && output.success)
+        {
+            cmd.linear.x = _planner->getSolution(1, "v");
+            cmd.angular.z = _planner->getSolution(0, "w");
+            LOG_VALUE_DEBUG("Commanded", "v=" + std::to_string(cmd.linear.x) + ", w=" + std::to_string(cmd.angular.z));
+        }
+        else
+        {
+            applyBrakingCommand(cmd);
+            buildOutputFromBrakingCommand(output, cmd);
+            LOG_WARN(_ego_robot_ns + ": Applying braking command - solver failed or output disabled");
+        }
+
+        // Publish trajectory for robot-to-robot communication
+        this->publishDirectTrajectory(output);
+    }
+
+    // Publish the velocity command to the robot’s differential drive.
+    _cmd_pub.publish(cmd);
+
+    // Keep downstream consumers updated with our current pose (for RViz/aggregator).
+    // this->publishPose();
+
+    // Built-in planner visuals (predicted trajectory, footprints, etc.), if available.
+    _planner->visualize(_state, _data);
+
+    // Quick heading ray for sanity checking.
+    visualize();
+
+    LOG_DEBUG(_ego_robot_ns + ": ============= Loop End =============");
+}
 void JulesJackalPlanner::loopWithService(const ros::TimerEvent & /*event*/)
 {
     LOG_DEBUG("loopWithService: dynamic_obstacles size = " + std::to_string(_data.dynamic_obstacles.size()));
@@ -379,12 +485,13 @@ void JulesJackalPlanner::applyDummyObstacleCommand()
     {
         // Fail-safe braking if solver failed or output disabled
         applyBrakingCommand(cmd);
+        buildOutputFromBrakingCommand(output, cmd);
         LOG_WARN(_ego_robot_ns + ": Solver failed or output disabled - applying braking");
     }
 
     // Publish tra_outputjectory only during normal operation
-    this->publishCurrentTrajectory(output);
-
+    // this->publishCurrentTrajectory(output);
+    this->publishDirectTrajectory(output);
     // Publish the velocity command to the robot’s differential drive.
     _cmd_pub.publish(cmd);
 
@@ -398,6 +505,7 @@ void JulesJackalPlanner::applyDummyObstacleCommand()
 
     // Quick heading ray for sanity checking.
     visualize();
+    _data.dynamic_obstacles.clear();
 }
 void JulesJackalPlanner::applyBrakingCommand(geometry_msgs::Twist &cmd)
 {
@@ -676,6 +784,7 @@ void JulesJackalPlanner::trajectoryCallback(const mpc_planner_msgs::ObstacleGMM:
 {
 
     // Check if trajectory obstacle exists for this namespace (prevents race condition crash)
+    LOG_DEBUG(_ego_robot_ns + " Received a callback triggered by a trajectory send by: " + ns);
     auto it = _data.trajectory_dynamic_obstacles.find(ns);
     if (it == _data.trajectory_dynamic_obstacles.end())
     {
@@ -714,51 +823,52 @@ void JulesJackalPlanner::trajectoryCallback(const mpc_planner_msgs::ObstacleGMM:
 
     if (!list_of_gaussians_trajectories.empty())
     {
-        // Create new prediction with multiple modes (trajectories)
-        MPCPlanner::Prediction new_prediction(MPCPlanner::PredictionType::NONE);
-        new_prediction.modes.reserve(list_of_gaussians_trajectories.size());
-        new_prediction.probabilities.reserve(list_of_traject_costs.size());
-
-        // Process each Gaussian trajectory (each is a potential future path)
-        for (const auto &gaussian_trajectory : list_of_gaussians_trajectories)
+        // FIXED: We expect only 1 gaussian from the direct trajectory publisher
+        if (list_of_gaussians_trajectories.size() != 1)
         {
-            const auto &mean_trajectory = gaussian_trajectory.mean; // Fixed typo: atuo -> auto
-            const size_t trajectory_size = mean_trajectory.poses.size();
-
-            // Create a new mode (trajectory) for this Gaussian
-            MPCPlanner::Mode new_mode;
-            new_mode.reserve(trajectory_size);
-
-            // Fill the mode with prediction steps from the mean trajectory
-            for (size_t k = 0; k < trajectory_size; ++k)
-            {
-                const auto &pose = mean_trajectory.poses[k];
-                new_mode.emplace_back(
-                    Eigen::Vector2d(pose.pose.position.x, pose.pose.position.y),
-                    RosTools::quaternionToAngle(pose.pose.orientation),
-                    -1.0, // uncertainty ellipse major axis
-                    -1.0  // uncertainty ellipse minor axis
-                );
-            }
-
-            // Add this completed mode to the prediction
-            new_prediction.modes.emplace_back(std::move(new_mode));
+            LOG_WARN(_ego_robot_ns + ": Expected 1 trajectory, got " + std::to_string(list_of_gaussians_trajectories.size()) + " from " + ns);
         }
 
-        // Copy trajectory probabilities/costs
-        new_prediction.probabilities = list_of_traject_costs;
+        // Process the first (and expected only) Gaussian trajectory
+        const auto &gaussian_trajectory = list_of_gaussians_trajectories[0];
+        const auto &mean_trajectory = gaussian_trajectory.mean;
+        const size_t trajectory_size = mean_trajectory.poses.size();
+
+        // Create new prediction - DETERMINISTIC constructor automatically creates one empty mode
+        MPCPlanner::Prediction new_prediction(MPCPlanner::PredictionType::DETERMINISTIC);
+
+        // Create a single mode for the trajectory
+        MPCPlanner::Mode new_mode;
+        new_mode.reserve(trajectory_size);
+
+        // Fill the mode with prediction steps from the mean trajectory
+        for (size_t k = 0; k < trajectory_size; ++k)
+        {
+            const auto &pose = mean_trajectory.poses[k];
+            new_mode.emplace_back(
+                Eigen::Vector2d(pose.pose.position.x, pose.pose.position.y),
+                RosTools::quaternionToAngle(pose.pose.orientation),
+                -1.0, // uncertainty ellipse major axis
+                -1.0  // uncertainty ellipse minor axis
+            );
+        }
+
+        // Replace the auto-created empty mode with our trajectory data
+        new_prediction.modes[0] = std::move(new_mode);
 
         // Update the obstacle with the new prediction
         robot_trajectory_obstacle.prediction = std::move(new_prediction);
 
         LOG_DEBUG(_ego_robot_ns + " Updated trajectory prediction for " + ns +
-                  " with " + std::to_string(list_of_gaussians_trajectories.size()) + " modes");
+                  " with " + std::to_string(trajectory_size) + " trajectory points");
     }
     else
     {
         // No trajectory prediction available - use deterministic (current pose only)
         LOG_ERROR(_ego_robot_ns + " No trajectory prediction for " + ns + ", but we received a callback");
     }
+
+    _first_direct_trajectory_cb_received = true;
 }
 
 // 5. PUBLISHER FUNCTIONS
@@ -828,21 +938,42 @@ void JulesJackalPlanner::publishDirectTrajectory(MPCPlanner::PlannerOutput outpu
     ego_robot_trajectory_as_obstacle.pose.orientation = RosTools::angleToQuaternion(_state.get("psi"));
     ego_robot_trajectory_as_obstacle.gaussians.emplace_back();
 
-    auto ros_trajectory_msg = ego_robot_trajectory_as_obstacle.gaussians.back().mean;
+    // CRITICAL FIX: Use reference instead of copy!
+    auto &gaussian = ego_robot_trajectory_as_obstacle.gaussians.back();
     auto ros_time = ros::Time::now();
-    ros_trajectory_msg.header.stamp = ros_time;
-    ros_trajectory_msg.header.frame_id = _global_frame;
+    gaussian.mean.header.stamp = ros_time;
+    gaussian.mean.header.frame_id = _global_frame;
 
     int k = 0;
-    for (const auto &position : output.trajectory.positions)
+    // FIXED: Changed condition from > 1 to > 0 to include single-point trajectories
+    if (output.trajectory.positions.size() > 0)
     {
-        ros_trajectory_msg.poses.emplace_back();
-        ros_trajectory_msg.poses.back().pose.position.x = position(0);
-        ros_trajectory_msg.poses.back().pose.position.y = position(1);
-        ros_trajectory_msg.poses.back().pose.position.z = k * output.trajectory.dt;
-        ros_trajectory_msg.poses.back().pose.orientation = RosTools::angleToQuaternion(output.trajectory.orientations.at(k));
-        ros_trajectory_msg.poses.back().header.stamp = ros_time + ros::Duration(k * output.trajectory.dt);
-        k++;
+        gaussian.mean.poses.reserve(output.trajectory.positions.size());
+        gaussian.major_semiaxis.reserve(output.trajectory.positions.size());
+        gaussian.minor_semiaxis.reserve(output.trajectory.positions.size());
+
+        for (const auto &position : output.trajectory.positions)
+        {
+            gaussian.mean.poses.emplace_back();
+            auto &pose = gaussian.mean.poses.back();
+            pose.pose.position.x = position(0);
+            pose.pose.position.y = position(1);
+            pose.pose.position.z = k * output.trajectory.dt;
+            pose.pose.orientation = RosTools::angleToQuaternion(output.trajectory.orientations.at(k));
+            pose.header.stamp = ros_time + ros::Duration(k * output.trajectory.dt);
+
+            // Add dummy semiaxis values for now (can be made configurable later)
+            gaussian.major_semiaxis.push_back(0.1);
+            gaussian.minor_semiaxis.push_back(0.1);
+
+            k++;
+        }
+
+        LOG_DEBUG(_ego_robot_ns + ": Publishing trajectory with " + std::to_string(gaussian.mean.poses.size()) + " poses");
+    }
+    else
+    {
+        LOG_WARN(_ego_robot_ns + ": SENDING EMPTY TRAJECTORY - no positions in MPC output!");
     }
 
     // Publish the trajectory directly to other robots
@@ -924,12 +1055,43 @@ void JulesJackalPlanner::initializeOtherRobotsAsObstacles(const std::set<std::st
 {
     for (const auto &robot_ns : other_robot_namespaces)
     {
-        data.trajectory_dynamic_obstacles.emplace(robot_ns, MPCPlanner::DynamicObstacle(extractRobotIdFromNamespace(robot_ns), radius, MPCPlanner::ObstacleType::ROBOT));
+        data.trajectory_dynamic_obstacles.emplace(robot_ns, MPCPlanner::DynamicObstacle(extractRobotIdFromNamespace(robot_ns), radius, MPCPlanner::ObstacleType::DYNAMIC));
     }
 }
 
 // 8. HELPER/UTILITY FUNCTIONS
 //    - Static functions and utility methods
+void JulesJackalPlanner::updateRobotObstaclesFromTrajectories()
+{
+    LOG_INFO(_ego_robot_ns + ": Updating robot obstacles from " + std::to_string(_data.trajectory_dynamic_obstacles.size()) + " trajectory sources");
+
+    int updated_count = 0;
+    int added_count = 0;
+
+    for (auto [ns, trajectory_obs] : _data.trajectory_dynamic_obstacles)
+    {
+        // Find and update existing robot obstacle or add new one
+        auto it = std::find_if(_data.dynamic_obstacles.begin(), _data.dynamic_obstacles.end(),
+                               [&](const auto &obs)
+                               { return obs.index == trajectory_obs.index; });
+
+        if (it != _data.dynamic_obstacles.end())
+        {
+            LOG_INFO(_ego_robot_ns + ": Updating existing obstacle for robot " + ns + " (ID: " + std::to_string(trajectory_obs.index) + ")");
+            *it = trajectory_obs;
+            updated_count++;
+        }
+        else
+        {
+            LOG_INFO(_ego_robot_ns + ": Adding new obstacle for robot " + ns + " (ID: " + std::to_string(trajectory_obs.index) + ")");
+            _data.dynamic_obstacles.push_back(trajectory_obs);
+            added_count++;
+        }
+    }
+
+    LOG_INFO(_ego_robot_ns + ": Robot obstacle update complete - Updated: " + std::to_string(updated_count) + ", Added: " + std::to_string(added_count) + ", Total obstacles: " + std::to_string(_data.dynamic_obstacles.size()));
+}
+
 std::string JulesJackalPlanner::dataToString() const
 {
     std::string result = "RealTimeData{\n";
@@ -1033,7 +1195,7 @@ void JulesJackalPlanner::buildOutputFromBrakingCommand(MPCPlanner::PlannerOutput
     // Build output when the MPC could not solve
     if (output.success)
     {
-        LOG_WARN("Creating a braking command while the MPC solve was signaled as successful");
+        LOG_WARN("Creating a braking command trajectory while the MPC solve was signaled as successful");
         return;
     }
 
@@ -1063,6 +1225,8 @@ void JulesJackalPlanner::buildOutputFromBrakingCommand(MPCPlanner::PlannerOutput
         output.trajectory.positions.push_back(predstep.position);
         output.trajectory.orientations.push_back(orientation);
     }
+
+    LOG_WARN(_ego_robot_ns << " Creating a braking command trajectory");
 }
 
 int main(int argc, char **argv)
