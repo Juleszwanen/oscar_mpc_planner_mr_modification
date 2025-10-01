@@ -1254,7 +1254,7 @@ std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> JulesJackalPlanner::g
     }
 
     LOG_DEBUG(_ego_robot_ns + ": Calling MPC solver with " + std::to_string(_data.dynamic_obstacles.size()) + " obstacles");
-    output = _planner->solveMPC(_state, _data);
+    output = _planner->solveMPC(_state, _data); // Override output 
 
     if (_enable_output && output.success)
     {
