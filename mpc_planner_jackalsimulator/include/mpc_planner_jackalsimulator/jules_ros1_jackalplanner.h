@@ -93,6 +93,12 @@ private:
     bool isPathTheSame(const nav_msgs::Path::ConstPtr &msg) const;
     double estimateYaw(const geometry_msgs::Quaternion &q) const;
 
+    // Functions structuring planning phase:
+    void handleInitialPlanningPhase();
+    void prepareObstacleData();
+    std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> generatePlanningCommand();
+    void publishCmdAndVisualize(const geometry_msgs::Twist &cmd, const MPCPlanner::PlannerOutput &output);
+
 private:
     // Core MPC types
     std::unique_ptr<MPCPlanner::Planner> _planner;
@@ -128,10 +134,9 @@ private:
     std::string _global_frame{"map"};
     std::string _ego_robot_ns;
     int _ego_robot_id{-1};
-    std::set<std::string> _other_robot_nss;         // List of namespaces of all other robots in the area excluding ego robot ns
-    std::vector<std::string> _robot_ns_list;        // List of namespaces of all robots in the area
+    std::set<std::string> _other_robot_nss;          // List of namespaces of all other robots in the area excluding ego robot ns
+    std::vector<std::string> _robot_ns_list;         // List of namespaces of all robots in the area
     bool _immediate_robot_robot_communication{true}; // This boolean can turn on and off immideate robot to robot communication, which means there is no central aggregator in between
-
 
     bool _enable_output{true};
     double _control_frequency{20.0};
@@ -139,7 +144,7 @@ private:
     double _goal_tolerance{0.5};
     bool _received_obstacle_callback_first_time{true};
     bool _planning_for_the_frist_time{true};
-    bool _first_direct_trajectory_cb_received{false};
+    bool _have_received_meaningful_trajectory_data{false};  // Track trajectory data readiness
 
     // Goal cache
     bool _goal_received{false};
