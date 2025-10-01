@@ -403,7 +403,7 @@ namespace MPCPlanner
         case 4:
             break;
         default:
-            return "Unknown exit code";
+            return "Unknown exit code; code: " + std::to_string(exitflag);
         }
 
         switch (_info.qp_status)

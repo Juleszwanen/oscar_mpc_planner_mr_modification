@@ -30,6 +30,7 @@
 #include <tf2_ros/transform_broadcaster.h>
 #include <set>
 #include <memory>
+#include <ros/console.h>
 
 namespace MPCPlanner
 {

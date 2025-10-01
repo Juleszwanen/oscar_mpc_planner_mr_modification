@@ -82,10 +82,19 @@ JulesJackalPlanner::JulesJackalPlanner(ros::NodeHandle &nh, ros::NodeHandle &pnh
 
     // LOG_INFO(_ego_robot_ns + ": CONSTRUCTOR: dynamic_obstacles size = " + std::to_string(_data.dynamic_obstacles.size()));
     LOG_DIVIDER();
+
+    // // Change logger level:
+    // if (_ego_robot_ns != "/jackal1")
+    // {
+    //     if (ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Warn))
+    //     {
+    //         ros::console::notifyLoggerLevelsChanged();
+    //     }
+    // }
 }
 JulesJackalPlanner::~JulesJackalPlanner()
 {
-    LOG_INFO("Stopped JulesJackalPlanner");
+    LOG_INFO(_ego_robot_ns + "Stopped JulesJackalPlanner");
 }
 
 // 2. ROS COMMUNICATION SETUP
@@ -1030,7 +1039,7 @@ void JulesJackalPlanner::updateRobotObstaclesFromTrajectories()
 
 std::string JulesJackalPlanner::dataToString() const
 {
-    std::string result = "RealTimeData{\n";
+    std::string result = _ego_robot_ns + " RealTimeData{\n";
 
     // Basic info
     result += "  robot_area: " + std::to_string(_data.robot_area.size()) + " discs\n";

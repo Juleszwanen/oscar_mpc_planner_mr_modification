@@ -144,11 +144,12 @@ namespace MPCPlanner
             _output.success = false;
             LOG_WARN_THROTTLE(500, "MPC failed: " + _solver->explainExitFlag(exit_flag));
             // LOG_WARN("MPC failed: " + _solver->explainExitFlag(exit_flag)); // Deze weer verwijderen jules 29-09
-            return _output;                                                 // Jules: Here we return an empty output
+            return _output; // Jules: Here we return an empty output
         }
 
         _output.success = true;
-        for (int k = 1; k < _solver->N; k++)
+        /* Juels @note Here we do from 1 and not from zero which is weird in my opinion   K WAS ORIGNIALLY 1 but now I SET IT TO 0) OCT 1*/
+        for (int k = 0; k < _solver->N; k++)
         {
             _output.trajectory.add(_solver->getOutput(k, "x"), _solver->getOutput(k, "y"));
             _output.trajectory.add_orientation(_solver->getOutput(k, "psi")); // JULES dit heb jij toegevoed om ervoor te zorgen dat we de orientatie van elke punt in de trajectory ook hebben deze hebben we later nodig voor het passen van een traject asl obstacle
