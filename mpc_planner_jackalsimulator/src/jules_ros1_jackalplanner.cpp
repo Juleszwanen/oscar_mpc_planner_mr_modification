@@ -788,14 +788,14 @@ void JulesJackalPlanner::trajectoryCallback(const mpc_planner_msgs::ObstacleGMM:
     auto it = _data.trajectory_dynamic_obstacles.find(ns);
     if (it == _data.trajectory_dynamic_obstacles.end())
     {
-        LOG_WARN(_ego_robot_ns + ": Received trajectory from " + ns + " but obstacle not initialized yet. Ignoring.");
+        LOG_WARN(_ego_robot_ns + ": Received trajectory from " + ns + " but obstacle not initialized yet. Ignoring...");
         return;
     }
 
     // Additional safety checks
     if (!msg || msg->gaussians.empty())
     {
-        LOG_WARN(_ego_robot_ns + ": Received invalid trajectory message from " + ns + ". Ignoring.");
+        LOG_WARN(_ego_robot_ns + ": Received invalid trajectory message from " + ns + ". Ignoring...");
         return;
     }
 
@@ -807,7 +807,7 @@ void JulesJackalPlanner::trajectoryCallback(const mpc_planner_msgs::ObstacleGMM:
     {
         LOG_WARN(_ego_robot_ns + ": Trajectory obstacle ID mismatch for robot " + ns +
                  " - expected ID: " + std::to_string(robot_trajectory_obstacle.index) +
-                 ", received ID: " + std::to_string(msg->id));
+                 ", received ID: " + std::to_string(msg->id) + " Ignoring...");
         return;
     }
 
@@ -823,8 +823,9 @@ void JulesJackalPlanner::trajectoryCallback(const mpc_planner_msgs::ObstacleGMM:
 
     if (!list_of_gaussians_trajectories.empty())
     {
-        // FIXED: We expect only 1 gaussian from the direct trajectory publisher
-        if (list_of_gaussians_trajectories.size() != 1)
+        
+            // FIXED: We expect only 1 gaussian from the direct trajectory publisher
+            if (list_of_gaussians_trajectories.size() != 1)
         {
             LOG_WARN(_ego_robot_ns + ": Expected 1 trajectory, got " + std::to_string(list_of_gaussians_trajectories.size()) + " from " + ns);
         }
@@ -844,10 +845,10 @@ void JulesJackalPlanner::trajectoryCallback(const mpc_planner_msgs::ObstacleGMM:
         // Fill the mode with prediction steps from the mean trajectory
         for (size_t k = 0; k < trajectory_size; ++k)
         {
-            const auto &pose = mean_trajectory.poses[k];
+            const auto &pose_obj = mean_trajectory.poses[k];
             new_mode.emplace_back(
-                Eigen::Vector2d(pose.pose.position.x, pose.pose.position.y),
-                RosTools::quaternionToAngle(pose.pose.orientation),
+                Eigen::Vector2d(pose_obj.pose.position.x, pose_obj.pose.position.y),
+                RosTools::quaternionToAngle(pose_obj.pose.orientation),
                 -1.0, // uncertainty ellipse major axis
                 -1.0  // uncertainty ellipse minor axis
             );
@@ -865,7 +866,8 @@ void JulesJackalPlanner::trajectoryCallback(const mpc_planner_msgs::ObstacleGMM:
     else
     {
         // No trajectory prediction available - use deterministic (current pose only)
-        LOG_ERROR(_ego_robot_ns + " No trajectory prediction for " + ns + ", but we received a callback");
+        LOG_ERROR(_ego_robot_ns + " No trajectory prediction for " + ns + ", but we received a callback. Ignoring....");
+        return;
     }
 
     _first_direct_trajectory_cb_received = true;
@@ -958,13 +960,13 @@ void JulesJackalPlanner::publishDirectTrajectory(MPCPlanner::PlannerOutput outpu
             auto &pose = gaussian.mean.poses.back();
             pose.pose.position.x = position(0);
             pose.pose.position.y = position(1);
-            pose.pose.position.z = k * output.trajectory.dt;
+            pose.pose.position.z = k * output.trajectory.dt; // Store the the timing of each element in the z - component for visualization in rviz
             pose.pose.orientation = RosTools::angleToQuaternion(output.trajectory.orientations.at(k));
             pose.header.stamp = ros_time + ros::Duration(k * output.trajectory.dt);
 
             // Add dummy semiaxis values for now (can be made configurable later)
-            gaussian.major_semiaxis.push_back(0.1);
-            gaussian.minor_semiaxis.push_back(0.1);
+            gaussian.major_semiaxis.push_back(-1);
+            gaussian.minor_semiaxis.push_back(-1);
 
             k++;
         }
