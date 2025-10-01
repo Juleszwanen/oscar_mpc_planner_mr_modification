@@ -1,5 +1,9 @@
 #include "mpc_planner_types/data_types.h"
 
+#include <numeric>
+#include <string>
+#include <algorithm>
+
 /** Basic high-level data types for motion planning */
 
 namespace MPCPlanner
@@ -50,10 +54,100 @@ namespace MPCPlanner
         return modes.empty() || (modes.size() > 0 && modes[0].empty());
     }
 
+    std::string Prediction::toString() const
+    {
+        std::string type_str;
+        switch (type)
+        {
+        case PredictionType::DETERMINISTIC:
+            type_str = "DETERMINISTIC";
+            break;
+        case PredictionType::GAUSSIAN:
+            type_str = "GAUSSIAN";
+            break;
+        case PredictionType::NONGAUSSIAN:
+            type_str = "NONGAUSSIAN";
+            break;
+        case PredictionType::NONE:
+            type_str = "NONE";
+            break;
+        }
+
+        std::string result = "Prediction{type:" + type_str + ", modes:" + std::to_string(modes.size()) + "[";
+
+        // Add mode information using accumulate pattern (limit to first 2 modes for brevity)
+        for (size_t m = 0; m < modes.size() && m < 2; ++m)
+        {
+            if (m > 0)
+                result += ", ";
+            result += "mode" + std::to_string(m) + ":[";
+
+            const auto &mode = modes[m];
+            result += std::accumulate(mode.begin(),
+                                      std::min(mode.end(), mode.begin() + 2), // Limit to first 2 steps
+                                      std::string(),
+                                      [](const std::string &s, const PredictionStep &step)
+                                      {
+                                          return s + (s.empty() ? "" : ",") + step.toString();
+                                      });
+            if (mode.size() > 2)
+                result += ",...(+" + std::to_string(mode.size() - 2) + ")";
+            result += "]";
+        }
+        if (modes.size() > 2)
+            result += ",...(+" + std::to_string(modes.size() - 2) + ")";
+
+        result += "], probs:[" +
+                  std::accumulate(probabilities.begin(), probabilities.end(), std::string(),
+                                  [](const std::string &s, double p)
+                                  {
+                                      return s + (s.empty() ? "" : ",") + std::to_string(p);
+                                  }) +
+                  "]}";
+        return result;
+    }
+
     DynamicObstacle::DynamicObstacle(int _index, const Eigen::Vector2d &_position, double _angle, double _radius, ObstacleType _type)
         : index(_index), position(_position), angle(_angle), radius(_radius)
     {
         type = _type;
+    }
+
+    DynamicObstacle::DynamicObstacle(int _index, double _radius, ObstacleType _type) : index(_index), radius(_radius)
+    {
+        type = _type;
+    }
+
+    void DynamicObstacle::updateDynamicObstacleState(const Eigen::Vector2d &_new_position, const double &_new_angle, Prediction _new_prediction)
+    {
+        position = _new_position;
+        angle = _new_angle;
+        prediction = _new_prediction; // I dont know if this is possible now, what kind of constructor does this call?
+    }
+
+    std::string DynamicObstacle::toString() const
+    {
+        std::string type_str;
+        switch (type)
+        {
+        case ObstacleType::STATIC:
+            type_str = "STATIC";
+            break;
+        case ObstacleType::DYNAMIC:
+            type_str = "DYNAMIC";
+            break;
+        case ObstacleType::ROBOT:
+            type_str = "ROBOT";
+            break;
+        }
+
+        return "DynamicObstacle{id:" + std::to_string(index) +
+               ", pos:[" + std::to_string(position.x()) + "," + std::to_string(position.y()) + "]" +
+               ", angle:" + std::to_string(angle) +
+               ", speed:" + std::to_string(current_speed) +
+               ", radius:" + std::to_string(radius) +
+               ", type:" + type_str +
+               ", prediction:" + prediction.toString() + "}";
     }
 
     ReferencePath::ReferencePath(int length)
@@ -98,6 +192,40 @@ namespace MPCPlanner
     void Trajectory::add_orientation(const double psi)
     {
         orientations.push_back(psi);
+    }
+
+    std::string PredictionStep::toString() const
+    {
+        return "PredictionStep{pos:[" + std::to_string(position.x()) + "," + std::to_string(position.y()) +
+               "], angle:" + std::to_string(angle) +
+               ", maj_r:" + std::to_string(major_radius) +
+               ", min_r:" + std::to_string(minor_radius) + "}";
+    }
+
+    // Jules Function to calculate the space time overlap between to trajectories, low values of result mean the smallest overlap sum.
+    double Trajectory::calcCollisionMaskGK(const Trajectory &otherTraject, double sigma)
+    {
+        // Sigma can be set to around 2x robot radius
+        const size_t n = positions.size();
+        if (n != otherTraject.positions.size())
+        {
+            return 0.0; // or throw an error depending on your design
+        }
+
+        const double sigma2 = sigma * sigma;
+        double result = 0.0;
+
+        for (size_t k = 0; k < n; ++k)
+        {
+            const Eigen::Vector2d &ego_pos = positions[k];
+            const Eigen::Vector2d &other_pos = otherTraject.positions[k];
+            const double dist2 = (ego_pos - other_pos).squaredNorm();
+
+            // Gaussian kernel contribution, weighted by Δt
+            result += std::exp(-dist2 / sigma2) * dt;
+        }
+
+        return result;
     }
 
     FixedSizeTrajectory::FixedSizeTrajectory(int size)

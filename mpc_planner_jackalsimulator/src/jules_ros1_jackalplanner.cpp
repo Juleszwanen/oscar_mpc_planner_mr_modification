@@ -1,12 +1,10 @@
 #include <mpc_planner_jackalsimulator/jules_ros1_jackalplanner.h>
 
 #include <mpc_planner/planner.h>
-
 #include <mpc_planner/data_preparation.h>
 
-#include <mpc_planner_util/load_yaml.hpp> // <-- must come first
-// using Configuration = CONFIGuration;  // <-- tiny alias for CONFIG macro
-#include <mpc_planner_util/parameters.h> // <-- CONFIG depends on the alias above
+#include <mpc_planner_util/load_yaml.hpp> // must come first
+#include <mpc_planner_util/parameters.h>
 
 #include <ros_tools/visuals.h>
 #include <ros_tools/logging.h>
@@ -17,247 +15,380 @@
 #include <std_msgs/Empty.h>
 #include <ros_tools/profiling.h>
 
-// ----------------------------------------------------------------------------
-// PURPOSE
-//   Constructor for the per-robot planner wrapper. It wires up configuration,
-//   constructs the MPC solver wrapper, connects ROS I/O, and starts the control
-//   loop timer.
-//
-// WHY THESE STEPS ARE IN THIS ORDER
-//   1) Log node identity   → useful when running multiple robots in namespaces.
-//   2) Load configuration  → the MPC planner expects CONFIG to be initialized
-//                            before the Planner object is constructed.
-//   3) Build robot footprint→ planner needs it to set collision geometry.
-//   4) Read node params     → allow per-instance overrides via private params.
-//   5) Construct Planner    → AFTER config, so it can read CONFIG safely.
-//   6) Wire ROS I/O         → subscribers/publishers with relative names.
-//   7) Start timer          → kicks off the MPC loop at the configured rate.
-//
-// ASSUMPTIONS
-//   - `ros::init` has already run (so `ros::this_node::getName()` is valid).
-//   - `SYSTEM_CONFIG_PATH(__FILE__, "settings")` resolves to your YAML.
-//   - You link against the mpc_planner libs providing Configuration/CONFIG.
-//   - Topics are relative; launch namespaces isolate multiple robots.
-//
-// SIDE EFFECTS
-//   - Starts a ROS timer; from now on `loop()` will be called periodically.
-//   - Allocates the Planner (unique_ptr) and initializes internal state.
-//
-// NOTES
-//   - Prefer fully qualified names for repo types (e.g., CONFIGuration)
-//     to avoid ambiguity since we are not using `using namespace`.
-//   - The log statement had a missing semicolon in your snippet—added below.
-// ----------------------------------------------------------------------------
+#include <numeric>
+#include <algorithm>
+
+// 1. CORE LIFECYCLE FUNCTIONS
+//    - Constructor, destructor, main entry point
+// Constructor: Initialize MPC planner with multi-robot coordination
 JulesJackalPlanner::JulesJackalPlanner(ros::NodeHandle &nh, ros::NodeHandle &pnh)
 {
-    // 1) Log which node instance is starting (includes namespace, e.g. /robot_1/planner)
-    ROS_INFO_STREAM("JULES PlannerNode: " << ros::this_node::getName() << " starting");
+    LOG_HEADER("JULES PlannerNode: " + ros::this_node::getName() + " starting");
+    _ego_robot_ns = ros::this_node::getNamespace();
+    _ego_robot_id = extractRobotIdFromNamespace(_ego_robot_ns);
 
-    // 2) Load global/config YAML before constructing the Planner.
-    //    WHY: The Planner constructor and modules may read CONFIG on creation.
-    //    NOTE: Use the fully qualified name to avoid namespace confusion.
-    //    __FILE__ is a standard c++ macro, which gives the path by which the preprocessor opend the file
-    Configuration::getInstance().initialize(
-        SYSTEM_CONFIG_PATH(__FILE__, "settings"));
+    if (!nh.getParam("/robot_ns_list", _robot_ns_list))
+    {
+        LOG_ERROR(_ego_robot_ns + ": No robot_ns_list param found");
+    }
 
-    // 3) Define robot footprint (discs) from CONFIG.
-    //    WHY: Collision modules use a disc-decomposition of the footprint.
-    const double length = CONFIG["robot"]["length"].as<double>();
-    const double width = CONFIG["robot"]["width"].as<double>();
-    const int n_discs = CONFIG["n_discs"].as<int>();
-    this->_data.robot_area = MPCPlanner::defineRobotArea(length, width, n_discs);
+    _other_robot_nss = this->identifyOtherRobotNamespaces(_robot_ns_list);
 
-    // 4) Read per-node parameters (allow launch-time overrides).
-    //    - `_global_frame` may differ per simulation/world.
-    //    - Control frequency and flags come from CONFIG by default.
-    pnh.param("frames/global", this->_global_frame, this->_global_frame); // default "map"
+    // Load configuration before constructing Planner
+    Configuration::getInstance().initialize(SYSTEM_CONFIG_PATH(__FILE__, "settings"));
+
+    // Define robot footprint from CONFIG
+    this->_data.robot_area = MPCPlanner::defineRobotArea(
+        CONFIG["robot"]["length"].as<double>(),
+        CONFIG["robot"]["width"].as<double>(),
+        CONFIG["n_discs"].as<int>());
+
     this->_control_frequency = CONFIG["control_frequency"].as<double>();
     this->_enable_output = CONFIG["enable_output"].as<bool>();
     this->_infeasible_deceleration = CONFIG["deceleration_at_infeasible"].as<double>();
-    pnh.param("goal_tolerance", this->_goal_tolerance, this->_goal_tolerance);
+    this->initializeOtherRobotsAsObstacles(_other_robot_nss, _data, CONFIG["robot_radius"].as<double>());
 
-    // 5) Construct the Planner AFTER configuration is initialized.
-    //    WHY: prevents reading an uninitialized CONFIG inside the constructor.
-    this->_planner = std::make_unique<MPCPlanner::Planner>();
-
-    // 6) Wire ROS I/O (all topics are relative → namespace-friendly).
-    //    WHY: lets you launch multiple robots under different namespaces.
-    this->initializeSubscribersAndPublishers(nh, pnh);
-    const auto node_name = ros::this_node::getNamespace().substr(1);
-    const std::string saving_name = node_name + "_planner" + ".json";
-    RosTools::Instrumentor::Get().BeginSession("mpc_planner_jackalsimulator", saving_name);
-
-    // Robot synchronization setup
+    // Read parameters
     bool wait_for_sync;
+    pnh.param("frames/global", this->_global_frame, this->_global_frame);
+    pnh.param("goal_tolerance", this->_goal_tolerance, this->_goal_tolerance);
     nh.param<bool>("/wait_for_sync", wait_for_sync, false);
 
-    ros::Duration(3).sleep(); // Rember that this blocks all callbacks of this node, but this should give the whole system and the other nodes some startup time
+    // Construct Planner after configuration is ready
+    this->_planner = std::make_unique<MPCPlanner::Planner>();
 
+    // Setup ROS I/O
+    this->initializeSubscribersAndPublishers(nh, pnh);
+
+    // Robot synchronization
+    // _reconfigure = std::make_unique<JackalsimulatorReconfigure>(); // Initialize RQT reconfigure
+
+    ros::Duration(5).sleep(); // Rember that this blocks all callbacks of this node, but this should give the whole system and the other nodes some startup timeq
+    // Give system startup time
     if (wait_for_sync)
     {
-        waitForAllRobotsReady(nh); // Pass the existing handle
+        this->waitForAllRobotsReady(nh);
     }
 
-    // 7) Start the control loop timer.
-    //    WHY: drives periodic calls to `loop()` at `_control_frequency` Hz.
-    //    Guard against zero/negative frequency by clamping to ≥1.0 Hz.
-    // Start the control loop
+    // publish the current pose of the ego robot, which the other robots can consume
+
+    // this->publishEgoPose();
+
+    // Start control loop timer
     _timer = nh.createTimer(
         ros::Duration(1.0 / CONFIG["control_frequency"].as<double>()),
-        &JulesJackalPlanner::loop,
+        &JulesJackalPlanner::loopDirectTrajectory,
         this);
 
-    // Cosmetic divider in logs to separate startup from runtime messages.
+    // LOG_INFO(_ego_robot_ns + ": CONSTRUCTOR: dynamic_obstacles size = " + std::to_string(_data.dynamic_obstacles.size()));
     LOG_DIVIDER();
 }
-
 JulesJackalPlanner::~JulesJackalPlanner()
 {
     LOG_INFO("Stopped JulesJackalPlanner");
-    RosTools::Instrumentor::Get().EndSession();
 }
 
-// ----------------------------------------------------------------------------
-// PURPOSE
-//   Wire up all ROS I/O for a single robot instance. Subscribes to state,
-//   goal, path, and obstacle topics; advertises command, pose, and an
-//   "objective reached" event.
-//
-// WHY RELATIVE TOPIC NAMES
-//   All names are RELATIVE (no leading '/'), so launching this node under
-//   different namespaces (e.g., /robot_1, /robot_2) cleanly isolates the I/O
-//   per robot without code changes.
-//
-// WHAT WE SUBSCRIBE TO
-//   - "input/state"        (nav_msgs/Odometry)       [optional, improves v]
-//   - "input/state_pose"   (geometry_msgs/PoseStamped) [required from Gazebo]
-//   - "input/goal"         (geometry_msgs/PoseStamped) [RViz or planner]
-//   - "input/reference_path" (nav_msgs/Path)         [global/local path]
-//   - "input/obstacles"    (mpc_planner_msgs/ObstacleArray) [from aggregator]
-//
-// WHAT WE PUBLISH
-//   - "output/command"     (geometry_msgs/Twist)     [to diff-drive controller]
-//   - "output/pose"        (geometry_msgs/PoseStamped) [for aggregator/RViz]
-//   - "events/objective_reached" (std_msgs/Bool)     [supervisor can act on it]
-//
-// QUEUE SIZES (WHY THESE VALUES)
-//   - State topics: 5        → small buffer, low latency
-//   - Goal/path/obstacles: 1 → keep only the latest command/reference/snapshot
-//
-// THREADING
-//   - These callbacks run in the ROS spinner thread. With a single-threaded
-//     spinner, access to `_data` overlaps safely with the timer loop in practice.
-//     If you switch to a MultiThreadedSpinner, guard `_data` with a mutex.
-//
-// NOTES
-//   - We pass `/*pnh*/` unused here; keep it if later you want private pubs.
-//   - Using `boost::bind` to match the original codebase style; `std::bind`
-//     or method pointer overloads would also work.
-// ----------------------------------------------------------------------------
+// 2. ROS COMMUNICATION SETUP
+//    - Functions that initialize publishers, subscribers, services
+// Initialize ROS communication (subscribers and publishers)
 void JulesJackalPlanner::initializeSubscribersAndPublishers(ros::NodeHandle &nh, ros::NodeHandle & /*pnh*/)
 {
-    LOG_INFO("initializeSubscribersAndPublishers");
+    LOG_INFO(_ego_robot_ns + ": initializeSubscribersAndPublishers");
 
-    // ----------------- Inputs -----------------
-
-    // Optional odometry: if present, we use it to get a better velocity estimate.
+    // Input subscribers
     _state_sub = nh.subscribe<nav_msgs::Odometry>(
         "input/state", 5,
         boost::bind(&JulesJackalPlanner::stateCallback, this, _1));
 
-    // Required ground truth pose from Gazebo (standard quaternion in orientation).
     _state_pose_sub = nh.subscribe<geometry_msgs::PoseStamped>(
         "input/state_pose", 1,
         boost::bind(&JulesJackalPlanner::statePoseCallback, this, _1));
 
-    // Goal input (typically from RViz "2D Nav Goal").
     _goal_sub = nh.subscribe<geometry_msgs::PoseStamped>(
         "input/goal", 1,
         boost::bind(&JulesJackalPlanner::goalCallback, this, _1));
 
-    // Reference path for MPCC/contouring modules (optional).
     _path_sub = nh.subscribe<nav_msgs::Path>(
         "input/reference_path", 1,
         boost::bind(&JulesJackalPlanner::pathCallback, this, _1));
 
-    // Obstacles provided by the central aggregator (other robots, pedestrians).
     _obstacles_sub = nh.subscribe<mpc_planner_msgs::ObstacleArray>(
         "input/obstacles", 1,
         boost::bind(&JulesJackalPlanner::obstacleCallback, this, _1));
 
-    // ----------------- Outputs -----------------
+    // Subscribe to other robots
+    this->subscribeToOtherRobotTopics(nh, _other_robot_nss);
 
-    // Velocity command to the robot (Twist: linear.x, angular.z).
+    // Service client for trajectory requests
+    _trajectory_client = nh.serviceClient<mpc_planner_msgs::GetOtherTrajectories>("/get_other_robot_obstacles_srv");
+
+    // Output publishers
     _cmd_pub = nh.advertise<geometry_msgs::Twist>("output/command", 1);
-
-    // Current robot pose for visualization and for the aggregator.
-    // _pose_pub = nh.advertise<geometry_msgs::PoseStamped>("output/pose", 1);
-
-    // Publish the current pose of the robot
     _pose_pub = nh.advertise<geometry_msgs::PoseStamped>("output/pose", 1);
-
-    // Publish the trajectory we are going to follow
     _trajectory_pub = nh.advertise<nav_msgs::Path>("output/current_trajectory", 1);
-
-    // Event flag which is published so a supervisor can detect per-robot completion.
+    _direct_trajectory_pub = nh.advertise<mpc_planner_msgs::ObstacleGMM>("robot_to_robot/output/current_trajectory", 1);
     _objective_pub = nh.advertise<std_msgs::Bool>("events/objective_reached", 1);
 }
+void JulesJackalPlanner::subscribeToOtherRobotTopics(ros::NodeHandle &nh, const std::set<std::string> &other_robot_namespaces)
+{
+    // Clear existing subscribers for safety
+    this->_other_robot_pose_sub_list.clear();
+    this->_other_robot_trajectory_sub_list.clear();
 
-// ----------------------------------------------------------------------------
-// PURPOSE
-//   This is the periodic control loop, triggered by a ROS timer at
-//   `_control_frequency` Hz. It prepares timing info, runs the MPC solve using
-//   the most recent `_state` and `_data` (filled by the callbacks), converts
-//   the solution into a Twist command, and publishes visualizations/events.
-//
-// WHY TIMER-DRIVEN
-//   MPC is inherently receding-horizon: solve → apply first control → advance
-//   time. A fixed-rate timer keeps latency predictable and simplifies tuning.
-//
-// DATA FLOW
-//   - `_state` and `_data` are updated asynchronously by ROS callbacks
-//     (statePose/odom, goal, path, obstacles).
-//   - Here we call `_planner->solveMPC(_state, _data)` to compute the next
-//     control sequence; then we take the first control to command the robot.
-//
-// COMMAND EXTRACTION CONVENTION
-//   Matches the original wrapper:
-//     - `u0 = w` (angular rate at stage 0)
-//     - `x1 = v` (linear speed at stage 1)
-//   Hence: `cmd.angular.z = getSolution(0,"w")`, `cmd.linear.x = getSolution(1,"v")`.
-//
-// FAIL-SAFE (BRAKING)
-//   If the solver fails (infeasible/no convergence) or output is disabled,
-//   we apply a simple braking law:
-//       v_next = max(v - decel * dt, 0)
-//   This prevents reversing and buys time for the optimizer to recover.
-//
-// VISUALIZATION / EVENTS
-//   - `publishPose()` keeps downstream consumers (aggregator, RViz) updated.
-//   - `_planner->visualize(...)` uses the repo’s built-in markers (if linked).
-//   - `visualize()` adds a heading ray for quick orientation feedback.
-//   - If `objectiveReached()`, we publish an event for a supervisor to act on.
-//
-// THREADING
-//   - With a single-threaded spinner, callbacks and this loop are serialized.
-//   - If you switch to a MultiThreadedSpinner, guard shared `_data` with a mutex.
-//
-// NOTES
-//   - `planning_start_time` is set for instrumentation/profiling inside the
-//     planner modules.
-//   - The unused timer event is intentionally omitted (`/*event*/`) to silence
-//     warnings without extra code.
-// ----------------------------------------------------------------------------
+    // Reserve space for efficiency
+    this->_other_robot_pose_sub_list.reserve(other_robot_namespaces.size());
+    this->_other_robot_trajectory_sub_list.reserve(other_robot_namespaces.size());
+
+    // Create subscribers for each robot's pose and trajectory topics
+    for (const auto &ns : other_robot_namespaces)
+    {
+        // Subscribe to robot pose updates
+        const std::string topic_pose = ns + "/robot_to_robot/output/pose";
+        LOG_INFO(_ego_robot_ns + " is subscribing to: " + topic_pose);
+        auto sub_pose_i = nh.subscribe<geometry_msgs::PoseStamped>(topic_pose, 1,
+                                                                   boost::bind(&JulesJackalPlanner::poseOtherRobotCallback, this, _1, ns));
+        this->_other_robot_pose_sub_list.push_back(sub_pose_i);
+
+        // Subscribe to robot trajectory predictions
+        const std::string topic_trajectory = ns + "/robot_to_robot/output/current_trajectory";
+        LOG_INFO(_ego_robot_ns + " is subscribing to: " + topic_trajectory);
+        auto sub_traject_i = nh.subscribe<mpc_planner_msgs::ObstacleGMM>(topic_trajectory, 1,
+                                                                         boost::bind(&JulesJackalPlanner::trajectoryCallback, this, _1, ns));
+        this->_other_robot_trajectory_sub_list.push_back(sub_traject_i);
+    }
+}
+
+// 3. MAIN CONTROL LOOP FUNCTIONS
 void JulesJackalPlanner::loop(const ros::TimerEvent & /*event*/)
 {
-    const auto ns = ros::this_node::getNamespace();
-    const std::string profiling_name = ns + "_" + "planningLoop";
+    LOG_DEBUG(_ego_robot_ns + "============= Loop =============");
+    LOG_DEBUG(_ego_robot_ns + ": LOOP: dynamic_obstacles size = " + std::to_string(_data.dynamic_obstacles.size()));
+    LOG_DEBUG(_ego_robot_ns + ": LOOP: trajectory_dynamic_obstacle size = " + std::to_string(_data.trajectory_dynamic_obstacles.size()));
+
+    if (_planning_for_the_frist_time)
+    {
+        // LOG_HEADER(_ego_robot_ns + ": Planning for the first time");
+        LOG_INFO(_ego_robot_ns + ": State x: " + std::to_string(_state.get("x")));
+        LOG_INFO(_ego_robot_ns + ": State y: " + std::to_string(_state.get("y")));
+        LOG_INFO(_ego_robot_ns + ": State psi[radians]: " + std::to_string(_state.get("psi")));
+        applyDummyObstacleCommand();
+        _planning_for_the_frist_time = false;
+        this->logDataState(_ego_robot_ns + ": Planning for the first time");
+        return;
+    }
+
+    _data.planning_start_time = std::chrono::system_clock::now();
+
+    _planner->visualizeObstaclePredictionsPlanner(_state, _data, true);
+
+    if (CONFIG["debug_output"].as<bool>())
+        _state.print();
+
+    geometry_msgs::Twist cmd;
+
+    // Goal reached - apply braking
+    if (!_goal_reached && this->objectiveReached(_state, _data))
+    {
+        applyBrakingCommand(cmd);
+        _goal_reached = true;
+        publishObjectiveReachedEvent();
+        const auto message = ros::this_node::getNamespace().substr(1) + " Goal reached - applying braking";
+        LOG_INFO(message);
+    }
+
+    // Maintain stopped state at goal
+    else if (_goal_reached)
+    {
+        cmd.linear.x = 0.0;
+        cmd.angular.z = 0.0;
+        const auto message = ros::this_node::getNamespace().substr(1) + " Maintaining stopped state at goal";
+        LOG_DEBUG(message);
+    }
+    // Normal MPC operation
+    else
+    {
+        if (!_data.dynamic_obstacles.size())
+        {
+            LOG_WARN(_ego_robot_ns + ": PLANNING WITH EMPTY OBSTACLEs");
+        }
+
+        auto output = _planner->solveMPC(_state, _data);
+        LOG_MARK("Success: " << output.success);
+
+        if (_enable_output && output.success)
+        {
+            cmd.linear.x = _planner->getSolution(1, "v");
+            cmd.angular.z = _planner->getSolution(0, "w");
+            LOG_VALUE_DEBUG("Commanded v", cmd.linear.x);
+            LOG_VALUE_DEBUG("Commanded w", cmd.angular.z);
+        }
+        else
+        {
+            applyBrakingCommand(cmd);
+            buildOutputFromBrakingCommand(output, cmd); // Fills in the output object with a braking trajectory
+            LOG_WARN(_ego_robot_ns + ": Solver failed or output disabled - applying braking");
+        }
+
+        this->publishCurrentTrajectory(output);
+        this->publishDirectTrajectory(output);
+    }
+
+    // Publish the velocity command to the robot’s differential drive.
+    _cmd_pub.publish(cmd);
+
+    // Keep downstream consumers updated with our current pose (for RViz/aggregator).
+    // this->publishPose();
+
+    // Built-in planner visuals (predicted trajectory, footprints, etc.), if available.
+    // Jules Important this always visualizes the trajectory of the other robot in the previous time step.
+    // Could consider visualizing obstacles when the obstacle callback is triggered.
+    // Check if the dynamicObstaclepredictions visualization in the function is turned on or off
+    _planner->visualize(_state, _data);
+
+    // Quick heading ray for sanity checking.
+    visualize();
+
+    LOG_DEBUG(_ego_robot_ns + ": ============= End Loop =============");
+}
+void JulesJackalPlanner::loopDirectTrajectory(const ros::TimerEvent & /*event*/)
+{
+    LOG_DEBUG(_ego_robot_ns + "============= Loop Start =============");
+    LOG_DEBUG(_ego_robot_ns + ": Obstacles: dynamic=" + std::to_string(_data.dynamic_obstacles.size()) +
+              ", trajectory=" + std::to_string(_data.trajectory_dynamic_obstacles.size()));
+
+    if (_planning_for_the_frist_time)
+    {
+        LOG_INFO(_ego_robot_ns + ": INITIAL PLANNING - State: [" +
+                 std::to_string(_state.get("x")) + ", " +
+                 std::to_string(_state.get("y")) + ", " +
+                 std::to_string(_state.get("psi")) + "]");
+        LOG_INFO(_ego_robot_ns + ": Waiting for trajectory callbacks, applying dummy command");
+
+        applyDummyObstacleCommand();
+        _planning_for_the_frist_time = false;
+        this->logDataState(_ego_robot_ns + ": Initial planning complete");
+        LOG_INFO(_ego_robot_ns + ": ============= End INITIAL Loop =============");
+        return;
+    }
+
+    _data.planning_start_time = std::chrono::system_clock::now();
+
+    // Update existing robot obstacles in place - more efficient than clearing and rebuilding
+    LOG_DEBUG(_ego_robot_ns + ": Updating robot obstacles from trajectories...");
+    updateRobotObstaclesFromTrajectories();
+
+    LOG_DEBUG(_ego_robot_ns + ": Ensuring obstacle size and notifying planner...");
+    MPCPlanner::ensureObstacleSize(_data.dynamic_obstacles, _state);
+    this->logDataState(_ego_robot_ns + ": Initial planning complete");
+    _planner->onDataReceived(_data, "dynamic obstacles");
+
+    // _planner->visualizeObstaclePredictionsPlanner(_state, _data, true);
+
+    if (CONFIG["debug_output"].as<bool>())
+        _state.print();
+
+    geometry_msgs::Twist cmd;
+
+    // Goal reached - apply braking
+    if (!_goal_reached && this->objectiveReached(_state, _data))
+    {
+        applyBrakingCommand(cmd);
+        _goal_reached = true;
+        publishObjectiveReachedEvent();
+        LOG_INFO(_ego_robot_ns + ": GOAL REACHED - Applying braking command");
+    }
+
+    // Maintain stopped state at goal
+    else if (_goal_reached)
+    {
+        cmd.linear.x = 0.0;
+        cmd.angular.z = 0.0;
+        LOG_DEBUG(_ego_robot_ns + ": Maintaining stopped state at goal");
+    }
+    // Normal MPC operation
+    else
+    {
+        if (_data.dynamic_obstacles.empty())
+        {
+            LOG_WARN(_ego_robot_ns + ": No dynamic obstacles - planning in free space");
+        }
+
+        LOG_DEBUG(_ego_robot_ns + ": Calling MPC solver with " + std::to_string(_data.dynamic_obstacles.size()) + " obstacles");
+        auto output = _planner->solveMPC(_state, _data);
+
+        if (output.success)
+        {
+            LOG_DEBUG(_ego_robot_ns + ": MPC solver SUCCESS");
+        }
+        else
+        {
+            LOG_WARN(_ego_robot_ns + ": MPC solver FAILED");
+        }
+
+        if (_enable_output && output.success)
+        {
+            cmd.linear.x = _planner->getSolution(1, "v");
+            cmd.angular.z = _planner->getSolution(0, "w");
+            LOG_VALUE_DEBUG("Commanded", "v=" + std::to_string(cmd.linear.x) + ", w=" + std::to_string(cmd.angular.z));
+        }
+        else
+        {
+            applyBrakingCommand(cmd);
+            buildOutputFromBrakingCommand(output, cmd);
+            LOG_WARN(_ego_robot_ns + ": Applying braking command - solver failed or output disabled");
+        }
+
+        // Publish trajectory for robot-to-robot communication
+        this->publishDirectTrajectory(output);
+    }
+
+    // Publish the velocity command to the robot’s differential drive.
+    _cmd_pub.publish(cmd);
+
+    // Keep downstream consumers updated with our current pose (for RViz/aggregator).
+    // this->publishPose();
+
+    // Built-in planner visuals (predicted trajectory, footprints, etc.), if available.
+    _planner->visualize(_state, _data);
+
+    // Quick heading ray for sanity checking.
+    visualize();
+
+    LOG_DEBUG(_ego_robot_ns + ": ============= Loop End =============");
+}
+void JulesJackalPlanner::loopWithService(const ros::TimerEvent & /*event*/)
+{
+    LOG_DEBUG("loopWithService: dynamic_obstacles size = " + std::to_string(_data.dynamic_obstacles.size()));
+
+    const std::string profiling_name = _ego_robot_ns + "_" + "planningLoop";
     PROFILE_SCOPE(profiling_name.c_str());
 
     // Timestamp the beginning of this planning cycle (used by internal profiling).
+    // _planner->visualizeObstaclePredictionsPlanner(_state, _data);
     _data.planning_start_time = std::chrono::system_clock::now();
 
-    LOG_DEBUG(ns + "============= Loop =============");
+    mpc_planner_msgs::GetOtherTrajectories srv;
+    // Call the client and ask for all the trajectories of the other robots except the one of the ego robot.
+    srv.request.request_header = std_msgs::Header();
+    srv.request.requesting_robot_id = _ego_robot_ns;
+    srv.request.requesting_robot_pose = geometry_msgs::Pose();
+    if (_trajectory_client.call(srv))
+    {
+        // fills in the correct member data
+        this->obstacleServiceCallback(srv.response.obstacle_trajectories);
+    }
+
+    else
+    {
+        LOG_ERROR(_ego_robot_ns + "Failed to call the GetOtherTrajectoriesSerivice");
+    }
+
+    LOG_DEBUG(_ego_robot_ns + "============= loopWithService =============");
+
+    if (_data.dynamic_obstacles.empty())
+    {
+        LOG_DEBUG("EMPTY OBSTACLE");
+    }
 
     // Optional verbose state print for debugging if enabled in config.
     if (CONFIG["debug_output"].as<bool>())
@@ -312,17 +443,83 @@ void JulesJackalPlanner::loop(const ros::TimerEvent & /*event*/)
     _cmd_pub.publish(cmd);
 
     // Keep downstream consumers updated with our current pose (for RViz/aggregator).
-    this->publishPose();
+    // this->publishPose();
 
     // Built-in planner visuals (predicted trajectory, footprints, etc.), if available.
+    // Jules Important this always visualizes the trajectory of the other robot in the previous time step.
+    // Could consider visualizing obstacles when the obstacle callback is triggered.
+    _planner->visualize(_state, _data);
+
+    // Quick heading ray for sanity checking.
+    // visualize();
+
+    LOG_DEBUG(_ego_robot_ns + "============= End loopWithService =============");
+}
+void JulesJackalPlanner::applyDummyObstacleCommand()
+{
+
+    geometry_msgs::Twist cmd;
+
+    // Normal operation - run solver
+
+    if (!_data.dynamic_obstacles.size())
+    {
+        LOG_WARN(_ego_robot_ns + ": PLANNING WITH EMPTY OBSTACLEs, INSERTING DUMMY ...");
+        MPCPlanner::ensureObstacleSize(_data.dynamic_obstacles, _state);
+        LOG_WARN(_ego_robot_ns + ": PLANNING WITH Dummy obstacles");
+    }
+
+    // Run the MPC using the latest state & data assembled by the callbacks.
+    auto output = _planner->solveMPC(_state, _data);
+    LOG_MARK("Success: " << output.success);
+
+    if (_enable_output && output.success)
+    {
+        // Extract the first applicable controls from the solution
+        cmd.linear.x = _planner->getSolution(1, "v");
+        cmd.angular.z = _planner->getSolution(0, "w");
+        LOG_VALUE_DEBUG("Commanded v", cmd.linear.x);
+        LOG_VALUE_DEBUG("Commanded w", cmd.angular.z);
+    }
+    else
+    {
+        // Fail-safe braking if solver failed or output disabled
+        applyBrakingCommand(cmd);
+        buildOutputFromBrakingCommand(output, cmd);
+        LOG_WARN(_ego_robot_ns + ": Solver failed or output disabled - applying braking");
+    }
+
+    // Publish tra_outputjectory only during normal operation
+    // this->publishCurrentTrajectory(output);
+    this->publishDirectTrajectory(output);
+    // Publish the velocity command to the robot’s differential drive.
+    _cmd_pub.publish(cmd);
+
+    // Keep downstream consumers updated with our current pose (for RViz/aggregator).
+    // this->publishPose();
+
+    // Built-in planner visuals (predicted trajectory, footprints, etc.), if available.
+    // Jules Important this always visualizes the trajectory of the other robot in the previous time step.
+    // Could consider visualizing obstacles when the obstacle callback is triggered.
     _planner->visualize(_state, _data);
 
     // Quick heading ray for sanity checking.
     visualize();
+    _data.dynamic_obstacles.clear();
+}
+void JulesJackalPlanner::applyBrakingCommand(geometry_msgs::Twist &cmd)
+{
+    double deceleration = CONFIG["deceleration_at_infeasible"].as<double>();
+    double dt = 1. / CONFIG["control_frequency"].as<double>();
+    double velocity = _state.get("v");
+    double velocity_after_braking = velocity - deceleration * dt;
 
-    LOG_DEBUG(ns + "============= End Loop =============");
+    cmd.linear.x = std::max(velocity_after_braking, 0.0); // Don't drive backwards
+    cmd.angular.z = 0.0;
 }
 
+// 4. ROS CALLBACK FUNCTIONS
+//    - All subscriber callbacks grouped by data type
 void JulesJackalPlanner::stateCallback(const nav_msgs::Odometry::ConstPtr &msg)
 {
     _state.set("x", msg->pose.pose.position.x);
@@ -333,59 +530,13 @@ void JulesJackalPlanner::stateCallback(const nav_msgs::Odometry::ConstPtr &msg)
     const double vy = msg->twist.twist.linear.y;
     _state.set("v", std::hypot(vx, vy));
 
-    // simple flip check (same spirit as original)
+    // Flip detection
     if (std::abs(msg->pose.pose.orientation.x) > (M_PI / 8.) ||
         std::abs(msg->pose.pose.orientation.y) > (M_PI / 8.))
     {
         LOG_WARN("Detected flipped robot (odom).");
-        // JULES normaly there was below, this should perhaps be fixed
-        /*
-        LOG_WARN("Detected flipped robot. Resetting.");
-        reset(false); // Reset without success
-        */
     }
 }
-
-// ----------------------------------------------------------------------------
-// PURPOSE
-//   Ingest a ground-truth robot state from a PoseStamped and write it into the
-//   planner’s internal `_state` (x, y, psi, v).
-//
-// IMPORTANT FORMAT NOTE (ENCODED POSE):
-//   This callback assumes a **non-standard / encoded** PoseStamped where:
-//     - yaw (psi) is stored directly in `pose.orientation.z`  (NOT a quaternion)
-//     - linear speed v is stored in `pose.position.z`
-//   This is the convention used by the repo’s `mobile_robot_state_publisher`.
-//   It differs from Gazebo’s standard where orientation is a proper quaternion
-//   and velocity is not in Pose at all.
-//
-// WHY THIS EXISTS
-//   It provides a very light-weight path to feed the MPC with position, yaw,
-//   and speed without subscribing to Odometry. The encoding collapses multiple
-//   signals into a single PoseStamped for convenience.
-//
-// FLIP DETECTION & RESET
-//   The check on `orientation.x` and `.y` is intended to catch large roll/pitch
-//   (robot flipped). If detected, it calls `reset(false)` to trigger a sim reset.
-//   ⚠ In the encoded format, `orientation.x/y` are typically zero, so this check
-//     is only meaningful if a real quaternion is being sent.
-//   ⚠ In a multi-robot architecture, a **Supervisor** node should handle resets;
-//     this callback should at most publish an event (e.g., `events/request_reset`).
-//
-// ASSUMPTIONS
-//   - 2D planar navigation; only x,y,psi,v are used.
-//   - The frame of `msg` matches the planner’s global frame (e.g., "map").
-//   - Upstream has already encoded psi and v into the PoseStamped as described.
-//
-// SIDE EFFECTS
-//   - Mutates `_state`.
-//   - May call `reset(false)` which can reset the *entire* sim (heavy-handed).
-//
-// EXTENSIONS
-//   - Add a parameter (e.g., `state_pose/use_encoded`) to toggle between this
-//     encoded behavior and a standard-quaternion handler.
-//   - Replace the direct `reset(false)` with publishing an event for a Supervisor.
-// ----------------------------------------------------------------------------
 void JulesJackalPlanner::statePoseCallback(const geometry_msgs::PoseStamped::ConstPtr &msg)
 {
     // Write planar pose directly from the encoded message fields.
@@ -410,258 +561,57 @@ void JulesJackalPlanner::statePoseCallback(const geometry_msgs::PoseStamped::Con
         // reset(false); // Reset without success
     }
 }
-
-// ----------------------------------------------------------------------------
-// PURPOSE
-//   Handle a new 2D navigation goal for this robot.
-//   This callback is typically fed by RViz's "2D Nav Goal" tool or any node
-//   that publishes a geometry_msgs::PoseStamped on "input/goal".
-//
-// WHY THIS EXISTS
-//   The MPC planner reads the goal from `_data.goal` at each solve cycle.
-//   We also keep a local copy `_goal_xy` so the wrapper can detect when the
-//   robot has reached the goal (objectiveReached) and publish an event.
-//
-// ASSUMPTIONS
-//   - We navigate in the XY plane; only position.x/.y are used.
-//   - Orientation in the message is ignored here (heading goals can be added later).
-//   - The goal is expressed in the same frame as `_global_frame` (often "map").
-//     If not, you should transform it before writing into `_data.goal`.
-//
-// SIDE EFFECTS
-//   - Sets `_data.goal` and flags to activate goal-related modules in the MPC.
-//   - Sets `_goal_xy` and `_goal_received` so `objectiveReached()` can work.
-//   - Does NOT reset or change world state (that’s the supervisor’s job).
-//
-// THREADING / TIMING
-//   - Runs in the ROS callback thread. It only writes simple fields; no locking
-//     is needed under the typical single-threaded spinner.
-//
-// OPTIONAL BEHAVIOR
-//   - If you want modules to react immediately, you can call:
-//       _planner->onDataReceived(_data, "goal");
-//     We keep behavior consistent with the original by not doing that here.
-// ----------------------------------------------------------------------------
 void JulesJackalPlanner::goalCallback(const geometry_msgs::PoseStamped::ConstPtr &msg)
 {
-    LOG_DEBUG("Goal callback"); // why: traceability in logs during testing
+    LOG_DEBUG("Goal callback");
 
-    // Why: the MPC library expects the current goal in `_data.goal` (x,y).
     _data.goal(0) = msg->pose.position.x;
     _data.goal(1) = msg->pose.position.y;
-
-    // Why: cached Eigen vector lets `objectiveReached()` do a fast distance check
-    // without touching `_data` every time.
     _goal_xy = Eigen::Vector2d(_data.goal(0), _data.goal(1));
 
-    // Why: these flags tell (a) the planner library that a goal is active,
-    // and (b) this wrapper that it should evaluate goal completion.
     _data.goal_received = true;
     _goal_received = true;
-
-    // Optional immediate notification to planner modules:
-    // _planner->onDataReceived(_data, "goal");
 }
-
-// ----------------------------------------------------------------------------
-// PURPOSE
-//   Fast check to avoid re-processing the reference path if the incoming path
-//   is (effectively) the same as the one we already have in `_data.reference_path`.
-//   If it’s the same, the caller can simply return without clearing/reloading
-//   the path or notifying planner modules.
-//
-// WHY THIS EXISTS
-//   Rebuilding the reference path and notifying modules (e.g., contouring/MPCC)
-//   can trigger extra work, solver parameter updates, and visualization churn.
-//   A cheap equality check prevents unnecessary planner disturbances.
-//
-// STRATEGY
-//   1) Compare path lengths. If different, we assume the path changed.
-//   2) Compare up to the first two points using `pointInPath(...)`, which
-//      encapsulates the planner’s notion of “same point” (usually with a
-//      tolerance). Two points are usually enough to detect changes while
-//      keeping this O(1) time.
-//
-// ASSUMPTIONS
-//   - Order of poses in the path is consistent (same publisher behavior).
-//   - `pointInPath(i, x, y)` implements an appropriate tolerance for small
-//     numerical differences; otherwise, tiny noise may make paths look “new”.
-//   - Orientation along the path is not considered here; only (x, y) matter.
-//   - Using only the first 1–2 points is sufficient to detect practical changes
-//     in most scenarios. If your upstream planner sometimes changes later
-//     segments while keeping the start identical, consider checking the last
-//     point too.
-//
-// EDGE CASES
-//   - If both paths are empty (size==0), this returns true (treat as unchanged).
-//   - If the incoming path has fewer than 2 points, we compare only what exists.
-//   - If you need stricter checks, you can extend this to compare the last
-//     point or a hash/stamp of the path.
-//
-// THREADING
-//   - Read-only access to `_data` in a const method. Safe under single-threaded
-//     spinning. In a multi-threaded spinner, guard `_data` with a mutex.
-//
-// COMPLEXITY
-//   - O(1) time and O(1) memory (vs O(N) for full path comparison).
-// ----------------------------------------------------------------------------
-bool JulesJackalPlanner::isPathTheSame(const nav_msgs::Path::ConstPtr &msg) const
-{
-    // Quick reject: if lengths differ, treat as different.
-    if (_data.reference_path.x.size() != msg->poses.size())
-        return false;
-
-    // Compare only the first few points for speed/stability.
-    const int num_points = std::min(2, static_cast<int>(_data.reference_path.x.size()));
-    for (int i = 0; i < num_points; ++i)
-    {
-        // `pointInPath(i, x, y)` should apply the planner’s internal tolerance.
-        if (!_data.reference_path.pointInPath(
-                i,
-                msg->poses[i].pose.position.x,
-                msg->poses[i].pose.position.y))
-        {
-            return false; // diverges early → treat as a new path
-        }
-    }
-
-    // Same length and first points match within tolerance → consider unchanged.
-    return true;
-}
-
-// ----------------------------------------------------------------------------
-// PURPOSE
-//   Ingest a new reference path (global or local) for the MPC to track.
-//   The path typically comes from a global planner or a pre-baked route and
-//   is published as `nav_msgs/Path` on "input/reference_path".
-//
-// WHY THIS EXISTS
-//   Several MPC modules (e.g., MPCC / contouring) rely on `_data.reference_path`
-//   to bias the optimizer toward the lane/route. Updating this structure and
-//   notifying the planner lets those modules refresh their internal parameters.
-//
-// FAST-PATH GUARD
-//   We first call `isPathTheSame(msg)` to avoid unnecessary work when the path
-//   hasn't changed (prevents churn in solver parameters and visuals).
-//
-// WHAT WE STORE
-//   - Only the XY positions are copied into `_data.reference_path.x/.y`.
-//   - We push a single `0.0` into `.psi` to satisfy modules that expect the
-//     field to be non-empty. Orientation along the path is either computed
-//     internally by the planner or not required for the chosen cost modules.
-//
-// ASSUMPTIONS
-//   - Path poses are expressed in the same frame used by the planner
-//     (typically `_global_frame`, e.g., "map"). If not, transform beforehand.
-//   - Z and quaternion in the incoming path are ignored here (2D planning).
-//   - If your modules require per-point tangent angles/curvature, provide them
-//     in a separate preprocessing step or extend this callback to fill `.psi`.
-//
-// SIDE EFFECTS
-//   - `_data.reference_path` is cleared and repopulated.
-//   - `_planner->onDataReceived(..., "reference_path")` notifies modules that
-//     depend on the reference path so they can update solver parameters.
-//
-// THREADING
-//   - Runs in the ROS callback thread. `_data` is mutated here and read in the
-//     timer loop; with a single-threaded spinner this is fine. In a multi-
-//     threaded spinner, add a mutex around `_data` access.
-//
-// EXTENSIONS
-//   - You may resample/smooth the path here to enforce a fixed spacing.
-//   - You may store arc-length (s) to support curvature-aware weights.
-// ----------------------------------------------------------------------------
 void JulesJackalPlanner::pathCallback(const nav_msgs::Path::ConstPtr &msg)
 {
     LOG_DEBUG("Path callback");
 
-    // Early exit to avoid reconfiguring the planner if the path hasn't changed.
     if (isPathTheSame(msg))
         return;
 
-    // Reset the stored reference path (clears x, y, psi, ...).
     _data.reference_path.clear();
 
-    // Copy XY waypoints from the incoming path.
     for (const auto &pose : msg->poses)
     {
         _data.reference_path.x.push_back(pose.pose.position.x);
         _data.reference_path.y.push_back(pose.pose.position.y);
     }
 
-    // Ensure psi has at least one element to satisfy modules that check it.
-    // (Planner may compute headings internally if needed.)
     _data.reference_path.psi.push_back(0.0);
-
-    // Notify planner modules that depend on the reference path (e.g., MPCC).
     _planner->onDataReceived(_data, "reference_path");
 }
-
-// ----------------------------------------------------------------------------
-// PURPOSE
-//   Convert an incoming set of dynamic obstacles (robots, pedestrians, etc.)
-//   into the planner’s internal format and notify MPC modules that rely on
-//   obstacle data (hard/soft collision avoidance, chance constraints, …).
-//
-// WHY THIS EXISTS
-//   The planner optimizes over a prediction horizon. For collision avoidance
-//   it needs, at each horizon step, either:
-//     - current obstacle poses only (deterministic, no prediction), or
-//     - predicted obstacle poses with uncertainty (Gaussian ellipses).
-//   This callback bridges the ROS message (`ObstacleArray`) to the MPC’s
-//   `_data.dynamic_obstacles` representation.
-//
-// DATA FLOW
-//   - Central aggregator publishes `mpc_planner_msgs/ObstacleArray` on
-//     "input/obstacles" per robot namespace.
-//   - Here we clear the previous set, parse each obstacle, and (optionally)
-//     attach a single-mode Gaussian prediction over the horizon.
-//   - We pad/truncate to the configured maximum number of obstacles so the
-//     solver has a fixed-size parameter vector.
-//   - Finally we notify modules via `_planner->onDataReceived(..., "dynamic obstacles")`.
-//
-// ASSUMPTIONS
-//   - Poses are expressed in the same global frame the planner uses (e.g., "map").
-//   - If `probabilities` is non-empty and `gaussians.size()==1`, we treat the
-//     obstacle as having one Gaussian prediction “mode” defined across the
-//     solver horizon (positions + ellipse semiaxes per step).
-//   - Multi-modal predictions (gaussians.size()>1) are not handled here; they
-//     can be added later with a scenario-based extension.
-//   - Orientation is used if your collision model depends on it; otherwise it
-//     can be ignored by the underlying module.
-//
-// EDGE CASES & SAFETY
-//   - If no prediction is provided, we mark the obstacle as DETERMINISTIC (i.e.,
-//     only current pose). Downstream modules may extrapolate or enforce static
-//     separation at each step.
-//   - If the last semiaxis is zero OR probabilistic mode is disabled in CONFIG,
-//     we degrade to DETERMINISTIC to avoid fake uncertainty.
-//   - `ensureObstacleSize(...)` pads/truncates to a fixed count (adds dummies)
-//     to keep solver dimensions constant.
-//   - Optional `propagatePredictionUncertainty(...)` can inflate ellipses across
-//     time to reflect growing uncertainty.
-//
-// PERFORMANCE
-//   - Linear in number of obstacles and horizon steps; runs in the ROS callback
-//     thread. Keep the aggregator’s obstacle count reasonable.
-//
-// THREADING
-//   - Mutates `_data.dynamic_obstacles` while the timer loop reads it. Under a
-//     single-threaded spinner (default), this is fine. With multi-threaded
-//     spinners, guard `_data` with a mutex.
-//
-// EXTENSIONS
-//   - Map other robots to distinct IDs, set radii per-type, or filter by range.
-//   - Add support for multi-modal predictions by creating multiple `modes` and
-//     enabling a scenario approach in the planner.
-// ----------------------------------------------------------------------------
 void JulesJackalPlanner::obstacleCallback(const mpc_planner_msgs::ObstacleArray::ConstPtr &msg)
 {
     // Start fresh each message; the solver expects the latest snapshot.
-    const auto ns = ros::this_node::getNamespace();
-    const std::string profiling_name = ns + "_" + "ObstacleCallback";
+    // In obstacleCallback at the very start:
+    if (_planning_for_the_frist_time)
+    {
+        LOG_WARN(_ego_robot_ns + ": ObstacleCallback came too early Abording this call");
+        return;
+    }
+
+    if (_received_obstacle_callback_first_time)
+    {
+        LOG_HEADER(_ego_robot_ns + ": ObstacleCallback running correctly for the first time");
+        _received_obstacle_callback_first_time = false;
+    }
+
+    LOG_DEBUG("OBSTACLE_CALLBACK: received " + std::to_string(msg->obstacles.size()) + " obstacles");
+
+    const std::string profiling_name = _ego_robot_ns + "_" + "ObstacleCallback";
     PROFILE_SCOPE(profiling_name.c_str());
-    LOG_DEBUG(profiling_name);
+    // LOG_DEBUG(profiling_name);
+
     _data.dynamic_obstacles.clear();
 
     for (const auto &obstacle : msg->obstacles)
@@ -726,137 +676,311 @@ void JulesJackalPlanner::obstacleCallback(const mpc_planner_msgs::ObstacleArray:
     // data is available so they can refresh solver params before the next solve.
     _planner->onDataReceived(_data, "dynamic obstacles");
 }
+void JulesJackalPlanner::obstacleServiceCallback(const mpc_planner_msgs::ObstacleArray &msg)
+{
+    // Start fresh each message; the solver expects the latest snapshot.
+    // In obstacleCallback at the very start:
+    LOG_DEBUG("OBSTACLE_CALLBACK: received " + std::to_string(msg.obstacles.size()) + " obstacles");
+    const auto ns = ros::this_node::getNamespace();
+    const std::string profiling_name = ns + "_" + "ObstacleCallback";
+    PROFILE_SCOPE(profiling_name.c_str());
+    LOG_DEBUG(profiling_name);
 
-// ----------------------------------------------------------------------------
-// PURPOSE
-//   Publish the robot’s current pose (x, y, yaw) as a `geometry_msgs/PoseStamped`
-//   on "output/pose". Other nodes (e.g., the central aggregator, RViz) consume
-//   this to visualize the robot and to model it as a dynamic obstacle.
-//
-// WHY THIS EXISTS
-//   In a multi-robot setup we decoupled obstacle creation from the planner.
-//   Each robot publishes its own pose; the aggregator subscribes to every
-//   robot’s "output/pose" and builds per-robot `ObstacleArray`s for
-//   "input/obstacles". Keeping this publisher here makes the planner wrapper
-//   self-contained and easy to reuse.
-//
-// WHAT IT PUBLISHES
-//   - `header.stamp`: now, so downstream consumers can measure freshness.
-//   - `header.frame_id`: `_global_frame` (e.g., "map") so poses are comparable
-//     across robots and with obstacle data.
-//   - `pose.position.x/y`: taken from the planner’s internal `_state` (meters).
-//   - `pose.orientation`: quaternion built from `_state("psi")` (yaw-only).
-//     Z-up planar assumption; roll/pitch = 0.
-//
-// ASSUMPTIONS
-//   - `_state` is up to date when this is called (either after a state callback
-//     or within the control loop).
-//   - 2D navigation: z is unused and left at 0 by omission.
-//   - `_global_frame` matches the frame used by your aggregator and RViz.
-//
-// SIDE EFFECTS
-//   - None beyond publishing. No world resets, no parameter changes.
-//
-// TIMING
-//   - Safe to call at the control loop rate and/or right after state updates.
-//     If both, downstream consumers will simply receive more recent poses.
-//
-// EXTENSIONS
-//   - If you need velocity available to other nodes, you could add it as a
-//     separate topic (e.g., "output/twist") rather than encoding it into pose.
-//   - If frames can differ, consider TF-based transforms before publishing.
-// ----------------------------------------------------------------------------
-void JulesJackalPlanner::publishPose()
+    _data.dynamic_obstacles.clear();
+
+    for (const auto &obstacle : msg.obstacles)
+    {
+        // Create a new dynamic obstacle with:
+        //  - id:      stable identifier from upstream (aggregator/ped sim)
+        //  - pos:     current xy position
+        //  - yaw:     orientation (used by some footprint models)
+        //  - radius:  planner-wide default unless you encode per-obstacle sizes
+        _data.dynamic_obstacles.emplace_back(
+            obstacle.id,
+            Eigen::Vector2d(obstacle.pose.position.x, obstacle.pose.position.y),
+            RosTools::quaternionToAngle(obstacle.pose),
+            CONFIG["obstacle_radius"].as<double>());
+
+        auto &dyn = _data.dynamic_obstacles.back(); // ret
+
+        // Single-mode Gaussian predictions if provided; otherwise deterministic.
+        // We treat "has probabilities AND exactly one gaussian" as "one-mode"
+        // and fill per-step means + ellipse semiaxes. The actual probability
+        // values are not used here; they are interpreted downstream.
+        if (!obstacle.probabilities.empty() && obstacle.gaussians.size() == 1)
+        {
+            dyn.prediction = MPCPlanner::Prediction(MPCPlanner::PredictionType::GAUSSIAN);
+
+            const auto &mode = obstacle.gaussians[0];
+            dyn.prediction.modes[0].reserve(mode.mean.poses.size());
+            for (size_t k = 0; k < mode.mean.poses.size(); ++k)
+            {
+                dyn.prediction.modes[0].emplace_back(
+                    Eigen::Vector2d(mode.mean.poses[k].pose.position.x, mode.mean.poses[k].pose.position.y),
+                    RosTools::quaternionToAngle(mode.mean.poses[k].pose.orientation),
+                    mode.major_semiaxis[k],
+                    mode.minor_semiaxis[k]);
+            }
+
+            // If uncertainty is effectively zero or probabilistic handling is
+            // disabled in config, fall back to deterministic to simplify constraints.
+            if (mode.major_semiaxis.back() == 0.0 ||
+                !CONFIG["probabilistic"]["enable"].as<bool>())
+            {
+                dyn.prediction.type = MPCPlanner::PredictionType::DETERMINISTIC;
+            }
+        }
+        else
+        {
+            // No prediction provided (or multi-mode not supported here):
+            // treat obstacle as deterministic (current pose only).
+            dyn.prediction = MPCPlanner::Prediction(MPCPlanner::PredictionType::DETERMINISTIC);
+        }
+    }
+
+    // Pad or trim to the configured max_obstacles so solver parameter sizes
+    // remain constant (adds “dummy” obstacles if needed).
+    MPCPlanner::ensureObstacleSize(_data.dynamic_obstacles, _state);
+
+    // Optionally inflate/propagate uncertainty over time if enabled.
+    if (CONFIG["probabilistic"]["propagate_uncertainty"].as<bool>())
+        MPCPlanner::propagatePredictionUncertainty(_data.dynamic_obstacles);
+
+    // Notify planner modules (e.g., collision avoidance) that new obstacle
+    // data is available so they can refresh solver params before the next solve.
+    _planner->onDataReceived(_data, "dynamic obstacles");
+}
+void JulesJackalPlanner::poseOtherRobotCallback(const geometry_msgs::PoseStamped::ConstPtr &msg,
+                                                const std::string ns)
+{
+    // Check if trajectory obstacle exists for this namespace (prevents race condition crash)
+    auto it = _data.trajectory_dynamic_obstacles.find(ns);
+    if (it == _data.trajectory_dynamic_obstacles.end())
+    {
+        LOG_WARN(_ego_robot_ns + ": Received pose from " + ns + " but obstacle not initialized yet. Ignoring.");
+        return;
+    }
+
+    // Additional safety check
+    if (!msg)
+    {
+        LOG_WARN(_ego_robot_ns + ": Received null pose message from " + ns + ". Ignoring.");
+        return;
+    }
+
+    auto &robot_trajectory_obstacle = it->second;
+    // Decode state from your encoded PoseStamped
+    const double &psi = msg->pose.orientation.z; // encoded yaw
+    const double &v = msg->pose.position.z;      // encoded speed
+
+    // const double &vx = std::cos(psi) * v;
+    // const double &vy = std::sin(psi) * v;
+
+    robot_trajectory_obstacle.angle = psi;
+    robot_trajectory_obstacle.position = Eigen::Vector2d(msg->pose.position.x, msg->pose.position.y);
+    robot_trajectory_obstacle.current_speed = v;
+}
+void JulesJackalPlanner::trajectoryCallback(const mpc_planner_msgs::ObstacleGMM::ConstPtr &msg, const std::string ns)
+{
+
+    // Check if trajectory obstacle exists for this namespace (prevents race condition crash)
+    LOG_DEBUG(_ego_robot_ns + " Received a callback triggered by a trajectory send by: " + ns);
+    auto it = _data.trajectory_dynamic_obstacles.find(ns);
+    if (it == _data.trajectory_dynamic_obstacles.end())
+    {
+        LOG_WARN(_ego_robot_ns + ": Received trajectory from " + ns + " but obstacle not initialized yet. Ignoring.");
+        return;
+    }
+
+    // Additional safety checks
+    if (!msg || msg->gaussians.empty())
+    {
+        LOG_WARN(_ego_robot_ns + ": Received invalid trajectory message from " + ns + ". Ignoring.");
+        return;
+    }
+
+    // Get the trajectory-based obstacle for this robot namespace
+    auto &robot_trajectory_obstacle = it->second;
+
+    // Check if the obstacle id in msg corresponds with retrieved trajectory obstacle
+    if (robot_trajectory_obstacle.index != msg->id)
+    {
+        LOG_WARN(_ego_robot_ns + ": Trajectory obstacle ID mismatch for robot " + ns +
+                 " - expected ID: " + std::to_string(robot_trajectory_obstacle.index) +
+                 ", received ID: " + std::to_string(msg->id));
+        return;
+    }
+
+    // Update current pose of the trajectory obstacle
+    const auto &position = msg->pose.position;
+    const auto &orientation = msg->pose.orientation;
+    robot_trajectory_obstacle.position = Eigen::Vector2d(position.x, position.y);
+    robot_trajectory_obstacle.angle = RosTools::quaternionToAngle(orientation);
+
+    // Get trajectory predictions
+    const auto &list_of_gaussians_trajectories = msg->gaussians;
+    const auto &list_of_traject_costs = msg->probabilities;
+
+    if (!list_of_gaussians_trajectories.empty())
+    {
+        // FIXED: We expect only 1 gaussian from the direct trajectory publisher
+        if (list_of_gaussians_trajectories.size() != 1)
+        {
+            LOG_WARN(_ego_robot_ns + ": Expected 1 trajectory, got " + std::to_string(list_of_gaussians_trajectories.size()) + " from " + ns);
+        }
+
+        // Process the first (and expected only) Gaussian trajectory
+        const auto &gaussian_trajectory = list_of_gaussians_trajectories[0];
+        const auto &mean_trajectory = gaussian_trajectory.mean;
+        const size_t trajectory_size = mean_trajectory.poses.size();
+
+        // Create new prediction - DETERMINISTIC constructor automatically creates one empty mode
+        MPCPlanner::Prediction new_prediction(MPCPlanner::PredictionType::DETERMINISTIC);
+
+        // Create a single mode for the trajectory
+        MPCPlanner::Mode new_mode;
+        new_mode.reserve(trajectory_size);
+
+        // Fill the mode with prediction steps from the mean trajectory
+        for (size_t k = 0; k < trajectory_size; ++k)
+        {
+            const auto &pose = mean_trajectory.poses[k];
+            new_mode.emplace_back(
+                Eigen::Vector2d(pose.pose.position.x, pose.pose.position.y),
+                RosTools::quaternionToAngle(pose.pose.orientation),
+                -1.0, // uncertainty ellipse major axis
+                -1.0  // uncertainty ellipse minor axis
+            );
+        }
+
+        // Replace the auto-created empty mode with our trajectory data
+        new_prediction.modes[0] = std::move(new_mode);
+
+        // Update the obstacle with the new prediction
+        robot_trajectory_obstacle.prediction = std::move(new_prediction);
+
+        LOG_DEBUG(_ego_robot_ns + " Updated trajectory prediction for " + ns +
+                  " with " + std::to_string(trajectory_size) + " trajectory points");
+    }
+    else
+    {
+        // No trajectory prediction available - use deterministic (current pose only)
+        LOG_ERROR(_ego_robot_ns + " No trajectory prediction for " + ns + ", but we received a callback");
+    }
+
+    _first_direct_trajectory_cb_received = true;
+}
+
+// 5. PUBLISHER FUNCTIONS
+//    - All functions that publish ROS messages
+void JulesJackalPlanner::publishEgoPose()
 {
     geometry_msgs::PoseStamped pose;
     pose.header.stamp = ros::Time::now();
     pose.header.frame_id = _global_frame;
 
-    // Read back from internal state so what we publish is consistent with the
-    // values the MPC used/updated this cycle.
     pose.pose.position.x = _state.get("x");
     pose.pose.position.y = _state.get("y");
-
-    // Store the angel in the orientation.z place <- same convetion used in mobile_robot_state_publisher_node_mr
-    pose.pose.orientation.z = _state.get("psi");
-    // Store the speed in the position.z place <- same convetion used in mobile_robot_state_publisher_node_mr
-    pose.pose.position.z = _state.get("v");
+    pose.pose.orientation.z = _state.get("psi"); // Encoded yaw
+    pose.pose.position.z = _state.get("v");      // Encoded velocity
 
     _pose_pub.publish(pose);
 }
-
-// Publishes the trajectory we are following with 20 hz(equal to the control level loop)
 void JulesJackalPlanner::publishCurrentTrajectory(MPCPlanner::PlannerOutput output)
 {
+    // Safety checks to prevent crashes
+    if (output.trajectory.positions.empty() || output.trajectory.orientations.empty())
+    {
+        LOG_WARN(_ego_robot_ns + ": Empty trajectory data. Skipping trajectory publication.");
+        return;
+    }
 
-    const auto ns = ros::this_node::getNamespace();
-    const std::string profiling_name = ns + "_" + "PublishCurrentTrajectory";
-    PROFILE_SCOPE(profiling_name.c_str());
+    if (output.trajectory.positions.size() != output.trajectory.orientations.size())
+    {
+        LOG_WARN(_ego_robot_ns + ": Trajectory positions and orientations size mismatch! Skipping trajectory publication.");
+        return;
+    }
+
     nav_msgs::Path ros_trajectory_msg;
-    LOG_DEBUG(profiling_name);
-
     auto ros_time = ros::Time::now();
     ros_trajectory_msg.header.stamp = ros_time;
     ros_trajectory_msg.header.frame_id = _global_frame;
 
     int k = 0;
-    // loop trough the vector og eigenposition
-    if (output.trajectory.positions.size() != output.trajectory.orientations.size())
-    {
-        ROS_WARN("Trajectory positions and orientations size mismatch! Skipping trajectory publication.");
-        return;
-    }
     for (const auto &position : output.trajectory.positions)
     {
-
         ros_trajectory_msg.poses.emplace_back();
         ros_trajectory_msg.poses.back().pose.position.x = position(0);
         ros_trajectory_msg.poses.back().pose.position.y = position(1);
-        // there is no z-component so we set it to 1
-        ros_trajectory_msg.poses.back().pose.position.z = 1;
-
+        ros_trajectory_msg.poses.back().pose.position.z = k * output.trajectory.dt;
         ros_trajectory_msg.poses.back().pose.orientation = RosTools::angleToQuaternion(output.trajectory.orientations.at(k));
-        ros_trajectory_msg.poses.back().header.stamp = ros_time + ros::Duration(k * output.trajectory.dt); // dt is set by the solver remember _solver->dt
+        ros_trajectory_msg.poses.back().header.stamp = ros_time + ros::Duration(k * output.trajectory.dt);
         k++;
     }
 
     _trajectory_pub.publish(ros_trajectory_msg);
 }
+void JulesJackalPlanner::publishObjectiveReachedEvent()
+{
+    std_msgs::Bool event;
+    event.data = true;
+    _objective_pub.publish(event);
+    LOG_INFO("Objective reached - published event");
+}
+void JulesJackalPlanner::publishDirectTrajectory(MPCPlanner::PlannerOutput output)
+{
+    // build from output a
+    mpc_planner_msgs::ObstacleGMM ego_robot_trajectory_as_obstacle;
+    ego_robot_trajectory_as_obstacle.id = _ego_robot_id;
+    ego_robot_trajectory_as_obstacle.pose.position.x = _state.get("x");
+    ego_robot_trajectory_as_obstacle.pose.position.y = _state.get("y");
 
-// ----------------------------------------------------------------------------
-// PURPOSE
-//   Publish a simple RViz-friendly visualization of the robot’s heading as a
-//   line (“orientation ray”) starting at the current (x, y) position and
-//   extending 1 meter in the direction of yaw (psi).
-//
-// WHY THIS EXISTS
-//   Quick visual feedback helps during debugging and tuning: you can confirm
-//   that the internal `_state` matches what you see in Gazebo/RViz and that
-//   the robot’s commanded orientation is sensible without digging into logs.
-//
-// WHAT IT DRAWS
-//   - A single line segment from the robot’s current position to a point that
-//     is 1.0 meter ahead along the heading direction.
-//   - Uses the shared `ros_tools::VISUALS` publisher pool under the key "angle".
-//     Each call creates a new line in that publisher and immediately publishes.
-//
-// ASSUMPTIONS
-//   - 2D planar navigation; heading is `_state("psi")` (radians, Z-up).
-//   - The VISUALS system is initialized elsewhere (e.g., `VISUALS.init(&nh)` in main).
-//   - RViz is configured to display the corresponding marker topic.
-//
-// SIDE EFFECTS
-//   - Publishes a visualization marker each time this function is called.
-//   - No changes to planner state or parameters.
-//
-// PERFORMANCE
-//   - Lightweight; one line marker per call. Safe to invoke once per control loop.
-//
-// EXTENSIONS
-//   - Replace the hard-coded 1.0 meter with a param (e.g., `viz/heading_length`).
-//   - Add a footprint outline, predicted trajectory, or obstacle ellipses here,
-//     or leave those to `_planner->visualize(...)` if already implemented.
-// ----------------------------------------------------------------------------
+    ego_robot_trajectory_as_obstacle.pose.orientation = RosTools::angleToQuaternion(_state.get("psi"));
+    ego_robot_trajectory_as_obstacle.gaussians.emplace_back();
+
+    // CRITICAL FIX: Use reference instead of copy!
+    auto &gaussian = ego_robot_trajectory_as_obstacle.gaussians.back();
+    auto ros_time = ros::Time::now();
+    gaussian.mean.header.stamp = ros_time;
+    gaussian.mean.header.frame_id = _global_frame;
+
+    int k = 0;
+    // FIXED: Changed condition from > 1 to > 0 to include single-point trajectories
+    if (output.trajectory.positions.size() > 0)
+    {
+        gaussian.mean.poses.reserve(output.trajectory.positions.size());
+        gaussian.major_semiaxis.reserve(output.trajectory.positions.size());
+        gaussian.minor_semiaxis.reserve(output.trajectory.positions.size());
+
+        for (const auto &position : output.trajectory.positions)
+        {
+            gaussian.mean.poses.emplace_back();
+            auto &pose = gaussian.mean.poses.back();
+            pose.pose.position.x = position(0);
+            pose.pose.position.y = position(1);
+            pose.pose.position.z = k * output.trajectory.dt;
+            pose.pose.orientation = RosTools::angleToQuaternion(output.trajectory.orientations.at(k));
+            pose.header.stamp = ros_time + ros::Duration(k * output.trajectory.dt);
+
+            // Add dummy semiaxis values for now (can be made configurable later)
+            gaussian.major_semiaxis.push_back(0.1);
+            gaussian.minor_semiaxis.push_back(0.1);
+
+            k++;
+        }
+
+        LOG_DEBUG(_ego_robot_ns + ": Publishing trajectory with " + std::to_string(gaussian.mean.poses.size()) + " poses");
+    }
+    else
+    {
+        LOG_WARN(_ego_robot_ns + ": SENDING EMPTY TRAJECTORY - no positions in MPC output!");
+    }
+
+    // Publish the trajectory directly to other robots
+    _direct_trajectory_pub.publish(ego_robot_trajectory_as_obstacle);
+}
+// 6. VISUALIZATION FUNCTIONS
+//    - Functions for RViz/debugging visualization
 void JulesJackalPlanner::visualize()
 {
     auto &publisher = VISUALS.getPublisher("angle");
@@ -869,137 +993,47 @@ void JulesJackalPlanner::visualize()
     publisher.publish();
 }
 
-// ----------------------------------------------------------------------------
-// PURPOSE
-//   Decide whether the robot has reached its current goal using a simple
-//   Euclidean distance check in the XY plane.
-//
-// WHY THIS EXISTS
-//   The planner wrapper needs a lightweight, local criterion to trigger
-//   downstream behavior (e.g., publish `events/objective_reached`). We keep
-//   resets/supervision outside this node, so this function is the local gate.
-//
-// LOGIC
-//   - If no goal has been received yet, return false.
-//   - Compute distance between current position and cached goal `_goal_xy`.
-//   - Return true if distance ≤ `_goal_tolerance` (meters).
-//
-// ASSUMPTIONS
-//   - The goal and the robot pose are expressed in the same global frame
-//     (e.g., "map").
-//   - 2D navigation: only x,y are considered; heading is ignored here.
-//   - `_goal_tolerance` is configured to match your use case (typ. 0.2–1.0 m).
-//
-// EDGE CASES
-//   - If `_goal_tolerance` is too small relative to localization noise, the
-//     condition may flicker. Add hysteresis or time filtering if needed.
-//   - If you also care about final heading, extend with a yaw tolerance check.
-//
-// THREADING
-//   - Read-only access to `_state` and `_goal_xy` in a const method; safe under
-//     the usual single-threaded spinner. Use a mutex if you switch to multi-thread.
-//
-// EXTENSIONS
-//   - Add yaw tolerance: `std::abs(angDiff(stateYaw, goalYaw)) < yaw_tol`.
-//   - Add “hold time” hysteresis: require the condition to be true for N cycles.
-//   - Add a minimum speed threshold to ensure you’re not just passing by.
-// ----------------------------------------------------------------------------
-bool JulesJackalPlanner::objectiveReached(MPCPlanner::State _state, MPCPlanner::RealTimeData _data) const
+// 7. MULTI-ROBOT COORDINATION FUNCTIONS
+//    - Functions specific to multi-robot scenarios
+// Multi-robot synchronization: wait for all robots to be ready
+// Identify all other robot namespaces (excluding ego robot) for multi-robot coordination
+std::set<std::string> JulesJackalPlanner::identifyOtherRobotNamespaces(const std::vector<std::string> &all_namespaces)
 {
-    // check if the objective for each robot is reached if it is reached then we return 0.
-    bool objective_reached = _planner->isObjectiveReached(_state, _data);
-    return objective_reached;
+    std::set<std::string> other_robot_namespaces;
+    for (const auto &robot_name : all_namespaces)
+    {
+        if (_ego_robot_ns != robot_name)
+        {
+            other_robot_namespaces.insert(robot_name);
+            LOG_INFO("For ego_robot " + _ego_robot_ns + " found other robot " + robot_name);
+        }
+    }
+    return other_robot_namespaces;
 }
-
-// ----------------------------------------------------------------------------
-// PURPOSE
-//   Apply consistent braking command to smoothly decelerate the robot.
-//   Used both when goal is reached and when solver fails.
-// ----------------------------------------------------------------------------
-void JulesJackalPlanner::applyBrakingCommand(geometry_msgs::Twist &cmd)
-{
-    double deceleration = CONFIG["deceleration_at_infeasible"].as<double>();
-    double dt = 1. / CONFIG["control_frequency"].as<double>();
-    double velocity = _state.get("v");
-    double velocity_after_braking = velocity - deceleration * dt;
-
-    cmd.linear.x = std::max(velocity_after_braking, 0.0); // Don't drive backwards
-    cmd.angular.z = 0.0;
-}
-
-// ----------------------------------------------------------------------------
-// PURPOSE
-//   Publish objective reached event once when transitioning to goal reached state.
-// ----------------------------------------------------------------------------
-void JulesJackalPlanner::publishObjectiveReachedEvent()
-{
-    std_msgs::Bool event;
-    event.data = true;
-    _objective_pub.publish(event);
-    LOG_INFO("Objective reached - published event");
-}
-
-// ----------------------------------------------------------------------------
-// PURPOSE
-//   Wait for all robots in the system to be ready before starting the control loop.
-//   Uses ROS parameters to coordinate synchronized startup across multiple robots.
-//
-// WHY THIS EXISTS
-//   In multi-robot scenarios, simultaneous startup prevents timing issues and
-//   ensures all robots begin their control loops at the same time for better
-//   coordination and predictable behavior.
-//
-// HOW IT WORKS
-//   1) Read the list of all robots from the global parameter `/robot_ns_list`
-//   2) Set this robot's ready flag as a parameter: `/<namespace>/ready_to_start = true`
-//   3) Poll all robots' ready flags until everyone is ready
-//   4) Return when all robots have signaled readiness
-//
-// PARAMETERS
-//   - `/robot_ns_list`: Array of robot namespaces (e.g., ["jackal1", "jackal2"])
-//   - `/<robot_ns>/ready_to_start`: Per-robot ready flag (set to true when ready)
-//
-// ASSUMPTIONS
-//   - All robots use the same `/robot_ns_list` parameter
-//   - Robot namespaces match the entries in the list
-//   - ROS parameter server is accessible to all robots
-//
-// SIDE EFFECTS
-//   - Sets this robot's ready parameter
-//   - Blocks execution until all robots are ready
-//   - Returns immediately if robot_ns_list is not found (fail-safe)
-//
-// EXTENSIONS
-//   - Add timeout mechanism to prevent infinite waiting
-//   - Add heartbeat mechanism for fault detection
-//   - Support dynamic robot addition/removal
-// ----------------------------------------------------------------------------
 void JulesJackalPlanner::waitForAllRobotsReady(ros::NodeHandle &nh)
 {
     std::string my_namespace = ros::this_node::getNamespace();
 
-    // Get list of all robots from global parameter
     std::vector<std::string> robot_list;
     if (!nh.getParam("/robot_ns_list", robot_list))
     {
-        LOG_WARN("No robot_ns_list found, starting immediately");
+        LOG_WARN(_ego_robot_ns + ": No robot_ns_list found, starting immediately");
         return;
     }
 
-    // Set my ready flag
     std::string my_ready_param = my_namespace + "/ready_to_start";
     nh.setParam(my_ready_param, true);
     LOG_INFO("Robot " + my_namespace + " marked as ready, waiting for others...");
+    LOG_DIVIDER();
 
-    // Wait for all robots to be ready
-    ros::Rate check_rate(10); // Check 10 times per second
+    ros::Rate check_rate(50);
     while (ros::ok())
     {
         bool all_ready = true;
         for (const auto &robot_ns : robot_list)
         {
             bool robot_ready = false;
-            std::string robot_param = "/" + robot_ns + "/ready_to_start";
+            std::string robot_param = robot_ns + "/ready_to_start";
             if (!nh.getParam(robot_param, robot_ready) || !robot_ready)
             {
                 all_ready = false;
@@ -1009,41 +1043,196 @@ void JulesJackalPlanner::waitForAllRobotsReady(ros::NodeHandle &nh)
 
         if (all_ready)
         {
-            LOG_INFO("All robots ready! Starting control loop...");
+            LOG_INFO(_ego_robot_ns + ": All robots ready! Starting control loop...");
+            LOG_DIVIDER();
             break;
         }
 
         check_rate.sleep();
     }
 }
+void JulesJackalPlanner::initializeOtherRobotsAsObstacles(const std::set<std::string> &other_robot_namespaces, MPCPlanner::RealTimeData &data, const double radius)
+{
+    for (const auto &robot_ns : other_robot_namespaces)
+    {
+        data.trajectory_dynamic_obstacles.emplace(robot_ns, MPCPlanner::DynamicObstacle(extractRobotIdFromNamespace(robot_ns), radius, MPCPlanner::ObstacleType::DYNAMIC));
+    }
+}
 
-// ----------------------------------------------------------------------------
-// PURPOSE
-//   Entry point of the ROS node. Sets up ROS, creates public (+ private) node
-//   handles, initializes optional visuals, constructs your planner wrapper,
-//   then hands control to ROS's event loop.
-//
-// WHY IN THE SAME FILE
-//   Keeping main() in the same translation unit as JulesJackalPlanner is fine
-//   (and convenient while iterating). Just make sure you compile/link exactly
-//   one file that defines main(); don’t also compile a separate jules_main.cpp,
-//   or you’ll get “multiple definition of `main`” link errors.
-// ----------------------------------------------------------------------------
+// 8. HELPER/UTILITY FUNCTIONS
+//    - Static functions and utility methods
+void JulesJackalPlanner::updateRobotObstaclesFromTrajectories()
+{
+    LOG_INFO(_ego_robot_ns + ": Updating robot obstacles from " + std::to_string(_data.trajectory_dynamic_obstacles.size()) + " trajectory sources");
+
+    int updated_count = 0;
+    int added_count = 0;
+
+    for (auto [ns, trajectory_obs] : _data.trajectory_dynamic_obstacles)
+    {
+        // Find and update existing robot obstacle or add new one
+        auto it = std::find_if(_data.dynamic_obstacles.begin(), _data.dynamic_obstacles.end(),
+                               [&](const auto &obs)
+                               { return obs.index == trajectory_obs.index; });
+
+        if (it != _data.dynamic_obstacles.end())
+        {
+            LOG_INFO(_ego_robot_ns + ": Updating existing obstacle for robot " + ns + " (ID: " + std::to_string(trajectory_obs.index) + ")");
+            *it = trajectory_obs;
+            updated_count++;
+        }
+        else
+        {
+            LOG_INFO(_ego_robot_ns + ": Adding new obstacle for robot " + ns + " (ID: " + std::to_string(trajectory_obs.index) + ")");
+            _data.dynamic_obstacles.push_back(trajectory_obs);
+            added_count++;
+        }
+    }
+
+    LOG_INFO(_ego_robot_ns + ": Robot obstacle update complete - Updated: " + std::to_string(updated_count) + ", Added: " + std::to_string(added_count) + ", Total obstacles: " + std::to_string(_data.dynamic_obstacles.size()));
+}
+
+std::string JulesJackalPlanner::dataToString() const
+{
+    std::string result = "RealTimeData{\n";
+
+    // Basic info
+    result += "  robot_area: " + std::to_string(_data.robot_area.size()) + " discs\n";
+    result += "  goal: [" + std::to_string(_data.goal.x()) + ", " + std::to_string(_data.goal.y()) + "]\n";
+    result += "  goal_received: " + std::string(_data.goal_received ? "true" : "false") + "\n";
+    result += "  past_trajectory_size: " + std::to_string(_data.past_trajectory.positions.size()) + "\n";
+    result += "  reference_path_size: " + std::to_string(_data.reference_path.x.size()) + "\n";
+    result += "  intrusion: " + std::to_string(_data.intrusion) + "\n";
+
+    // Dynamic obstacles using accumulate pattern (limit to first 3 for readability)
+    result += "  dynamic_obstacles: [" + std::to_string(_data.dynamic_obstacles.size()) + "] {\n";
+    if (!_data.dynamic_obstacles.empty())
+    {
+        std::string obstacles_str = std::accumulate(
+            _data.dynamic_obstacles.begin(),
+            std::min(_data.dynamic_obstacles.end(), _data.dynamic_obstacles.begin() + 3), // Limit to first 3
+            std::string(),
+            [](const std::string &s, const MPCPlanner::DynamicObstacle &obs)
+            {
+                return s + (s.empty() ? "" : ",\n") + "    " + obs.toString();
+            });
+        result += obstacles_str;
+        if (_data.dynamic_obstacles.size() > 3)
+        {
+            result += "\n    ...(+" + std::to_string(_data.dynamic_obstacles.size() - 3) + " more obstacles)";
+        }
+        result += "\n";
+    }
+    result += "  }\n";
+
+    // Trajectory dynamic obstacles (multi-robot specific)
+    result += "  trajectory_dynamic_obstacles: [" + std::to_string(_data.trajectory_dynamic_obstacles.size()) + "] {\n";
+    if (!_data.trajectory_dynamic_obstacles.empty())
+    {
+        std::string traj_obstacles_str = std::accumulate(
+            _data.trajectory_dynamic_obstacles.begin(),
+            _data.trajectory_dynamic_obstacles.end(),
+            std::string(),
+            [](const std::string &s, const std::pair<std::string, MPCPlanner::DynamicObstacle> &pair)
+            {
+                return s + (s.empty() ? "" : ",\n") + "    [" + pair.first + "]: " + pair.second.toString();
+            });
+        result += traj_obstacles_str + "\n";
+    }
+    result += "  }\n";
+
+    result += "}";
+    return result;
+}
+
+void JulesJackalPlanner::logDataState(const std::string &context) const
+{
+    std::string ctx = context.empty() ? "DATA_STATE" : context;
+    LOG_INFO(_ego_robot_ns + ": ========== " + ctx + " ==========");
+    LOG_INFO(dataToString());
+    LOG_INFO(_ego_robot_ns + ": ========================" + std::string(ctx.length(), '=') + "==========");
+}
+
+bool JulesJackalPlanner::objectiveReached(MPCPlanner::State _state, MPCPlanner::RealTimeData _data) const
+{
+    // check if the objective for each robot is reached if it is reached then we return 0.
+    bool objective_reached = _planner->isObjectiveReached(_state, _data);
+    return objective_reached;
+}
+int JulesJackalPlanner::extractRobotIdFromNamespace(const std::string &ns)
+{
+    // Handle both "/jackalX" and "jackalX" formats
+    if (ns.front() == '/')
+        return std::stoi(ns.substr(7)); // skip "/jackal"
+    else
+        return std::stoi(ns.substr(6)); // skip "jackal"
+}
+bool JulesJackalPlanner::isPathTheSame(const nav_msgs::Path::ConstPtr &msg) const
+{
+    // Quick reject: if lengths differ, treat as different.
+    if (_data.reference_path.x.size() != msg->poses.size())
+        return false;
+
+    // Compare only the first few points for speed/stability.
+    const int num_points = std::min(2, static_cast<int>(_data.reference_path.x.size()));
+    for (int i = 0; i < num_points; ++i)
+    {
+        // `pointInPath(i, x, y)` should apply the planner’s internal tolerance.
+        if (!_data.reference_path.pointInPath(
+                i,
+                msg->poses[i].pose.position.x,
+                msg->poses[i].pose.position.y))
+        {
+            return false; // diverges early → treat as a new path
+        }
+    }
+
+    // Same length and first points match within tolerance → consider unchanged.
+    return true;
+}
+void JulesJackalPlanner::buildOutputFromBrakingCommand(MPCPlanner::PlannerOutput &output, const geometry_msgs::Twist &cmd)
+{
+    // Build output when the MPC could not solve
+    if (output.success)
+    {
+        LOG_WARN("Creating a braking command trajectory while the MPC solve was signaled as successful");
+        return;
+    }
+
+    const auto &new_speed = cmd.linear.x;
+    const auto &orientation = _state.get("psi");
+
+    const auto &new_vx = std::cos(orientation) * new_speed;
+    const auto &new_vy = std::sin(orientation) * new_speed;
+
+    const Eigen::Vector2d new_velocity(new_vx, new_vy);
+    const Eigen::Vector2d current_position(_state.get("x"), _state.get("y"));
+
+    MPCPlanner::Prediction const_vel_prediction = MPCPlanner::getConstantVelocityPrediction(current_position,
+                                                                                            new_velocity,
+                                                                                            CONFIG["integrator_step"].as<double>(),
+                                                                                            CONFIG["N"].as<int>());
+
+    const int N = CONFIG["N"].as<int>();
+    output.trajectory.positions.clear();
+    output.trajectory.orientations.clear();
+    output.trajectory.positions.reserve(N);
+    output.trajectory.orientations.reserve(N);
+    output.trajectory.dt = CONFIG["integrator_step"].as<double>();
+
+    for (const auto &predstep : const_vel_prediction.modes[0])
+    {
+        output.trajectory.positions.push_back(predstep.position);
+        output.trajectory.orientations.push_back(orientation);
+    }
+
+    LOG_WARN(_ego_robot_ns << " Creating a braking command trajectory");
+}
+
 int main(int argc, char **argv)
 {
-    // Initialize the ROS client library.
-    // The string "planner" is the node name; combined with namespaces you can
-    // run two nodes named "planner" simultaneously (e.g., /robot_1/planner and
-    // /robot_2/planner) without conflicts.
     ros::init(argc, argv, "JULES_jackalplanner");
-
-    // Public node handle: resolves topics/services relative to the node's
-    // namespace (e.g., /robot_1/...). Use this for publishers/subscribers.
     ros::NodeHandle nh;
-
-    // Private node handle: resolves parameters (and optional private topics)
-    // under ~ (i.e., /<ns>/<node_name>/...). We pass this so the planner can
-    // read node-specific params without colliding with other nodes.
     ros::NodeHandle pnh("~");
 
     // Optional: initialize the shared visualization helper used by the repo.
