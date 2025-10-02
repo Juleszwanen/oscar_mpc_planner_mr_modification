@@ -283,7 +283,7 @@ namespace MPCPlanner
             planner.result.Reset();
             planner.disabled = false;
 
-            if (planner.id >= global_guidance_->NumberOfGuidanceTrajectories()) // Only enable the solvers that are needed
+            if (planner.id >= global_guidance_->NumberOfGuidanceTrajectories()) // Only enable the solvers that are needed JULES: this means we did not find the solver for the specific homology class
             {
                 if (!planner.is_original_planner) // We still want to add the original planner!
                 {
@@ -342,7 +342,7 @@ namespace MPCPlanner
 
             // ANALYSIS AND PROCESSING
             planner.result.success = planner.result.exit_code == 1;
-            planner.result.objective = solver->_info.pobj; // How good is the solution?
+            planner.result.objective = solver->_info.pobj; // How good is the solution?, the cost of the trajectory
 
             if (planner.is_original_planner) // We did not use any guidance!
             {
@@ -593,4 +593,8 @@ namespace MPCPlanner
 
         global_guidance_->saveData(data_saver); // Save data from the guidance planner
     }
-} // namespace MPCPlanner
+
+
+}
+
+// namespace MPCPlanner

@@ -63,6 +63,8 @@ JulesJackalPlanner::JulesJackalPlanner(ros::NodeHandle &nh, ros::NodeHandle &pnh
     // Robot synchronization
     // _reconfigure = std::make_unique<JackalsimulatorReconfigure>(); // Initialize RQT reconfigure
 
+    // _startup_timer = std::make_unique<RosTools::Timer>(1.0); // Give some time to receive data Perhaps this is usefull!
+
     ros::Duration(5).sleep(); // Rember that this blocks all callbacks of this node, but this should give the whole system and the other nodes some startup timeq
     // Give system startup time
     if (wait_for_sync)
@@ -265,6 +267,8 @@ void JulesJackalPlanner::loopDirectTrajectory(const ros::TimerEvent & /*event*/)
     LOG_DEBUG(_ego_robot_ns + ": Obstacles: dynamic=" + std::to_string(_data.dynamic_obstacles.size()) +
               ", trajectory=" + std::to_string(_data.trajectory_dynamic_obstacles.size()));
 
+    _data.planning_start_time = std::chrono::system_clock::now();
+
     // Handle initial planning phase - run if:
     // 1. We're planning for the first time, OR
     // 2. We haven't received meaningful trajectory data from other robots yet
@@ -272,16 +276,16 @@ void JulesJackalPlanner::loopDirectTrajectory(const ros::TimerEvent & /*event*/)
     {
         handleInitialPlanningPhase();
         LOG_INFO(_ego_robot_ns + ": ============= End INITIAL Loop =============");
+
         return;
     }
-
-    _data.planning_start_time = std::chrono::system_clock::now();
 
     // PHASE 2: Prepare obstacle data for planning
     prepareObstacleData();
 
     // PHASE 3: Generate planning command and output
     auto [cmd, output] = generatePlanningCommand();
+    _data.past_trajectory.replaceTrajectory(output.trajectory);
 
     // PHASE 4: Publish command and visualize results
     publishCmdAndVisualize(cmd, output);
@@ -434,6 +438,8 @@ void JulesJackalPlanner::applyDummyObstacleCommand()
     // Built-in planner visuals (predicted trajectory, footprints, etc.), if available.
     // Jules Important this always visualizes the trajectory of the other robot in the previous time step.
     // Could consider visualizing obstacles when the obstacle callback is triggered.
+    MPCPlanner::FixedSizeTrajectory fixedsizetrajectory(output.trajectory, 30);
+    _data.past_trajectory = fixedsizetrajectory;
     _planner->visualize(_state, _data);
 
     // Quick heading ray for sanity checking.
@@ -969,7 +975,7 @@ void JulesJackalPlanner::waitForAllRobotsReady(ros::NodeHandle &nh)
     std::string my_ready_param = my_namespace + "/ready_to_start";
     nh.setParam(my_ready_param, true);
     LOG_INFO("Robot " + my_namespace + " marked as ready, waiting for others...");
-    LOG_DIVIDER();
+    // LOG_DIVIDER();
 
     ros::Rate check_rate(50);
     while (ros::ok())
@@ -1254,7 +1260,8 @@ std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> JulesJackalPlanner::g
     }
 
     LOG_DEBUG(_ego_robot_ns + ": Calling MPC solver with " + std::to_string(_data.dynamic_obstacles.size()) + " obstacles");
-    output = _planner->solveMPC(_state, _data); // Override output 
+    output = _planner->solveMPC(_state, _data); // Override output
+    // LOG_INFO_THROTTLE(4, _ego_robot_ns + "OUTPUT: " + std::to_string(output.current_trajectory_cost));
 
     if (_enable_output && output.success)
     {

@@ -26,6 +26,13 @@ namespace MPCPlanner
         Trajectory trajectory;
         bool success{false};
 
+        // ADD THESE FIELDS:
+        int selected_topology_id{-1};   // Homology class ID (from guidance_ID)
+        int selected_planner_index{-1}; // Which planner was chosen (0 to n_paths)
+        bool used_guidance{true};       // false if T-MPC++ (non-guided) was chosen
+        double trajectory_cost{0.0};    // Objective value of selected solution
+        int solver_exit_code{-1};       // Exit code (1=success, 0=max_iter, -1=infeasible)
+
         PlannerOutput(double dt, int N) : trajectory(dt, N) {}
 
         PlannerOutput() = default;
@@ -56,7 +63,7 @@ namespace MPCPlanner
     private:
         bool _is_data_ready{false}, _was_reset{true};
 
-        std::shared_ptr<Solver> _solver;
+        std::shared_ptr<Solver> _solver; //
         std::shared_ptr<ExperimentUtil> _experiment_util;
         PlannerOutput _output;
 
@@ -66,7 +73,7 @@ namespace MPCPlanner
 
         std::unique_ptr<RosTools::Timer> _startup_timer;
 
-        std::vector<std::shared_ptr<ControllerModule>> _modules;
+        std::vector<std::shared_ptr<ControllerModule>> _modules; // Will contain all modules used in the mpc formulation
     };
 
 }

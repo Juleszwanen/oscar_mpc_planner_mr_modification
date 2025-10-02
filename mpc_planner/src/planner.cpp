@@ -132,6 +132,7 @@ namespace MPCPlanner
                 // When no module provides costum optimization or something unexpected happens when there is a module with an optimiza module
                 // it's the default optimization strategy when no module (/can claim) claims responsibility for solving the problem!
                 if (exit_flag == EXIT_CODE_NOT_OPTIMIZED_YET)
+                    // LOG_ERROR("_solver->solve() is called");
                     exit_flag = _solver->solve();
                 BENCHMARKERS.getBenchmarker("optimization").stop();
             }
@@ -148,12 +149,16 @@ namespace MPCPlanner
         }
 
         _output.success = true;
-        /* Juels @note Here we do from 1 and not from zero which is weird in my opinion   K WAS ORIGNIALLY 1 but now I SET IT TO 0) OCT 1*/
+        /* Jules @note Here we do from 1 and not from zero which is weird in my opinion   K WAS ORIGNIALLY 1 but now I SET IT TO 0) OCT 1*/
         for (int k = 0; k < _solver->N; k++)
         {
             _output.trajectory.add(_solver->getOutput(k, "x"), _solver->getOutput(k, "y"));
             _output.trajectory.add_orientation(_solver->getOutput(k, "psi")); // JULES dit heb jij toegevoed om ervoor te zorgen dat we de orientatie van elke punt in de trajectory ook hebben deze hebben we later nodig voor het passen van een traject asl obstacle
         }
+
+        /* @note Jules: you added this to store the cost of the trajectory*/
+        _output.trajectory_cost = _solver->_info.pobj;
+        
 
         if (_output.success && CONFIG["debug_limits"].as<bool>())
             _solver->printIfBoundLimited();

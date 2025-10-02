@@ -149,9 +149,11 @@ namespace MPCPlanner
     public:
         std::vector<Eigen::Vector2d> positions;
 
-        FixedSizeTrajectory(int size = 50);
+        FixedSizeTrajectory(int size = 30);
+        FixedSizeTrajectory(MPCPlanner::Trajectory trajectory, int size = 30);
 
         void add(const Eigen::Vector2d &p);
+        void replaceTrajectory(const MPCPlanner::Trajectory trajectory);
     };
 
     enum class PlannerState

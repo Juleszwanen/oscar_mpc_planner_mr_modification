@@ -234,6 +234,13 @@ namespace MPCPlanner
         positions.reserve(size);
     }
 
+    FixedSizeTrajectory::FixedSizeTrajectory(MPCPlanner::Trajectory trajectory, int size)
+        : _size(size)
+    {
+        positions.reserve(size);
+        replaceTrajectory(trajectory);
+    }
+
     void FixedSizeTrajectory::add(const Eigen::Vector2d &p)
     {
         // On jump, erase the trajectory
@@ -251,6 +258,13 @@ namespace MPCPlanner
         else
         {
             positions.erase(positions.begin());
+            positions.push_back(p);
+        }
+    }
+
+    void FixedSizeTrajectory::replaceTrajectory(const MPCPlanner::Trajectory trajectory){
+        positions.clear();
+        for(const auto p : trajectory.positions){
             positions.push_back(p);
         }
     }

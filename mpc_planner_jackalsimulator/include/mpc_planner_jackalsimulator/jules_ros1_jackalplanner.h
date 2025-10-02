@@ -128,6 +128,7 @@ private:
     ros::Publisher _trajectory_pub;        // publish the trajectory the robots is about to follow, this one publishes first to the central aggregator
     ros::Publisher _direct_trajectory_pub; // this publishes to a robot immediately so no central aggregator in between
     ros::Timer _timer;
+     std::unique_ptr<RosTools::Timer> _startup_timer;
 
     ros::ServiceClient _trajectory_client;
 
