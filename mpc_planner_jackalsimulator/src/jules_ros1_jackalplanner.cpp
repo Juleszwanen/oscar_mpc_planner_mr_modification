@@ -288,6 +288,7 @@ void JulesJackalPlanner::loopDirectTrajectory(const ros::TimerEvent & /*event*/)
     _data.past_trajectory.replaceTrajectory(output.trajectory);
 
     // PHASE 4: Publish command and visualize results
+    LOG_INFO(_ego_robot_ns + " " + output.logOutput());
     publishCmdAndVisualize(cmd, output);
 
     LOG_DEBUG(_ego_robot_ns + ": ============= Loop End =============");
@@ -426,6 +427,8 @@ void JulesJackalPlanner::applyDummyObstacleCommand()
     }
 
     // Publish tra_outputjectory only during normal operation
+    LOG_INFO(_ego_robot_ns + " " + output.logOutput());
+
     this->publishCurrentTrajectory(output);
     this->publishDirectTrajectory(output);
 

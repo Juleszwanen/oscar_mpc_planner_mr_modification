@@ -89,3 +89,6 @@ weights: # Weights of the MPC, need to correspond to declared weights in the sol
 
 visualization:
   draw_every: 5 # Visualize every x stages
+
+JULES:
+    use_extra_params_module_data: true

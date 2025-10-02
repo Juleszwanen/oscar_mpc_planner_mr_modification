@@ -31,7 +31,19 @@ namespace MPCPlanner
         int current_path_segment{-1};
 
         void reset();
+
+    // Added by Jules on oct 2: 2025
+
+    public:
+        // ADD THESE:
+        int selected_topology_id{-1};
+        int selected_planner_index{-1};
+        bool used_guidance{true};
+        double trajectory_cost{0.0};
+        int solver_exit_code{-1};
     };
+
+
 }
 
 #endif // MODULE_DATA_H

@@ -17,6 +17,9 @@
 #include <ros_tools/visuals.h>
 #include <ros_tools/data_saver.h>
 
+#include <sstream>
+#include <iomanip>
+
 namespace MPCPlanner
 {
 
@@ -156,9 +159,18 @@ namespace MPCPlanner
             _output.trajectory.add_orientation(_solver->getOutput(k, "psi")); // JULES dit heb jij toegevoed om ervoor te zorgen dat we de orientatie van elke punt in de trajectory ook hebben deze hebben we later nodig voor het passen van een traject asl obstacle
         }
 
-        /* @note Jules: you added this to store the cost of the trajectory*/
-        _output.trajectory_cost = _solver->_info.pobj;
-        
+        /** @note Jules: you added this to store the meta data of the guidance module
+         * Remeber that for now the module data is reset in each iteration
+         */
+        if (CONFIG["JULES"]["use_extra_params_module_data"].as<bool>())
+        {
+            // ADD THIS: Transfer homology metadata
+            _output.selected_topology_id = _module_data.selected_topology_id;
+            _output.selected_planner_index = _module_data.selected_planner_index;
+            _output.used_guidance = _module_data.used_guidance;
+            _output.trajectory_cost = _module_data.trajectory_cost;
+            _output.solver_exit_code = exit_flag;
+        }
 
         if (_output.success && CONFIG["debug_limits"].as<bool>())
             _solver->printIfBoundLimited();
@@ -275,4 +287,54 @@ namespace MPCPlanner
             objective_reached = objective_reached && module->isObjectiveReached(state, data);
         return objective_reached;
     }
+}
+
+std::string MPCPlanner::PlannerOutput::logOutput() const
+{
+    std::ostringstream oss;
+
+    if (success && solver_exit_code == 1)
+    {
+        // Success case - log all details
+        oss << "MPC Planning SUCCESS ✓\n"
+            << "  Topology ID:     " << (selected_topology_id == -1 ? "N/A" : std::to_string(selected_topology_id)) << "\n"
+            << "  Planner Index:   " << (selected_planner_index == -1 ? "N/A" : std::to_string(selected_planner_index)) << "\n"
+            << "  Used Guidance:   " << (used_guidance ? "Yes" : "No (T-MPC++)") << "\n"
+            << "  Trajectory Cost: " << std::fixed << std::setprecision(4) << trajectory_cost << "\n"
+            << "  Solver Status:   SUCCESS (exit code: " << solver_exit_code << ")";
+    }
+    else
+    {
+        // Failure case - focus on failure reason
+        oss << "MPC Planning FAILED ✗\n"
+            << "  Solver Exit Code: " << solver_exit_code;
+
+        // Decode exit code meaning
+        switch (solver_exit_code)
+        {
+        case 1:
+            oss << " (SUCCESS - but success flag is false)";
+            break;
+        case 0:
+            oss << " (MAX_ITERATIONS_REACHED)";
+            break;
+        case -1:
+            oss << " (INFEASIBLE)";
+            break;
+        default:
+            oss << " (UNKNOWN_ERROR)";
+            break;
+        }
+
+        oss << "\n  Success Flag:     " << (success ? "true" : "false");
+
+        // Still show available metadata if present
+        if (selected_topology_id != -1 || selected_planner_index != -1)
+        {
+            oss << "\n  Topology ID:      " << (selected_topology_id == -1 ? "N/A" : std::to_string(selected_topology_id))
+                << "\n  Planner Index:    " << (selected_planner_index == -1 ? "N/A" : std::to_string(selected_planner_index));
+        }
+    }
+
+    return oss.str();
 }

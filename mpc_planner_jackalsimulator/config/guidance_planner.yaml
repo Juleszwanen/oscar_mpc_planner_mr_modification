@@ -63,3 +63,6 @@ guidance_planner:
 
   test_node:
     continuous_replanning: true # When using the example, plan continuously
+
+  JULES:
+    use_extra_params_module_data: true  # This uses the extra variables in the module_data struct which are filled inside the GuidanceConstraints::optimize() func 

@@ -36,6 +36,8 @@ namespace MPCPlanner
         PlannerOutput(double dt, int N) : trajectory(dt, N) {}
 
         PlannerOutput() = default;
+
+        std::string logOutput() const;
     };
 
     class Planner
@@ -73,7 +75,7 @@ namespace MPCPlanner
 
         std::unique_ptr<RosTools::Timer> _startup_timer;
 
-        std::vector<std::shared_ptr<ControllerModule>> _modules; // Will contain all modules used in the mpc formulation
+        std::vector<std::shared_ptr<ControllerModule>> _modules; // Will contain all modules used in the mpc formulation and the _modules are filled by the function initializeModules() in the file modules.h
     };
 
 }

@@ -383,6 +383,15 @@ namespace MPCPlanner
             _solver->_info = best_solver->_info;
             _solver->_params = best_solver->_params;
 
+            if (CONFIG["JULES"]["use_extra_params_module_data"].as<bool>())
+            {
+                module_data.selected_topology_id = best_planner.result.guidance_ID;
+                module_data.selected_planner_index = best_planner_index_;
+                module_data.used_guidance = !best_planner.is_original_planner;
+                module_data.trajectory_cost = best_planner.result.objective;
+                module_data.solver_exit_code = best_planner.result.exit_code;
+            }
+
             return best_planner.result.exit_code; // Return its exit code
         }
     }
@@ -593,7 +602,6 @@ namespace MPCPlanner
 
         global_guidance_->saveData(data_saver); // Save data from the guidance planner
     }
-
 
 }
 
