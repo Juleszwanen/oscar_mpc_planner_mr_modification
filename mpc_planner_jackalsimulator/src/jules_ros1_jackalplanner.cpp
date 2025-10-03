@@ -23,7 +23,7 @@
 // Constructor: Initialize MPC planner with multi-robot coordination
 JulesJackalPlanner::JulesJackalPlanner(ros::NodeHandle &nh, ros::NodeHandle &pnh)
 {
-    LOG_HEADER("JULES PlannerNode: " + ros::this_node::getName() + " starting");
+    LOG_HEADER("JULES: Jackal planner " + ros::this_node::getName() + " starting");
     _ego_robot_ns = ros::this_node::getNamespace();
     _ego_robot_id = extractRobotIdFromNamespace(_ego_robot_ns);
 
@@ -60,13 +60,10 @@ JulesJackalPlanner::JulesJackalPlanner(ros::NodeHandle &nh, ros::NodeHandle &pnh
     // Setup ROS I/O
     this->initializeSubscribersAndPublishers(nh, pnh);
 
-    // Robot synchronization
-    // _reconfigure = std::make_unique<JackalsimulatorReconfigure>(); // Initialize RQT reconfigure
+    _reconfigure = std::make_unique<JackalsimulatorReconfigure>(); // Initialize RQT reconfigure
 
-    // _startup_timer = std::make_unique<RosTools::Timer>(1.0); // Give some time to receive data Perhaps this is usefull!
-
-    ros::Duration(5).sleep(); // Rember that this blocks all callbacks of this node, but this should give the whole system and the other nodes some startup timeq
-    // Give system startup time
+    // ros::Duration(1).sleep(); // Rember that this blocks all callbacks of this node, but this should give the whole system and the other nodes some startup timeq
+    //  Give system startup time
     if (wait_for_sync)
     {
         this->waitForAllRobotsReady(nh);
@@ -75,6 +72,9 @@ JulesJackalPlanner::JulesJackalPlanner(ros::NodeHandle &nh, ros::NodeHandle &pnh
     // publish the current pose of the ego robot, which the other robots can consume
 
     // this->publishEgoPose();
+
+    _startup_timer.setDuration(4.0);
+    _startup_timer.start();
 
     // Start control loop timer
     _timer = nh.createTimer(
@@ -96,7 +96,7 @@ JulesJackalPlanner::JulesJackalPlanner(ros::NodeHandle &nh, ros::NodeHandle &pnh
 }
 JulesJackalPlanner::~JulesJackalPlanner()
 {
-    LOG_INFO(_ego_robot_ns + "Stopped JulesJackalPlanner");
+    LOG_INFO(_ego_robot_ns + ": Stopped JulesJackalPlanner");
 }
 
 // 2. ROS COMMUNICATION SETUP
@@ -106,6 +106,7 @@ void JulesJackalPlanner::initializeSubscribersAndPublishers(ros::NodeHandle &nh,
 {
     LOG_INFO(_ego_robot_ns + ": initializeSubscribersAndPublishers");
 
+    /** @note Some Topics are mapped in the launch file! */
     // Input subscribers
     _state_sub = nh.subscribe<nav_msgs::Odometry>(
         "input/state", 5,
@@ -139,6 +140,10 @@ void JulesJackalPlanner::initializeSubscribersAndPublishers(ros::NodeHandle &nh,
     _trajectory_pub = nh.advertise<nav_msgs::Path>("output/current_trajectory", 1);
     _direct_trajectory_pub = nh.advertise<mpc_planner_msgs::ObstacleGMM>("robot_to_robot/output/current_trajectory", 1);
     _objective_pub = nh.advertise<std_msgs::Bool>("events/objective_reached", 1);
+
+    // Environment resets
+    _reset_simulation_pub = nh.advertise<std_msgs::Empty>("/lmpcc/reset_environment", 1);
+    _reset_simulation_client = nh.serviceClient<std_srvs::Empty>("/gazebo/reset_world");
 }
 void JulesJackalPlanner::subscribeToOtherRobotTopics(ros::NodeHandle &nh, const std::set<std::string> &other_robot_namespaces)
 {
@@ -263,6 +268,12 @@ void JulesJackalPlanner::loop(const ros::TimerEvent & /*event*/)
 }
 void JulesJackalPlanner::loopDirectTrajectory(const ros::TimerEvent & /*event*/)
 {
+    if (!_startup_timer.hasFinished())
+    {
+        LOG_INFO(_ego_robot_ns + ": Still in startup period, skipping planning");
+        return;
+    }
+
     LOG_DEBUG(_ego_robot_ns + "============= Loop Start =============");
     LOG_DEBUG(_ego_robot_ns + ": Obstacles: dynamic=" + std::to_string(_data.dynamic_obstacles.size()) +
               ", trajectory=" + std::to_string(_data.trajectory_dynamic_obstacles.size()));
@@ -271,7 +282,7 @@ void JulesJackalPlanner::loopDirectTrajectory(const ros::TimerEvent & /*event*/)
 
     // Handle initial planning phase - run if:
     // 1. We're planning for the first time, OR
-    // 2. We haven't received meaningful trajectory data from other robots yet
+    // 2. We haven't received meaningful trajectory data from atleas 1 other robots yet
     if (_planning_for_the_frist_time || !_have_received_meaningful_trajectory_data)
     {
         handleInitialPlanningPhase();
@@ -288,9 +299,14 @@ void JulesJackalPlanner::loopDirectTrajectory(const ros::TimerEvent & /*event*/)
     _data.past_trajectory.replaceTrajectory(output.trajectory);
 
     // PHASE 4: Publish command and visualize results
-    LOG_INFO(_ego_robot_ns + " " + output.logOutput());
+    LOG_INFO_THROTTLE((int)5000, _ego_robot_ns << " " << output.logOutput());
     publishCmdAndVisualize(cmd, output);
 
+    // if (_time_to_reset)
+    // {
+    //     reset(true);
+    //     return;
+    // }
     LOG_DEBUG(_ego_robot_ns + ": ============= Loop End =============");
 }
 void JulesJackalPlanner::loopWithService(const ros::TimerEvent & /*event*/)
@@ -1253,6 +1269,7 @@ std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> JulesJackalPlanner::g
         cmd.angular.z = 0.0;
         LOG_DEBUG(_ego_robot_ns + ": Maintaining stopped state at goal");
         buildOutputFromBrakingCommand(output, cmd); // Create stop trajectory
+        _time_to_reset = true;
         return {cmd, output};
     }
 
@@ -1301,6 +1318,48 @@ void JulesJackalPlanner::publishCmdAndVisualize(const geometry_msgs::Twist &cmd,
 
     // Quick heading ray for sanity checking
     visualize();
+}
+
+void JulesJackalPlanner::reset(bool success)
+{
+    LOG_MARK("Resetting " + _ego_robot_ns + " - Success: " + std::to_string(success));
+
+    // 1. Reset simulation environment
+    if (_ego_robot_id == 1)
+    {
+        _reset_simulation_client.call(_reset_msg);
+        _reset_simulation_pub.publish(std_msgs::Empty());
+    }
+    // 2. Give simulation time to reset
+    ros::Duration(1.0 / CONFIG["control_frequency"].as<double>()).sleep();
+
+    // 3. Reset core planner (state, data, metrics)
+    _planner->reset(_state, _data, success);
+
+    // 4. Reset multi-robot coordination state
+    _received_obstacle_callback_first_time = true;
+    _planning_for_the_frist_time = true;
+    _have_received_meaningful_trajectory_data = false;
+    _goal_reached = false;
+    _time_to_reset = false;
+
+    // 5. Reset startup timer for multi-robot synchronization
+    _startup_timer.setDuration(4.0);
+    _startup_timer.start();
+
+    // 6. Clear multi-robot data structures
+    _data.trajectory_dynamic_obstacles.clear();
+    _data.dynamic_obstacles.clear();
+
+    // 7. Re-initialize other robots as obstacles
+    this->initializeOtherRobotsAsObstacles(_other_robot_nss, _data, CONFIG["robot_radius"].as<double>());
+
+    // 8. Optional: Reset timeout timer if used
+    // if (_timeout_timer.isInitialized()) {
+    //     _timeout_timer.start();
+    // }
+
+    LOG_INFO(_ego_robot_ns + ": Reset complete - ready for new episode");
 }
 
 int main(int argc, char **argv)

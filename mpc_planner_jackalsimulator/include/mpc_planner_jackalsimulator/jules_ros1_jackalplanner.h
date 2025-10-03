@@ -90,6 +90,10 @@ public:
     // static member functions
     static int extractRobotIdFromNamespace(const std::string &ns);
 
+    // Simulation functions:
+    void reset(bool succes); // The succes variable indicates if we reached our objective in time our the the _time_out_timer has finished
+
+
 private:
     bool isPathTheSame(const nav_msgs::Path::ConstPtr &msg) const;
     double estimateYaw(const geometry_msgs::Quaternion &q) const;
@@ -128,9 +132,16 @@ private:
     ros::Publisher _trajectory_pub;        // publish the trajectory the robots is about to follow, this one publishes first to the central aggregator
     ros::Publisher _direct_trajectory_pub; // this publishes to a robot immediately so no central aggregator in between
     ros::Timer _timer;
-     std::unique_ptr<RosTools::Timer> _startup_timer;
 
+    RosTools::Timer _startup_timer;
     ros::ServiceClient _trajectory_client;
+
+    //Simulation reset:
+    std_srvs::Empty _reset_msg;
+    ros::Publisher _reset_simulation_pub;
+    ros::ServiceClient _reset_simulation_client;
+    
+
 
     // Config
     std::string _global_frame{"map"};
@@ -146,10 +157,11 @@ private:
     double _goal_tolerance{0.5};
     bool _received_obstacle_callback_first_time{true};
     bool _planning_for_the_frist_time{true};
-    bool _have_received_meaningful_trajectory_data{false};  // Track trajectory data readiness
+    bool _have_received_meaningful_trajectory_data{false}; // Track trajectory data readiness
 
     // Goal cache
     bool _goal_received{false};
     bool _goal_reached{false};
+    bool _time_to_reset{false};
     Eigen::Vector2d _goal_xy{0.0, 0.0};
 };
