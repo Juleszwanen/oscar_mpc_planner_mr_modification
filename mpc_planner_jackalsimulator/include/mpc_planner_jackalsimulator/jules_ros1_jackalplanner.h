@@ -63,6 +63,7 @@ public:
 
     void poseOtherRobotCallback(const geometry_msgs::PoseStamped::ConstPtr &msg, const std::string ns);
     void trajectoryCallback(const mpc_planner_msgs::ObstacleGMM::ConstPtr &msg, const std::string ns);
+    void allRobotsReachedObjectiveCallback(const std_msgs::Bool::ConstPtr &msg);
 
     // publish functions
     void publishCurrentTrajectory(MPCPlanner::PlannerOutput output);
@@ -93,7 +94,6 @@ public:
     // Simulation functions:
     void reset(bool succes); // The succes variable indicates if we reached our objective in time our the the _time_out_timer has finished
 
-
 private:
     bool isPathTheSame(const nav_msgs::Path::ConstPtr &msg) const;
     double estimateYaw(const geometry_msgs::Quaternion &q) const;
@@ -103,6 +103,7 @@ private:
     void prepareObstacleData();
     std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> generatePlanningCommand();
     void publishCmdAndVisualize(const geometry_msgs::Twist &cmd, const MPCPlanner::PlannerOutput &output);
+    void rotatePiRadiansCw(geometry_msgs::Twist &cmd);
 
 private:
     // Core MPC types
@@ -122,6 +123,7 @@ private:
     ros::Subscriber _goal_sub;
     ros::Subscriber _path_sub;
     ros::Subscriber _obstacles_sub;
+    ros::Subscriber _all_robots_reached_objective_sub;             // Subscriber for central aggregator signal
     std::vector<ros::Subscriber> _other_robot_pose_sub_list;       // List of otherrobot pose subcribers
     std::vector<ros::Subscriber> _other_robot_trajectory_sub_list; // List of otherRobot trajectory subscribers
 
@@ -131,17 +133,16 @@ private:
     ros::Publisher _objective_pub;         // events/objective_reached
     ros::Publisher _trajectory_pub;        // publish the trajectory the robots is about to follow, this one publishes first to the central aggregator
     ros::Publisher _direct_trajectory_pub; // this publishes to a robot immediately so no central aggregator in between
+    ros::Publisher _reverse_roadmap_pub;
     ros::Timer _timer;
 
     RosTools::Timer _startup_timer;
     ros::ServiceClient _trajectory_client;
 
-    //Simulation reset:
+    // Simulation reset:
     std_srvs::Empty _reset_msg;
     ros::Publisher _reset_simulation_pub;
     ros::ServiceClient _reset_simulation_client;
-    
-
 
     // Config
     std::string _global_frame{"map"};
@@ -156,12 +157,12 @@ private:
     double _infeasible_deceleration{1.0};
     double _goal_tolerance{0.5};
     bool _received_obstacle_callback_first_time{true};
-    bool _planning_for_the_frist_time{true};
     bool _have_received_meaningful_trajectory_data{false}; // Track trajectory data readiness
+    bool _stop_when_reached_goal{false};                   // This is a configuration parameter that determines if we stop at out goal or that we will rotate pi radians.
 
     // Goal cache
     bool _goal_received{false};
     bool _goal_reached{false};
-    bool _time_to_reset{false};
+
     Eigen::Vector2d _goal_xy{0.0, 0.0};
 };

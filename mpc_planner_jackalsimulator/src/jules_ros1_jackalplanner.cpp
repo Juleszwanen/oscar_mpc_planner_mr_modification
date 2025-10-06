@@ -128,6 +128,10 @@ void JulesJackalPlanner::initializeSubscribersAndPublishers(ros::NodeHandle &nh,
         "input/obstacles", 1,
         boost::bind(&JulesJackalPlanner::obstacleCallback, this, _1));
 
+    _all_robots_reached_objective_sub = nh.subscribe<std_msgs::Bool>(
+        "/all_robots_reached_objective", 1,
+        boost::bind(&JulesJackalPlanner::allRobotsReachedObjectiveCallback, this, _1));
+
     // Subscribe to other robots
     this->subscribeToOtherRobotTopics(nh, _other_robot_nss);
 
@@ -144,6 +148,9 @@ void JulesJackalPlanner::initializeSubscribersAndPublishers(ros::NodeHandle &nh,
     // Environment resets
     _reset_simulation_pub = nh.advertise<std_msgs::Empty>("/lmpcc/reset_environment", 1);
     _reset_simulation_client = nh.serviceClient<std_srvs::Empty>("/gazebo/reset_world");
+
+    // Roadmap reverse
+    _reverse_roadmap_pub = nh.advertise<std_msgs::Empty>("roadmap/reverse", 1);
 }
 void JulesJackalPlanner::subscribeToOtherRobotTopics(ros::NodeHandle &nh, const std::set<std::string> &other_robot_namespaces)
 {
@@ -181,15 +188,14 @@ void JulesJackalPlanner::loop(const ros::TimerEvent & /*event*/)
     LOG_DEBUG(_ego_robot_ns + ": LOOP: dynamic_obstacles size = " + std::to_string(_data.dynamic_obstacles.size()));
     LOG_DEBUG(_ego_robot_ns + ": LOOP: trajectory_dynamic_obstacle size = " + std::to_string(_data.trajectory_dynamic_obstacles.size()));
 
-    if (_planning_for_the_frist_time)
+    if (!_have_received_meaningful_trajectory_data)
     {
         // LOG_HEADER(_ego_robot_ns + ": Planning for the first time");
         LOG_INFO(_ego_robot_ns + ": State x: " + std::to_string(_state.get("x")));
         LOG_INFO(_ego_robot_ns + ": State y: " + std::to_string(_state.get("y")));
         LOG_INFO(_ego_robot_ns + ": State psi[radians]: " + std::to_string(_state.get("psi")));
         applyDummyObstacleCommand();
-        _planning_for_the_frist_time = false;
-        this->logDataState(_ego_robot_ns + ": Planning for the first time");
+        this->logDataState(_ego_robot_ns + ": Initial planning complete");
         return;
     }
 
@@ -270,7 +276,7 @@ void JulesJackalPlanner::loopDirectTrajectory(const ros::TimerEvent & /*event*/)
 {
     if (!_startup_timer.hasFinished())
     {
-        LOG_INFO(_ego_robot_ns + ": Still in startup period, skipping planning");
+        LOG_INFO_THROTTLE(1000, _ego_robot_ns + ": In startup period, skipping planning");
         return;
     }
 
@@ -280,10 +286,8 @@ void JulesJackalPlanner::loopDirectTrajectory(const ros::TimerEvent & /*event*/)
 
     _data.planning_start_time = std::chrono::system_clock::now();
 
-    // Handle initial planning phase - run if:
-    // 1. We're planning for the first time, OR
-    // 2. We haven't received meaningful trajectory data from atleas 1 other robots yet
-    if (_planning_for_the_frist_time || !_have_received_meaningful_trajectory_data)
+    // Handle initial planning phase - run if we haven't received meaningful trajectory data yet
+    if (!_have_received_meaningful_trajectory_data)
     {
         handleInitialPlanningPhase();
         LOG_INFO(_ego_robot_ns + ": ============= End INITIAL Loop =============");
@@ -544,16 +548,19 @@ void JulesJackalPlanner::pathCallback(const nav_msgs::Path::ConstPtr &msg)
     {
         _data.reference_path.x.push_back(pose.pose.position.x);
         _data.reference_path.y.push_back(pose.pose.position.y);
+        _data.reference_path.psi.push_back(_state.get("psi"));
     }
 
-    _data.reference_path.psi.push_back(0.0);
+    /** @note Oscar had instead of pushback "psi" oscar had 0.0, why not clear? */
+    // _data.reference_path.psi.push_back(0.0);
     _planner->onDataReceived(_data, "reference_path");
 }
 void JulesJackalPlanner::obstacleCallback(const mpc_planner_msgs::ObstacleArray::ConstPtr &msg)
 {
+    /** @todo This does not work right now because  _have_received_meaningful_trajectory_data does not represent the timercallback in centralAggregator, perhaps think of a fix solution*/
     // Start fresh each message; the solver expects the latest snapshot.
     // In obstacleCallback at the very start:
-    if (_planning_for_the_frist_time)
+    if (!_have_received_meaningful_trajectory_data)
     {
         LOG_WARN(_ego_robot_ns + ": ObstacleCallback came too early Abording this call");
         return;
@@ -840,6 +847,30 @@ void JulesJackalPlanner::trajectoryCallback(const mpc_planner_msgs::ObstacleGMM:
         return;
     }
 }
+void JulesJackalPlanner::allRobotsReachedObjectiveCallback(const std_msgs::Bool::ConstPtr &msg)
+{
+    if (!(msg->data))
+    {
+        LOG_ERROR(_ego_robot_ns + ": CentralAggregator sent signal that all robots reached objective but data is false: " + std::to_string(msg->data));
+        return;
+    }
+
+    LOG_INFO(_ego_robot_ns + ": All robots reached objective - resetting for new planning cycle");
+
+    // Reset goal-related state to resume normal planning
+    _goal_reached = false;
+
+    // Reset trajectory data readiness to ensure fresh start
+    _have_received_meaningful_trajectory_data = false;
+
+    // Start startup timer to allow roadmap reversal and new path generation
+    std_msgs::Empty empty_msg;
+    _reverse_roadmap_pub.publish(empty_msg);
+    _startup_timer.setDuration(2.0); // Give time for roadmap to reverse and publish new path
+    _startup_timer.start();
+
+    LOG_INFO(_ego_robot_ns + ": Ready to resume planning with new objectives in 2 seconds");
+}
 
 // 5. PUBLISHER FUNCTIONS
 //    - All functions that publish ROS messages
@@ -895,8 +926,9 @@ void JulesJackalPlanner::publishObjectiveReachedEvent()
     std_msgs::Bool event;
     event.data = true;
     _objective_pub.publish(event);
-    LOG_INFO("Objective reached - published event");
+    LOG_INFO_THROTTLE(1000, _ego_robot_ns + ": Objective reached - published event");
 }
+
 void JulesJackalPlanner::publishDirectTrajectory(MPCPlanner::PlannerOutput output)
 {
     // build from output a
@@ -1164,7 +1196,7 @@ void JulesJackalPlanner::buildOutputFromBrakingCommand(MPCPlanner::PlannerOutput
     // Build output when the MPC could not solve
     if (output.success)
     {
-        LOG_WARN_THROTTLE(0.2, "Creating a braking command trajectory while the MPC solve was signaled as successful");
+        LOG_WARN_THROTTLE(1, "Creating a braking command trajectory while the MPC solve was signaled as successful");
         return;
     }
 
@@ -1195,7 +1227,7 @@ void JulesJackalPlanner::buildOutputFromBrakingCommand(MPCPlanner::PlannerOutput
         output.trajectory.orientations.push_back(orientation);
     }
 
-    LOG_WARN(_ego_robot_ns << " Creating a braking command trajectory");
+    LOG_WARN_THROTTLE(2000, _ego_robot_ns << " Creating a braking command trajectory");
 }
 
 // 9 functions structuring planning phase:
@@ -1203,26 +1235,15 @@ void JulesJackalPlanner::buildOutputFromBrakingCommand(MPCPlanner::PlannerOutput
 void JulesJackalPlanner::handleInitialPlanningPhase()
 {
     // Log why we're in initial planning phase
-    if (_planning_for_the_frist_time)
-    {
-        LOG_INFO(_ego_robot_ns + ": INITIAL PLANNING (first time) - State: [" +
-                 std::to_string(_state.get("x")) + ", " +
-                 std::to_string(_state.get("y")) + ", " +
-                 std::to_string(_state.get("psi")) + "]");
-    }
-    else if (!_have_received_meaningful_trajectory_data)
-    {
-        LOG_INFO(_ego_robot_ns + ": INITIAL PLANNING (waiting for trajectory data) - State: [" +
-                 std::to_string(_state.get("x")) + ", " +
-                 std::to_string(_state.get("y")) + ", " +
-                 std::to_string(_state.get("psi")) + "]");
-    }
+    LOG_INFO(_ego_robot_ns + ": INITIAL PLANNING (waiting for trajectory data) - State: [" +
+             std::to_string(_state.get("x")) + ", " +
+             std::to_string(_state.get("y")) + ", " +
+             std::to_string(_state.get("psi")) + "]");
 
-    LOG_INFO(_ego_robot_ns + ": Waiting for trajectory callbacks, applying dummy command");
+    LOG_INFO(_ego_robot_ns + ": Waiting for trajectory callbacks, therefore applying dummy command");
 
     applyDummyObstacleCommand();
     this->logDataState(_ego_robot_ns + ": Initial planning complete");
-    _planning_for_the_frist_time = false; // Only set this false, keep trajectory data flag separate
 }
 
 // Add this function after handleInitialPlanningPhase()
@@ -1255,21 +1276,29 @@ std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> JulesJackalPlanner::g
         applyBrakingCommand(cmd);
         _goal_reached = true;
 
-        publishObjectiveReachedEvent();
         buildOutputFromBrakingCommand(output, cmd); // Create braking trajectory
 
         LOG_INFO(_ego_robot_ns + ": GOAL REACHED - Applying braking command");
         return {cmd, output};
     }
 
-    // Maintain stopped state at goal
+    // Maintain stopped state at goal or rotate pi radians
     if (_goal_reached)
     {
         cmd.linear.x = 0.0;
         cmd.angular.z = 0.0;
         LOG_DEBUG(_ego_robot_ns + ": Maintaining stopped state at goal");
-        buildOutputFromBrakingCommand(output, cmd); // Create stop trajectory
-        _time_to_reset = true;
+        if (_stop_when_reached_goal)
+        {
+            buildOutputFromBrakingCommand(output, cmd); // Create stop trajectory
+            publishObjectiveReachedEvent();
+        }
+        else
+        {
+            rotatePiRadiansCw(cmd);
+            buildOutputFromBrakingCommand(output, cmd);
+        }
+
         return {cmd, output};
     }
 
@@ -1320,6 +1349,49 @@ void JulesJackalPlanner::publishCmdAndVisualize(const geometry_msgs::Twist &cmd,
     visualize();
 }
 
+void JulesJackalPlanner::rotatePiRadiansCw(geometry_msgs::Twist &cmd)
+{
+    LOG_INFO_THROTTLE(500, _ego_robot_ns + ": Rotating pi radians clockwise");
+
+    // Safety check
+    if (_data.reference_path.psi.empty())
+    {
+        LOG_WARN(_ego_robot_ns + ": No reference path available for rotation");
+        _goal_reached = false;
+        return;
+    }
+
+    // Get current heading from reference path (last available point)
+    const double current_ref_heading = _data.reference_path.psi.back();
+    const double goal_angle = current_ref_heading + M_PI; // Rotate 180 degrees
+    double angle_diff = goal_angle - _state.get("psi");
+
+    // Normalize angle difference
+    while (angle_diff > M_PI)
+        angle_diff -= 2 * M_PI;
+    while (angle_diff < -M_PI)
+        angle_diff += 2 * M_PI;
+
+    LOG_VALUE_DEBUG(_ego_robot_ns + " psi:", _state.get("psi"));
+    LOG_VALUE_DEBUG(_ego_robot_ns + " goal_angle:", current_ref_heading);
+    LOG_VALUE_DEBUG(_ego_robot_ns + " angle_diff", angle_diff);
+
+    if (std::abs(angle_diff) > 0.1) // 0.1 rad ≈ 5.7 degrees tolerance
+    {
+        cmd.linear.x = 0.0;
+        if (_enable_output)
+            cmd.angular.z = 1.5 * RosTools::sgn(angle_diff);
+        else
+            cmd.angular.z = 0.0;
+    }
+    else
+    {
+        // We publish that we reached our objective, it does not matter that we do this multiple times
+        publishObjectiveReachedEvent();
+        LOG_INFO_THROTTLE(2000, _ego_robot_ns + "Waiting for the rest of the robots to reach their objective before starting to follow reverserd path");
+    }
+}
+
 void JulesJackalPlanner::reset(bool success)
 {
     LOG_MARK("Resetting " + _ego_robot_ns + " - Success: " + std::to_string(success));
@@ -1338,10 +1410,8 @@ void JulesJackalPlanner::reset(bool success)
 
     // 4. Reset multi-robot coordination state
     _received_obstacle_callback_first_time = true;
-    _planning_for_the_frist_time = true;
     _have_received_meaningful_trajectory_data = false;
     _goal_reached = false;
-    _time_to_reset = false;
 
     // 5. Reset startup timer for multi-robot synchronization
     _startup_timer.setDuration(4.0);
