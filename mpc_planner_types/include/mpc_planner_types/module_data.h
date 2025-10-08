@@ -32,7 +32,7 @@ namespace MPCPlanner
 
         void reset();
 
-    // Added by Jules on oct 2: 2025
+    /** @note  Added by Jules on oct 2: 2025 */
 
     public:
         // ADD THESE:

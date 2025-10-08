@@ -91,9 +91,6 @@ public:
     // static member functions
     static int extractRobotIdFromNamespace(const std::string &ns);
 
-    // Simulation functions:
-    void reset(bool succes); // The succes variable indicates if we reached our objective in time our the the _time_out_timer has finished
-
 private:
     bool isPathTheSame(const nav_msgs::Path::ConstPtr &msg) const;
     double estimateYaw(const geometry_msgs::Quaternion &q) const;
@@ -136,7 +133,7 @@ private:
     ros::Publisher _reverse_roadmap_pub;
     ros::Timer _timer;
 
-    RosTools::Timer _startup_timer;
+    std::unique_ptr<RosTools::Timer> _startup_timer;
     ros::ServiceClient _trajectory_client;
 
     // Simulation reset:
@@ -155,10 +152,12 @@ private:
     bool _enable_output{true};
     double _control_frequency{20.0};
     double _infeasible_deceleration{1.0};
-    double _goal_tolerance{0.5};
+    double _goal_tolerance{0.8};
     bool _received_obstacle_callback_first_time{true};
     bool _have_received_meaningful_trajectory_data{false}; // Track trajectory data readiness
     bool _stop_when_reached_goal{false};                   // This is a configuration parameter that determines if we stop at out goal or that we will rotate pi radians.
+
+    std::set<std::string> _validated_trajectory_robots; // this set will record whihc robot has send a correct trajectory, this is important during the initialization phase.
 
     // Goal cache
     bool _goal_received{false};

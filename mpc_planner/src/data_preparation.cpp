@@ -105,6 +105,7 @@ namespace MPCPlanner
                 if (obstacles.size() > max_obstacles)
                 {
                         std::vector<double> distances;
+                        LOG_ERROR("Received " << obstacles.size() << " > " << max_obstacles << " obstacles. Keeping the closest.");
                         LOG_MARK("Received " << obstacles.size() << " > " << max_obstacles << " obstacles. Keeping the closest.");
 
                         Eigen::Vector2d obstacle_pos;
@@ -143,6 +144,7 @@ namespace MPCPlanner
 
                         for (size_t i = 0; i < processed_obstacles.size(); i++) // Sequential IDs
                         {
+                                LOG_ERROR("Assigning IDs " + std::to_string(i));
                                 processed_obstacles[i].index = i;
                         }
 
@@ -150,6 +152,7 @@ namespace MPCPlanner
                 }
                 else if (obstacles.size() < max_obstacles)
                 {
+
                         LOG_MARK("Received " << obstacles.size() << " < " << max_obstacles << " obstacles. Adding dummies.");
 
                         for (size_t cur_size = obstacles.size(); cur_size < max_obstacles; cur_size++)
