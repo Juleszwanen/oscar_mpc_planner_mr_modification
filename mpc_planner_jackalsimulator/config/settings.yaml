@@ -4,7 +4,7 @@ integrator_step: 0.2 # [s] Integration step
 n_discs: 1 # Number of discs to model the robot with
 
 enable_output: true # Enable output to the robot
-control_frequency: 1 # [Hz] Control frequency of the MPC 20-> normal
+control_frequency: 20 # [Hz] Control frequency of the MPC 20-> normal
 
 debug_output: false # Show debug output
 debug_limits: false # Show when state/input limits are hit
@@ -89,3 +89,6 @@ weights: # Weights of the MPC, need to correspond to declared weights in the sol
 
 visualization:
   draw_every: 5 # Visualize every x stages
+
+JULES:
+    use_extra_params_module_data: true

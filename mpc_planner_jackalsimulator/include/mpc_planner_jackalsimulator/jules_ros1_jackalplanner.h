@@ -30,6 +30,7 @@
 #include <tf2_ros/transform_broadcaster.h>
 #include <set>
 #include <memory>
+#include <ros/console.h>
 
 namespace MPCPlanner
 {
@@ -62,6 +63,7 @@ public:
 
     void poseOtherRobotCallback(const geometry_msgs::PoseStamped::ConstPtr &msg, const std::string ns);
     void trajectoryCallback(const mpc_planner_msgs::ObstacleGMM::ConstPtr &msg, const std::string ns);
+    void allRobotsReachedObjectiveCallback(const std_msgs::Bool::ConstPtr &msg);
 
     // publish functions
     void publishCurrentTrajectory(MPCPlanner::PlannerOutput output);
@@ -93,6 +95,13 @@ private:
     bool isPathTheSame(const nav_msgs::Path::ConstPtr &msg) const;
     double estimateYaw(const geometry_msgs::Quaternion &q) const;
 
+    // Functions structuring planning phase:
+    void handleInitialPlanningPhase();
+    void prepareObstacleData();
+    std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> generatePlanningCommand();
+    void publishCmdAndVisualize(const geometry_msgs::Twist &cmd, const MPCPlanner::PlannerOutput &output);
+    void rotatePiRadiansCw(geometry_msgs::Twist &cmd);
+
 private:
     // Core MPC types
     std::unique_ptr<MPCPlanner::Planner> _planner;
@@ -111,6 +120,7 @@ private:
     ros::Subscriber _goal_sub;
     ros::Subscriber _path_sub;
     ros::Subscriber _obstacles_sub;
+    ros::Subscriber _all_robots_reached_objective_sub;             // Subscriber for central aggregator signal
     std::vector<ros::Subscriber> _other_robot_pose_sub_list;       // List of otherrobot pose subcribers
     std::vector<ros::Subscriber> _other_robot_trajectory_sub_list; // List of otherRobot trajectory subscribers
 
@@ -120,29 +130,38 @@ private:
     ros::Publisher _objective_pub;         // events/objective_reached
     ros::Publisher _trajectory_pub;        // publish the trajectory the robots is about to follow, this one publishes first to the central aggregator
     ros::Publisher _direct_trajectory_pub; // this publishes to a robot immediately so no central aggregator in between
+    ros::Publisher _reverse_roadmap_pub;
     ros::Timer _timer;
 
+    std::unique_ptr<RosTools::Timer> _startup_timer;
     ros::ServiceClient _trajectory_client;
+
+    // Simulation reset:
+    std_srvs::Empty _reset_msg;
+    ros::Publisher _reset_simulation_pub;
+    ros::ServiceClient _reset_simulation_client;
 
     // Config
     std::string _global_frame{"map"};
     std::string _ego_robot_ns;
     int _ego_robot_id{-1};
-    std::set<std::string> _other_robot_nss;         // List of namespaces of all other robots in the area excluding ego robot ns
-    std::vector<std::string> _robot_ns_list;        // List of namespaces of all robots in the area
+    std::set<std::string> _other_robot_nss;          // List of namespaces of all other robots in the area excluding ego robot ns
+    std::vector<std::string> _robot_ns_list;         // List of namespaces of all robots in the area
     bool _immediate_robot_robot_communication{true}; // This boolean can turn on and off immideate robot to robot communication, which means there is no central aggregator in between
-
 
     bool _enable_output{true};
     double _control_frequency{20.0};
     double _infeasible_deceleration{1.0};
-    double _goal_tolerance{0.5};
+    double _goal_tolerance{0.8};
     bool _received_obstacle_callback_first_time{true};
-    bool _planning_for_the_frist_time{true};
-    bool _first_direct_trajectory_cb_received{false};
+    bool _have_received_meaningful_trajectory_data{false}; // Track trajectory data readiness
+    bool _stop_when_reached_goal{false};                   // This is a configuration parameter that determines if we stop at out goal or that we will rotate pi radians.
+
+    std::set<std::string> _validated_trajectory_robots; // this set will record whihc robot has send a correct trajectory, this is important during the initialization phase.
 
     // Goal cache
     bool _goal_received{false};
     bool _goal_reached{false};
+
     Eigen::Vector2d _goal_xy{0.0, 0.0};
 };

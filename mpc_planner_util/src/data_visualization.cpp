@@ -124,6 +124,7 @@ namespace MPCPlanner
 
         for (auto &obstacle : obstacles)
         {
+
             cylinder.setScale(2. * obstacle.radius, 2. * obstacle.radius, 0.01);
             cylinder.setColorInt(obstacle.index, alpha, RosTools::Colormap::BRUNO);
             for (size_t k = 0; k < obstacle.prediction.modes[0].size(); k++)
@@ -134,21 +135,22 @@ namespace MPCPlanner
             publisher.publish();
 
         return publisher;
-        
     }
 
     RosTools::ROSMarkerPublisher &visualizeObstaclePredictionsWithTime(const std::vector<DynamicObstacle> &obstacles, const std::string &topic_name,
-                                                               bool publish, double alpha, const double dt)
+                                                                       bool publish, double alpha, const double dt)
     {
         RosTools::ROSMarkerPublisher &publisher = VISUALS.getPublisher(topic_name);
         auto &cylinder = publisher.getNewPointMarker("CYLINDER");
 
         for (auto &obstacle : obstacles)
         {
+            
+
             cylinder.setScale(2. * obstacle.radius, 2. * obstacle.radius, 0.01);
             cylinder.setColorInt(obstacle.index, alpha, RosTools::Colormap::BRUNO);
             for (size_t k = 0; k < obstacle.prediction.modes[0].size(); k++)
-                cylinder.addPointMarker(obstacle.prediction.modes[0][k].position, k*dt);
+                cylinder.addPointMarker(obstacle.prediction.modes[0][k].position, k * dt);
         }
 
         if (publish)
@@ -156,7 +158,7 @@ namespace MPCPlanner
 
         return publisher;
     }
-    
+
     RosTools::ROSMarkerPublisher &visualizeLinearConstraint(double a1, double a2, double b, int k, int N, const std::string &topic_name,
                                                             bool publish, double alpha, double thickness)
     {

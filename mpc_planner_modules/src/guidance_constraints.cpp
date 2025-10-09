@@ -283,7 +283,7 @@ namespace MPCPlanner
             planner.result.Reset();
             planner.disabled = false;
 
-            if (planner.id >= global_guidance_->NumberOfGuidanceTrajectories()) // Only enable the solvers that are needed
+            if (planner.id >= global_guidance_->NumberOfGuidanceTrajectories()) // Only enable the solvers that are needed JULES: this means we did not find the solver for the specific homology class
             {
                 if (!planner.is_original_planner) // We still want to add the original planner!
                 {
@@ -342,7 +342,7 @@ namespace MPCPlanner
 
             // ANALYSIS AND PROCESSING
             planner.result.success = planner.result.exit_code == 1;
-            planner.result.objective = solver->_info.pobj; // How good is the solution?
+            planner.result.objective = solver->_info.pobj; // How good is the solution?, the cost of the trajectory
 
             if (planner.is_original_planner) // We did not use any guidance!
             {
@@ -382,6 +382,15 @@ namespace MPCPlanner
             _solver->_output = best_solver->_output; // Load the solution into the main lmpcc solver
             _solver->_info = best_solver->_info;
             _solver->_params = best_solver->_params;
+
+            if (CONFIG["JULES"]["use_extra_params_module_data"].as<bool>())
+            {
+                module_data.selected_topology_id = best_planner.result.guidance_ID;
+                module_data.selected_planner_index = best_planner_index_;
+                module_data.used_guidance = !best_planner.is_original_planner;
+                module_data.trajectory_cost = best_planner.result.objective;
+                module_data.solver_exit_code = best_planner.result.exit_code;
+            }
 
             return best_planner.result.exit_code; // Return its exit code
         }
@@ -593,4 +602,7 @@ namespace MPCPlanner
 
         global_guidance_->saveData(data_saver); // Save data from the guidance planner
     }
-} // namespace MPCPlanner
+
+}
+
+// namespace MPCPlanner

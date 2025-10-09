@@ -149,20 +149,23 @@ namespace MPCPlanner
     public:
         std::vector<Eigen::Vector2d> positions;
 
-        FixedSizeTrajectory(int size = 50);
+        FixedSizeTrajectory(int size = 30);
+        FixedSizeTrajectory(MPCPlanner::Trajectory trajectory, int size = 30);
 
         void add(const Eigen::Vector2d &p);
+        void replaceTrajectory(const MPCPlanner::Trajectory trajectory);
     };
 
     enum class PlannerState
     {
-        INITIALIZING = 0,    // Robot is starting up, waiting for sync
-        WAITING_FOR_DATA,    // Waiting for essential data (state, goal, path)
-        FIRST_TIME_PLANNING, // Special handling for first planning cycle
-        NORMAL_OPERATION,    // Standard MPC planning and control
-        GOAL_REACHED,        // Robot has reached its objective
-        EMERGENCY_BRAKING,   // Solver failed or safety issue detected
-        ERROR_STATE          // Unrecoverable error state
+        UNINITIALIZED,          // Just constructed, waiting for essential data
+        WAITING_FOR_SYNC,       // Waiting for other robots (if enabled)
+        INITIALIZING_OBSTACLES, // Setting up robot-robot obstacle tracking
+        WAITING_FOR_DATA,       // Have structure, waiting for first valid trajectories
+        PLANNING_ACTIVE,        // Normal MPC planning operation
+        GOAL_REACHED,           // At goal, may rotate or stop
+        RESETTING,              // Transitioning to new task
+        ERROR_STATE             // Unrecoverable error occurred
     };
 }
 

@@ -127,6 +127,7 @@ namespace MPCPlanner
         // virtual void GetMethodName(std::string &name){};
 
         /** ================================== */
+        // std::string getName(){return _name;};
 
     public:
         ModuleType type; /* Constraint or Objective type */
