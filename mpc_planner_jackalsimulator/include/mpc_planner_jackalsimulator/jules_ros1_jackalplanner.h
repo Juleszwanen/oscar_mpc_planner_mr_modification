@@ -52,6 +52,7 @@ public:
     void loop(const ros::TimerEvent &event);
     void loopDirectTrajectory(const ros::TimerEvent &event);
     void loopWithService(const ros::TimerEvent &event);
+    void loopDirectTrajectoryStateMachine(const ros::TimerEvent &event);
 
     // Callbacks
     void stateCallback(const nav_msgs::Odometry::ConstPtr &msg);
@@ -66,10 +67,10 @@ public:
     void allRobotsReachedObjectiveCallback(const std_msgs::Bool::ConstPtr &msg);
 
     // publish functions
-    void publishCurrentTrajectory(MPCPlanner::PlannerOutput output);
+    void publishCurrentTrajectory(const MPCPlanner::PlannerOutput& output);
     void publishObjectiveReachedEvent();
     void publishEgoPose();
-    void publishDirectTrajectory(MPCPlanner::PlannerOutput output);
+    void publishDirectTrajectory(const MPCPlanner::PlannerOutput& output);
 
     // Apply commands
     void applyBrakingCommand(geometry_msgs::Twist &cmd);
@@ -78,18 +79,14 @@ public:
     // Utils
     void visualize();
     void waitForAllRobotsReady(ros::NodeHandle &nh);
-    void initializeOtherRobotsAsObstacles(const std::set<std::string> &_other_robot_nss, MPCPlanner::RealTimeData &_data, const double);
+    bool initializeOtherRobotsAsObstacles(const std::set<std::string> &_other_robot_nss, MPCPlanner::RealTimeData &_data, const double);
     void updateRobotObstaclesFromTrajectories();
     bool objectiveReached(MPCPlanner::State _state, MPCPlanner::RealTimeData _data) const;
     void buildOutputFromBrakingCommand(MPCPlanner::PlannerOutput &output, const geometry_msgs::Twist &cmd);
-    std::set<std::string> identifyOtherRobotNamespaces(const std::vector<std::string> &all_namespaces);
 
-    // Debug logging functions
-    std::string dataToString() const;
     void logDataState(const std::string &context = "") const;
 
-    // static member functions
-    static int extractRobotIdFromNamespace(const std::string &ns);
+   
 
 private:
     bool isPathTheSame(const nav_msgs::Path::ConstPtr &msg) const;
@@ -99,6 +96,7 @@ private:
     void handleInitialPlanningPhase();
     void prepareObstacleData();
     std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> generatePlanningCommand();
+    std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> generatePlanningCommand(const MPCPlanner::PlannerState &current_state);
     void publishCmdAndVisualize(const geometry_msgs::Twist &cmd, const MPCPlanner::PlannerOutput &output);
     void rotatePiRadiansCw(geometry_msgs::Twist &cmd);
 
@@ -164,4 +162,12 @@ private:
     bool _goal_reached{false};
 
     Eigen::Vector2d _goal_xy{0.0, 0.0};
+
+private:
+    // StateMachine logic
+    MPCPlanner::PlannerState _current_state{MPCPlanner::PlannerState::UNINITIALIZED};
+
+    void transitionTo(MPCPlanner::PlannerState new_state);
+    bool canTransitionTo(MPCPlanner::PlannerState new_state);
+    void onStateEnter(MPCPlanner::PlannerState state);
 };

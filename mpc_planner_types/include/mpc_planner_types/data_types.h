@@ -158,14 +158,18 @@ namespace MPCPlanner
 
     enum class PlannerState
     {
-        UNINITIALIZED,          // Just constructed, waiting for essential data
-        WAITING_FOR_SYNC,       // Waiting for other robots (if enabled)
-        INITIALIZING_OBSTACLES, // Setting up robot-robot obstacle tracking
-        WAITING_FOR_DATA,       // Have structure, waiting for first valid trajectories
-        PLANNING_ACTIVE,        // Normal MPC planning operation
-        GOAL_REACHED,           // At goal, may rotate or stop
-        RESETTING,              // Transitioning to new task
-        ERROR_STATE             // Unrecoverable error occurred
+        UNINITIALIZED,                              // Just constructed, waiting for essential data
+        TIMER_STARTUP,                              // Wait with doing anything before the timer goes of
+        WAITING_FOR_FIRST_EGO_POSE,                 // Wait for gazebo/optitrack/localization_algo to provide us with the first ego pose data
+        INITIALIZING_OBSTACLES,                     // Initializing other robots as obstacles, Setting up robot-robot obstacle tracking
+        WAITING_FOR_OTHER_ROBOTS_FIRST_POSES,       // Wait for the other robots to have send their first poses to the ego_robot
+        WAITING_FOR_SYNC,                           // Waiting for other robots (if enabled)
+        WAITING_FOR_TRAJECTORY_DATA,                // Have structure, waiting for first valid trajectories
+        PLANNING_ACTIVE,                            // Normal MPC planning operation
+        JUST_REACHED_GOAL,                          // JUST REACHED OUR GOAL, READY TO BREAK
+        GOAL_REACHED,                               // At goal, may rotate or stop
+        RESETTING,                                  // Transitioning to new task
+        ERROR_STATE                                 // Unrecoverable error occurred
     };
 }
 
