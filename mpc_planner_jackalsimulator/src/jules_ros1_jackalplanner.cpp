@@ -963,7 +963,7 @@ void JulesJackalPlanner::logDataState(const std::string &context) const
 
 bool JulesJackalPlanner::objectiveReached(MPCPlanner::State _state, MPCPlanner::RealTimeData _data) const
 {
-    // check if the objective for each robot is reached if it is reached then we return 0.
+    // check if the objective for a robot is reached if it is reached then we return 0.
     bool objective_reached = _planner->isObjectiveReached(_state, _data);
     return objective_reached;
 }
