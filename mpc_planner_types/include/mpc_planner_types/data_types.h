@@ -158,19 +158,53 @@ namespace MPCPlanner
 
     enum class PlannerState
     {
-        UNINITIALIZED,                              // Just constructed, waiting for essential data
-        TIMER_STARTUP,                              // Wait with doing anything before the timer goes of
-        WAITING_FOR_FIRST_EGO_POSE,                 // Wait for gazebo/optitrack/localization_algo to provide us with the first ego pose data
-        INITIALIZING_OBSTACLES,                     // Initializing other robots as obstacles, Setting up robot-robot obstacle tracking
-        WAITING_FOR_OTHER_ROBOTS_FIRST_POSES,       // Wait for the other robots to have send their first poses to the ego_robot
-        WAITING_FOR_SYNC,                           // Waiting for other robots (if enabled)
-        WAITING_FOR_TRAJECTORY_DATA,                // Have structure, waiting for first valid trajectories
-        PLANNING_ACTIVE,                            // Normal MPC planning operation
-        JUST_REACHED_GOAL,                          // JUST REACHED OUR GOAL, READY TO BREAK
-        GOAL_REACHED,                               // At goal, may rotate or stop
-        RESETTING,                                  // Transitioning to new task
-        ERROR_STATE                                 // Unrecoverable error occurred
+        UNINITIALIZED,                        // Just constructed, waiting for essential data
+        TIMER_STARTUP,                        // Wait with doing anything before the timer goes of
+        WAITING_FOR_FIRST_EGO_POSE,           // Wait for gazebo/optitrack/localization_algo to provide us with the first ego pose data
+        INITIALIZING_OBSTACLES,               // Initializing other robots as obstacles, Setting up robot-robot obstacle tracking
+        WAITING_FOR_OTHER_ROBOTS_FIRST_POSES, // Wait for the other robots to have send their first poses to the ego_robot
+        WAITING_FOR_SYNC,                     // Waiting for other robots (if enabled)
+        WAITING_FOR_TRAJECTORY_DATA,          // Have structure, waiting for first valid trajectories
+        PLANNING_ACTIVE,                      // Normal MPC planning operation
+        JUST_REACHED_GOAL,                    // JUST REACHED OUR GOAL, READY TO BREAK
+        GOAL_REACHED,                         // At goal, may rotate or stop
+        RESETTING,                            // Transitioning to new task
+        ERROR_STATE                           // Unrecoverable error occurred
     };
+
+    // Convert PlannerState to string for logging
+    inline std::string stateToString(PlannerState state)
+    {
+        switch (state)
+        {
+        case PlannerState::UNINITIALIZED:
+            return "UNINITIALIZED";
+        case PlannerState::TIMER_STARTUP:
+            return "TIMER_STARTUP";
+        case PlannerState::WAITING_FOR_FIRST_EGO_POSE:
+            return "WAITING_FOR_FIRST_EGO_POSE";
+        case PlannerState::INITIALIZING_OBSTACLES:
+            return "INITIALIZING_OBSTACLES";
+        case PlannerState::WAITING_FOR_OTHER_ROBOTS_FIRST_POSES:
+            return "WAITING_FOR_OTHER_ROBOTS_FIRST_POSES";
+        case PlannerState::WAITING_FOR_SYNC:
+            return "WAITING_FOR_SYNC";
+        case PlannerState::WAITING_FOR_TRAJECTORY_DATA:
+            return "WAITING_FOR_TRAJECTORY_DATA";
+        case PlannerState::PLANNING_ACTIVE:
+            return "PLANNING_ACTIVE";
+        case PlannerState::JUST_REACHED_GOAL:
+            return "JUST_REACHED_GOAL";
+        case PlannerState::GOAL_REACHED:
+            return "GOAL_REACHED";
+        case PlannerState::RESETTING:
+            return "RESETTING";
+        case PlannerState::ERROR_STATE:
+            return "ERROR_STATE";
+        default:
+            return "UNKNOWN_STATE";
+        }
+    }
 }
 
 #endif
