@@ -199,7 +199,7 @@ namespace MPCPlanner
         /** @note Jules: Functions from here on are added by you*/
         namespace MultiRobot
         {
-                void updateRobotObstaclesFromTrajectories(MPCPlanner::RealTimeData& _data, const std::set<std::string>& _validated_trajectory_robots, const std::string& _ego_robot_ns)
+                void updateRobotObstaclesFromTrajectories(MPCPlanner::RealTimeData &_data, const std::set<std::string> &_validated_trajectory_robots, const std::string &_ego_robot_ns)
                 {
                         LOG_DEBUG(_ego_robot_ns + ": Updating robot obstacles from " + std::to_string(_data.trajectory_dynamic_obstacles.size()) + " trajectory sources");
 
@@ -212,7 +212,7 @@ namespace MPCPlanner
                                 // If we cannot find the robot in the validated_trajectory it means that that robots has not yet send valid trajectory information
                                 if (_validated_trajectory_robots.find(ns) == _validated_trajectory_robots.end())
                                 {
-                                        LOG_WARN(_ego_robot_ns + ": Skipping updating info for " + ns + " non valid trajectory information");
+                                        LOG_WARN(_ego_robot_ns + ": Skipping updating info for " + ns + " this robot has not send valid trajectory information yet");
                                         skipped_count++;
                                         continue;
                                 }
