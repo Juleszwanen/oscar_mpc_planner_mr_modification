@@ -175,138 +175,6 @@ void JulesJackalPlanner::subscribeToOtherRobotTopics(ros::NodeHandle &nh, const 
 }
 
 // 3. MAIN CONTROL LOOP FUNCTIONS
-void JulesJackalPlanner::loop(const ros::TimerEvent & /*event*/)
-{
-    LOG_DEBUG(_ego_robot_ns + "============= Loop =============");
-    LOG_DEBUG(_ego_robot_ns + ": LOOP: dynamic_obstacles size = " + std::to_string(_data.dynamic_obstacles.size()));
-    LOG_DEBUG(_ego_robot_ns + ": LOOP: trajectory_dynamic_obstacle size = " + std::to_string(_data.trajectory_dynamic_obstacles.size()));
-
-    if (!_have_received_meaningful_trajectory_data)
-    {
-        // LOG_HEADER(_ego_robot_ns + ": Planning for the first time");
-        LOG_INFO(_ego_robot_ns + ": State x: " + std::to_string(_state.get("x")));
-        LOG_INFO(_ego_robot_ns + ": State y: " + std::to_string(_state.get("y")));
-        LOG_INFO(_ego_robot_ns + ": State psi[radians]: " + std::to_string(_state.get("psi")));
-        applyDummyObstacleCommand();
-        this->logDataState(_ego_robot_ns + ": Initial planning complete");
-        return;
-    }
-
-    _data.planning_start_time = std::chrono::system_clock::now();
-
-    _planner->visualizeObstaclePredictionsPlanner(_state, _data, true);
-
-    if (CONFIG["debug_output"].as<bool>())
-        _state.print();
-
-    geometry_msgs::Twist cmd;
-
-    // Goal reached - apply braking
-    if (!_goal_reached && this->objectiveReached(_state, _data))
-    {
-        applyBrakingCommand(cmd);
-        _goal_reached = true;
-        publishObjectiveReachedEvent();
-        const auto message = ros::this_node::getNamespace().substr(1) + " Goal reached - applying braking";
-        LOG_INFO(message);
-    }
-
-    // Maintain stopped state at goal
-    else if (_goal_reached)
-    {
-        cmd.linear.x = 0.0;
-        cmd.angular.z = 0.0;
-        const auto message = ros::this_node::getNamespace().substr(1) + " Maintaining stopped state at goal";
-        LOG_DEBUG(message);
-    }
-    // Normal MPC operation
-    else
-    {
-        if (!_data.dynamic_obstacles.size())
-        {
-            LOG_WARN(_ego_robot_ns + ": PLANNING WITH EMPTY OBSTACLEs");
-        }
-
-        auto output = _planner->solveMPC(_state, _data);
-        LOG_MARK("Success: " << output.success);
-
-        if (_enable_output && output.success)
-        {
-            cmd.linear.x = _planner->getSolution(1, "v");
-            cmd.angular.z = _planner->getSolution(0, "w");
-            LOG_VALUE_DEBUG("Commanded v", cmd.linear.x);
-            LOG_VALUE_DEBUG("Commanded w", cmd.angular.z);
-        }
-        else
-        {
-            applyBrakingCommand(cmd);
-            buildOutputFromBrakingCommand(output, cmd); // Fills in the output object with a braking trajectory
-            LOG_WARN(_ego_robot_ns + ": Solver failed or output disabled - applying braking");
-        }
-
-        this->publishCurrentTrajectory(output);
-        this->publishDirectTrajectory(output);
-    }
-
-    // Publish the velocity command to the robot’s differential drive.
-    _cmd_pub.publish(cmd);
-
-    // Keep downstream consumers updated with our current pose (for RViz/aggregator).
-    // this->publishPose();
-
-    // Built-in planner visuals (predicted trajectory, footprints, etc.), if available.
-    // Jules Important this always visualizes the trajectory of the other robot in the previous time step.
-    // Could consider visualizing obstacles when the obstacle callback is triggered.
-    // Check if the dynamicObstaclepredictions visualization in the function is turned on or off
-    _planner->visualize(_state, _data);
-
-    // Quick heading ray for sanity checking.
-    visualize();
-
-    LOG_DEBUG(_ego_robot_ns + ": ============= End Loop =============");
-}
-void JulesJackalPlanner::loopDirectTrajectory(const ros::TimerEvent & /*event*/)
-{
-    if (!_startup_timer->hasFinished())
-    {
-        LOG_INFO_THROTTLE(1000, _ego_robot_ns + ": In startup period, skipping planning");
-        return;
-    }
-
-    LOG_DEBUG(_ego_robot_ns + "============= Loop Start =============");
-    LOG_DEBUG(_ego_robot_ns + ": Obstacles: dynamic=" + std::to_string(_data.dynamic_obstacles.size()) +
-              ", trajectory=" + std::to_string(_data.trajectory_dynamic_obstacles.size()));
-
-    _data.planning_start_time = std::chrono::system_clock::now();
-
-    // Handle initial planning phase - run if we haven't received meaningful trajectory data yet
-    if (!_have_received_meaningful_trajectory_data)
-    {
-        handleInitialPlanningPhase();
-        LOG_INFO(_ego_robot_ns + ": ============= End INITIAL Loop =============");
-
-        return;
-    }
-
-    // PHASE 2: Prepare obstacle data for planning
-    prepareObstacleData();
-
-    // PHASE 3: Generate planning command and output
-    auto [cmd, output] = generatePlanningCommand();
-    _data.past_trajectory.replaceTrajectory(output.trajectory);
-
-    // PHASE 4: Publish command and visualize results
-    LOG_INFO_THROTTLE((int)5000, _ego_robot_ns << " " << output.logOutput());
-    publishCmdAndVisualize(cmd, output);
-
-    // if (_time_to_reset)
-    // {
-    //     reset(true);
-    //     return;
-    // }
-    LOG_DEBUG(_ego_robot_ns + ": ============= Loop End =============");
-}
-
 void JulesJackalPlanner::loopDirectTrajectoryStateMachine(const ros::TimerEvent & /*event*/)
 {
     LOG_DEBUG(_ego_robot_ns + "============= Loop Start =============");
@@ -337,6 +205,7 @@ void JulesJackalPlanner::loopDirectTrajectoryStateMachine(const ros::TimerEvent 
         break;
     }
 
+    // We need to know if the poseCallback has gone of, it has gone of if the _state has valid data
     case MPCPlanner::PlannerState::WAITING_FOR_FIRST_EGO_POSE:
     {
         if (_state.validData())
@@ -362,6 +231,11 @@ void JulesJackalPlanner::loopDirectTrajectoryStateMachine(const ros::TimerEvent 
     case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
     {
         // While we are waiting for the first trajectory data what we can do is plan with the dummy obstacles which we initialized in initializeOtherRobotsAsObstacles
+        LOG_INFO(_ego_robot_ns + ": INITIAL PLANNING (waiting for trajectory data) - State: [" +
+                 std::to_string(_state.get("x")) + ", " +
+                 std::to_string(_state.get("y")) + ", " +
+                 std::to_string(_state.get("psi")) + "]");
+
         prepareObstacleData();
         auto [cmd, output] = generatePlanningCommand(_current_state);
         _data.past_trajectory.replaceTrajectory(output.trajectory);
@@ -420,160 +294,6 @@ void JulesJackalPlanner::loopDirectTrajectoryStateMachine(const ros::TimerEvent 
     }
 
     LOG_DEBUG(_ego_robot_ns + ": ============= Loop End =============");
-}
-
-void JulesJackalPlanner::loopWithService(const ros::TimerEvent & /*event*/)
-{
-    LOG_DEBUG("loopWithService: dynamic_obstacles size = " + std::to_string(_data.dynamic_obstacles.size()));
-
-    const std::string profiling_name = _ego_robot_ns + "_" + "planningLoop";
-    PROFILE_SCOPE(profiling_name.c_str());
-
-    // Timestamp the beginning of this planning cycle (used by internal profiling).
-    // _planner->visualizeObstaclePredictionsPlanner(_state, _data);
-    _data.planning_start_time = std::chrono::system_clock::now();
-
-    mpc_planner_msgs::GetOtherTrajectories srv;
-    // Call the client and ask for all the trajectories of the other robots except the one of the ego robot.
-    srv.request.request_header = std_msgs::Header();
-    srv.request.requesting_robot_id = _ego_robot_ns;
-    srv.request.requesting_robot_pose = geometry_msgs::Pose();
-    if (_trajectory_client.call(srv))
-    {
-        // fills in the correct member data
-        this->obstacleServiceCallback(srv.response.obstacle_trajectories);
-    }
-
-    else
-    {
-        LOG_ERROR(_ego_robot_ns + "Failed to call the GetOtherTrajectoriesSerivice");
-    }
-
-    LOG_DEBUG(_ego_robot_ns + "============= loopWithService =============");
-
-    if (_data.dynamic_obstacles.empty())
-    {
-        LOG_DEBUG("EMPTY OBSTACLE");
-    }
-
-    // Optional verbose state print for debugging if enabled in config.
-    if (CONFIG["debug_output"].as<bool>())
-        _state.print();
-
-    geometry_msgs::Twist cmd;
-
-    // Check if we just reached the goal (transition)
-    if (!_goal_reached && this->objectiveReached(_state, _data))
-    {
-        applyBrakingCommand(cmd);
-        _goal_reached = true;
-        publishObjectiveReachedEvent();
-        const auto message = ros::this_node::getNamespace().substr(1) + " Goal reached - applying braking";
-        LOG_INFO(message);
-    }
-    // Already at goal - maintain stopped state
-    else if (_goal_reached)
-    {
-        cmd.linear.x = 0.0;
-        cmd.angular.z = 0.0;
-        const auto message = ros::this_node::getNamespace().substr(1) + " Maintaining stopped state at goal";
-        LOG_DEBUG(message);
-    }
-    // Normal operation - run solver
-    else
-    {
-        // Run the MPC using the latest state & data assembled by the callbacks.
-        auto output = _planner->solveMPC(_state, _data);
-        LOG_MARK("Success: " << output.success);
-
-        if (_enable_output && output.success)
-        {
-            // Extract the first applicable controls from the solution
-            cmd.linear.x = _planner->getSolution(1, "v");
-            cmd.angular.z = _planner->getSolution(0, "w");
-            LOG_VALUE_DEBUG("Commanded v", cmd.linear.x);
-            LOG_VALUE_DEBUG("Commanded w", cmd.angular.z);
-        }
-        else
-        {
-            // Fail-safe braking if solver failed or output disabled
-            applyBrakingCommand(cmd);
-            LOG_DEBUG("Solver failed or output disabled - applying braking");
-        }
-
-        // Publish tra_outputjectory only during normal operation
-        this->publishCurrentTrajectory(output);
-    }
-
-    // Publish the velocity command to the robot’s differential drive.
-    _cmd_pub.publish(cmd);
-
-    // Keep downstream consumers updated with our current pose (for RViz/aggregator).
-    // this->publishPose();
-
-    // Built-in planner visuals (predicted trajectory, footprints, etc.), if available.
-    // Jules Important this always visualizes the trajectory of the other robot in the previous time step.
-    // Could consider visualizing obstacles when the obstacle callback is triggered.
-    _planner->visualize(_state, _data);
-
-    // Quick heading ray for sanity checking.
-    // visualize();
-
-    LOG_DEBUG(_ego_robot_ns + "============= End loopWithService =============");
-}
-void JulesJackalPlanner::applyDummyObstacleCommand()
-{
-
-    geometry_msgs::Twist cmd;
-
-    // Normal operation - run solver
-
-    if (!_data.dynamic_obstacles.size())
-    {
-        LOG_WARN(_ego_robot_ns + ": PLANNING WITH EMPTY OBSTACLEs, INSERTING DUMMY ...");
-        MPCPlanner::ensureObstacleSize(_data.dynamic_obstacles, _state);
-    }
-
-    // Run the MPC using the latest state & data assembled by the callbacks.
-    auto output = _planner->solveMPC(_state, _data);
-    LOG_MARK("Success: " << output.success);
-
-    if (_enable_output && output.success)
-    {
-        // Extract the first applicable controls from the solution
-        cmd.linear.x = _planner->getSolution(1, "v");
-        cmd.angular.z = _planner->getSolution(0, "w");
-        LOG_VALUE_DEBUG("Commanded v", cmd.linear.x);
-        LOG_VALUE_DEBUG("Commanded w", cmd.angular.z);
-    }
-    else
-    {
-        // Fail-safe braking if solver failed or output disabled
-        applyBrakingCommand(cmd);
-        buildOutputFromBrakingCommand(output, cmd);
-        LOG_WARN(_ego_robot_ns + ": Solver failed or output disabled - applying braking");
-    }
-
-    // Publish tra_outputjectory only during normal operation
-    LOG_INFO(_ego_robot_ns + " " + output.logOutput());
-
-    this->publishCurrentTrajectory(output);
-    this->publishDirectTrajectory(output);
-
-    // Publish the velocity command to the robot’s differential drive.
-    _cmd_pub.publish(cmd);
-
-    // Keep downstream consumers updated with our current pose (for RViz/aggregator).
-    // this->publishPose();
-
-    // Built-in planner visuals (predicted trajectory, footprints, etc.), if available.
-    // Jules Important this always visualizes the trajectory of the other robot in the previous time step.
-    // Could consider visualizing obstacles when the obstacle callback is triggered.
-    MPCPlanner::FixedSizeTrajectory fixedsizetrajectory(output.trajectory, 30);
-    _data.past_trajectory = fixedsizetrajectory;
-    _planner->visualize(_state, _data);
-
-    _data.dynamic_obstacles.clear();
 }
 void JulesJackalPlanner::applyBrakingCommand(geometry_msgs::Twist &cmd)
 {
@@ -1168,47 +888,6 @@ void JulesJackalPlanner::visualize()
 // Multi-robot synchronization: wait for all robots to be ready
 // Identify all other robot namespaces (excluding ego robot) for multi-robot coordination
 
-void JulesJackalPlanner::waitForAllRobotsReady(ros::NodeHandle &nh)
-{
-    std::string my_namespace = ros::this_node::getNamespace();
-
-    std::vector<std::string> robot_list;
-    if (!nh.getParam("/robot_ns_list", robot_list))
-    {
-        LOG_WARN(_ego_robot_ns + ": No robot_ns_list found, starting immediately");
-        return;
-    }
-
-    std::string my_ready_param = my_namespace + "/ready_to_start";
-    nh.setParam(my_ready_param, true);
-    LOG_INFO("Robot " + my_namespace + " marked as ready, waiting for others...");
-    // LOG_DIVIDER();
-
-    ros::Rate check_rate(50);
-    while (ros::ok())
-    {
-        bool all_ready = true;
-        for (const auto &robot_ns : robot_list)
-        {
-            bool robot_ready = false;
-            std::string robot_param = robot_ns + "/ready_to_start";
-            if (!nh.getParam(robot_param, robot_ready) || !robot_ready)
-            {
-                all_ready = false;
-                break;
-            }
-        }
-
-        if (all_ready)
-        {
-            LOG_INFO(_ego_robot_ns + ": All robots ready! Starting control loop...");
-            LOG_DIVIDER();
-            break;
-        }
-
-        check_rate.sleep();
-    }
-}
 bool JulesJackalPlanner::initializeOtherRobotsAsObstacles(const std::set<std::string> &other_robot_namespaces,
                                                           MPCPlanner::RealTimeData &data,
                                                           const double radius)
@@ -1353,19 +1032,6 @@ void JulesJackalPlanner::buildOutputFromBrakingCommand(MPCPlanner::PlannerOutput
 
 // 9 functions structuring planning phase:
 // Add this function to jules_ros1_jackalplanner.cpp in the "3. MAIN CONTROL LOOP FUNCTIONS" section
-void JulesJackalPlanner::handleInitialPlanningPhase()
-{
-    // Log why we're in initial planning phase
-    LOG_INFO(_ego_robot_ns + ": INITIAL PLANNING (waiting for trajectory data) - State: [" +
-             std::to_string(_state.get("x")) + ", " +
-             std::to_string(_state.get("y")) + ", " +
-             std::to_string(_state.get("psi")) + "]");
-
-    LOG_INFO(_ego_robot_ns + ": Waiting for trajectory callbacks, therefore applying dummy command");
-
-    applyDummyObstacleCommand();
-    this->logDataState(_ego_robot_ns + ": Initial planning complete");
-}
 
 // Add this function after handleInitialPlanningPhase()
 void JulesJackalPlanner::prepareObstacleData()
@@ -1390,69 +1056,7 @@ void JulesJackalPlanner::prepareObstacleData()
 }
 
 // Replace the existing generatePlanningCommand function with this updated version:
-std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> JulesJackalPlanner::generatePlanningCommand()
-{
-    geometry_msgs::Twist cmd;
-    MPCPlanner::PlannerOutput output; // Initialize with default values
 
-    // Goal reached - apply braking
-    if (!_goal_reached && this->objectiveReached(_state, _data))
-    {
-        applyBrakingCommand(cmd);
-        _goal_reached = true;
-
-        buildOutputFromBrakingCommand(output, cmd); // Create braking trajectory
-
-        LOG_INFO(_ego_robot_ns + ": GOAL REACHED - Applying braking command");
-        return {cmd, output};
-    }
-
-    // Maintain stopped state at goal or rotate pi radians
-    if (_goal_reached)
-    {
-        cmd.linear.x = 0.0;
-        cmd.angular.z = 0.0;
-        LOG_DEBUG(_ego_robot_ns + ": Maintaining stopped state at goal");
-        if (_stop_when_reached_goal)
-        {
-            buildOutputFromBrakingCommand(output, cmd); // Create stop trajectory
-            publishObjectiveReachedEvent();
-        }
-        else
-        {
-            rotatePiRadiansCw(cmd);
-            buildOutputFromBrakingCommand(output, cmd);
-        }
-
-        return {cmd, output};
-    }
-
-    // Normal MPC operation
-    if (_data.dynamic_obstacles.empty())
-    {
-        LOG_WARN(_ego_robot_ns + ": No dynamic obstacles - planning in free space");
-    }
-
-    LOG_DEBUG(_ego_robot_ns + ": Calling MPC solver with " + std::to_string(_data.dynamic_obstacles.size()) + " obstacles");
-    output = _planner->solveMPC(_state, _data); // Override output
-    // LOG_INFO_THROTTLE(4, _ego_robot_ns + "OUTPUT: " + std::to_string(output.current_trajectory_cost));
-
-    if (_enable_output && output.success)
-    {
-        cmd.linear.x = _planner->getSolution(1, "v");
-        cmd.angular.z = _planner->getSolution(0, "w");
-        LOG_VALUE_DEBUG("Commanded", "v=" + std::to_string(cmd.linear.x) +
-                                         ", w=" + std::to_string(cmd.angular.z));
-    }
-    else
-    {
-        applyBrakingCommand(cmd);
-        buildOutputFromBrakingCommand(output, cmd);
-        LOG_WARN(_ego_robot_ns + ": Applying braking command - solver failed or output disabled");
-    }
-
-    return {cmd, output};
-}
 std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> JulesJackalPlanner::generatePlanningCommand(const MPCPlanner::PlannerState &current_state)
 {
     geometry_msgs::Twist cmd;

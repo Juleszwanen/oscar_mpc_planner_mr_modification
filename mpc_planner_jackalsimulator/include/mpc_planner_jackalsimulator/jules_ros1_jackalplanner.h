@@ -74,13 +74,11 @@ public:
 
     // Apply commands
     void applyBrakingCommand(geometry_msgs::Twist &cmd);
-    void applyDummyObstacleCommand();
 
     // Utils
     void visualize();
-    void waitForAllRobotsReady(ros::NodeHandle &nh);
+
     bool initializeOtherRobotsAsObstacles(const std::set<std::string> &_other_robot_nss, MPCPlanner::RealTimeData &_data, const double);
-    void updateRobotObstaclesFromTrajectories();
     bool objectiveReached(MPCPlanner::State _state, MPCPlanner::RealTimeData _data) const;
     void buildOutputFromBrakingCommand(MPCPlanner::PlannerOutput &output, const geometry_msgs::Twist &cmd);
 
@@ -91,9 +89,8 @@ private:
     double estimateYaw(const geometry_msgs::Quaternion &q) const;
 
     // Functions structuring planning phase:
-    void handleInitialPlanningPhase();
     void prepareObstacleData();
-    std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> generatePlanningCommand();
+   
     std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> generatePlanningCommand(const MPCPlanner::PlannerState &current_state);
     void publishCmdAndVisualize(const geometry_msgs::Twist &cmd, const MPCPlanner::PlannerOutput &output);
     void rotatePiRadiansCw(geometry_msgs::Twist &cmd);
@@ -165,7 +162,7 @@ private:
     // StateMachine logic
     MPCPlanner::PlannerState _current_state{MPCPlanner::PlannerState::UNINITIALIZED};
 
-    void transitionTo(MPCPlanner::PlannerState &_current_state, const MPCPlanner::PlannerState& new_state, const std::string &ego_robot_ns);
-    bool canTransitionTo(const MPCPlanner::PlannerState &_current_state, const MPCPlanner::PlannerState& new_state, const std::string &ego_robot_ns);
+    void transitionTo(MPCPlanner::PlannerState &_current_state, const MPCPlanner::PlannerState &new_state, const std::string &ego_robot_ns);
+    bool canTransitionTo(const MPCPlanner::PlannerState &_current_state, const MPCPlanner::PlannerState &new_state, const std::string &ego_robot_ns);
     void onStateEnter(const MPCPlanner::PlannerState &current_state, const MPCPlanner::PlannerState &new_state, const std::string &ego_robot_ns);
 };
