@@ -67,12 +67,12 @@ JulesJackalPlanner::JulesJackalPlanner(ros::NodeHandle &nh, ros::NodeHandle &pnh
     _startup_timer->setDuration(10.0);
     _startup_timer->start();
 
-    transitionTo(MPCPlanner::PlannerState::TIMER_STARTUP);
+    transitionTo(_current_state, MPCPlanner::PlannerState::TIMER_STARTUP, _ego_robot_ns);
 
     // Start control loop timer
     _timer = nh.createTimer(
         ros::Duration(1.0 / CONFIG["control_frequency"].as<double>()),
-        &JulesJackalPlanner::loopDirectTrajectory,
+        &JulesJackalPlanner::loopDirectTrajectoryStateMachine,
         this);
 
     LOG_DIVIDER();
@@ -326,12 +326,12 @@ void JulesJackalPlanner::loopDirectTrajectoryStateMachine(const ros::TimerEvent 
     {
         if (!_startup_timer->hasFinished())
         {
-            LOG_INFO_THROTTLE(1000, _ego_robot_ns + ": In startup period, skipping planning");
+            LOG_INFO_THROTTLE(2000, _ego_robot_ns + ": In startup period, skipping planning");
             return;
         }
         else
         {
-            transitionTo(MPCPlanner::PlannerState::WAITING_FOR_FIRST_EGO_POSE);
+            transitionTo(_current_state, MPCPlanner::PlannerState::WAITING_FOR_FIRST_EGO_POSE, _ego_robot_ns);
         }
 
         break;
@@ -341,7 +341,7 @@ void JulesJackalPlanner::loopDirectTrajectoryStateMachine(const ros::TimerEvent 
     {
         if (_state.validData())
         {
-            transitionTo(MPCPlanner::PlannerState::INITIALIZING_OBSTACLES);
+            transitionTo(_current_state, MPCPlanner::PlannerState::INITIALIZING_OBSTACLES, _ego_robot_ns);
         }
         else
         {
@@ -356,23 +356,25 @@ void JulesJackalPlanner::loopDirectTrajectoryStateMachine(const ros::TimerEvent 
     case MPCPlanner::PlannerState::INITIALIZING_OBSTACLES:
     {
         bool initialization_successful = initializeOtherRobotsAsObstacles(_other_robot_nss, _data, CONFIG["robot_radius"].as<double>());
-        transitionTo(MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA);
+        transitionTo(_current_state, MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA, _ego_robot_ns);
         break;
     }
     case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
     {
         // While we are waiting for the first trajectory data what we can do is plan with the dummy obstacles which we initialized in initializeOtherRobotsAsObstacles
-        handleInitialPlanningPhase();
+        prepareObstacleData();
+        auto [cmd, output] = generatePlanningCommand(_current_state);
+        _data.past_trajectory.replaceTrajectory(output.trajectory);
+        publishCmdAndVisualize(cmd, output);
         // The state transition is be triggered by a trajectory callback function
-
         break;
     }
-    case MPCPlanner::PlannerState::PLANNING_ACTIVE:
+    case MPCPlanner::PlannerState::PLANNING_ACTIVE: // This state is transitioned to by the trajectory callback function
     {
         // Use braces to create a new scope for variable declarations
         if (this->objectiveReached(_state, _data))
         {
-            transitionTo(MPCPlanner::PlannerState::JUST_REACHED_GOAL);
+            transitionTo(_current_state, MPCPlanner::PlannerState::JUST_REACHED_GOAL, _ego_robot_ns);
         }
 
         prepareObstacleData();
@@ -384,10 +386,11 @@ void JulesJackalPlanner::loopDirectTrajectoryStateMachine(const ros::TimerEvent 
     case MPCPlanner::PlannerState::JUST_REACHED_GOAL:
     {
         // Use braces to create a new scope for variable declarations
+        prepareObstacleData();
         auto [cmd, output] = generatePlanningCommand(_current_state);
         _data.past_trajectory.replaceTrajectory(output.trajectory);
         publishCmdAndVisualize(cmd, output);
-        transitionTo(MPCPlanner::PlannerState::GOAL_REACHED);
+        transitionTo(_current_state, MPCPlanner::PlannerState::GOAL_REACHED, _ego_robot_ns);
         break;
     }
     case MPCPlanner::PlannerState::GOAL_REACHED:
@@ -401,7 +404,7 @@ void JulesJackalPlanner::loopDirectTrajectoryStateMachine(const ros::TimerEvent 
     }
     case MPCPlanner::PlannerState::RESETTING:
     {
-        LOG_INFO_THROTTLE(2000, _ego_robot_ns + ": In resetting state, waiting for allRobotsReachedObjecitveCallback... to change my state");
+        LOG_INFO_THROTTLE(2000, _ego_robot_ns + ": In resetting state, waiting for allRobotsReachedObjecitveCallback... to change _ego state to TIMER_STARTUP");
         break;
     }
     case MPCPlanner::PlannerState::ERROR_STATE:
@@ -529,7 +532,6 @@ void JulesJackalPlanner::applyDummyObstacleCommand()
     {
         LOG_WARN(_ego_robot_ns + ": PLANNING WITH EMPTY OBSTACLEs, INSERTING DUMMY ...");
         MPCPlanner::ensureObstacleSize(_data.dynamic_obstacles, _state);
-        LOG_WARN(_ego_robot_ns + ": PLANNING WITH Dummy obstacles");
     }
 
     // Run the MPC using the latest state & data assembled by the callbacks.
@@ -571,9 +573,6 @@ void JulesJackalPlanner::applyDummyObstacleCommand()
     _data.past_trajectory = fixedsizetrajectory;
     _planner->visualize(_state, _data);
 
-    // Quick heading ray for sanity checking.
-    // visualize();
-    // Here we clear all the dummy elements we used for first time planning
     _data.dynamic_obstacles.clear();
 }
 void JulesJackalPlanner::applyBrakingCommand(geometry_msgs::Twist &cmd)
@@ -864,114 +863,142 @@ void JulesJackalPlanner::poseOtherRobotCallback(const geometry_msgs::PoseStamped
 }
 void JulesJackalPlanner::trajectoryCallback(const mpc_planner_msgs::ObstacleGMM::ConstPtr &msg, const std::string ns)
 {
-
-    // Check if trajectory obstacle exists for this namespace (prevents race condition crash)
-    LOG_DEBUG(_ego_robot_ns + " Received a callback triggered by a trajectory send by: " + ns);
-
-    auto it = _data.trajectory_dynamic_obstacles.find(ns);
-    if (it == _data.trajectory_dynamic_obstacles.end())
+    switch (_current_state)
     {
-        LOG_WARN(_ego_robot_ns + ": Received trajectory from " + ns + " but obstacle not initialized yet. Ignoring...");
+    case MPCPlanner::PlannerState::UNINITIALIZED:
+    case MPCPlanner::PlannerState::TIMER_STARTUP:
+    case MPCPlanner::PlannerState::WAITING_FOR_FIRST_EGO_POSE:
+    case MPCPlanner::PlannerState::INITIALIZING_OBSTACLES:
+        // In these states, we're not ready to process trajectory data yet
+        LOG_WARN_THROTTLE(2000, _ego_robot_ns + ": Received trajectory from " + ns + " but not ready to process (state: " +
+                                    MPCPlanner::stateToString(_current_state) + "). Ignoring...");
         return;
-    }
 
-    // Additional safety checks
-    if (!msg || msg->gaussians.empty())
+    case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
+    case MPCPlanner::PlannerState::PLANNING_ACTIVE:
+    case MPCPlanner::PlannerState::JUST_REACHED_GOAL:
+    case MPCPlanner::PlannerState::GOAL_REACHED:
+    case MPCPlanner::PlannerState::RESETTING:
+    case MPCPlanner::PlannerState::ERROR_STATE:
     {
-        LOG_WARN(_ego_robot_ns + ": Received invalid trajectory message in TJCB from " + ns + ". Ignoring...");
-        return;
-    }
+        // Process trajectory data in these states
+        LOG_DEBUG(_ego_robot_ns + ": Received trajectory callback from " + ns + " in state: " +
+                  MPCPlanner::stateToString(_current_state));
 
-    // Get the trajectory-based obstacle for this robot namespace
-    auto &robot_trajectory_obstacle = it->second;
-
-    // Check if the obstacle id in msg corresponds with retrieved trajectory obstacle
-    if (robot_trajectory_obstacle.index != msg->id)
-    {
-        LOG_WARN(_ego_robot_ns + ": Trajectory obstacle ID mismatch for robot " + ns +
-                 " - expected ID: " + std::to_string(robot_trajectory_obstacle.index) +
-                 ", received ID: " + std::to_string(msg->id) + " Ignoring...");
-        return;
-    }
-
-    // Update current pose of the trajectory obstacle
-    const auto &position = msg->pose.position;
-    const auto &orientation = msg->pose.orientation;
-    robot_trajectory_obstacle.position = Eigen::Vector2d(position.x, position.y);
-    robot_trajectory_obstacle.angle = RosTools::quaternionToAngle(orientation);
-
-    // Get trajectory predictions
-    const auto &list_of_gaussians_trajectories = msg->gaussians;
-    const auto &list_of_traject_costs = msg->probabilities;
-
-    if (!list_of_gaussians_trajectories.empty())
-    {
-        // We expect only 1 gaussian from the direct trajectory publisher
-        if (list_of_gaussians_trajectories.size() != 1)
+        // Check if trajectory obstacle exists for this namespace (prevents race condition crash)
+        auto it = _data.trajectory_dynamic_obstacles.find(ns);
+        if (it == _data.trajectory_dynamic_obstacles.end())
         {
-            LOG_WARN(_ego_robot_ns + ": Expected 1 trajectory, got " + std::to_string(list_of_gaussians_trajectories.size()) + " from " + ns);
+            LOG_WARN_THROTTLE(1000, _ego_robot_ns + ": Received trajectory from " + ns +
+                                        " but obstacle not initialized yet. Ignoring...");
+            return;
         }
 
-        // Process the first (and expected only) Gaussian trajectory
-        const auto &gaussian_trajectory = list_of_gaussians_trajectories[0];
-        const auto &mean_trajectory = gaussian_trajectory.mean;
-        const size_t trajectory_size = mean_trajectory.poses.size();
-
-        // Create new prediction - DETERMINISTIC constructor automatically creates one empty mode
-        MPCPlanner::Prediction new_prediction(MPCPlanner::PredictionType::DETERMINISTIC);
-
-        // Create a single mode for the trajectory
-        MPCPlanner::Mode new_mode;
-        new_mode.reserve(trajectory_size);
-
-        // Fill the mode with prediction steps from the mean trajectory
-        for (size_t k = 0; k < trajectory_size; ++k)
+        // Additional safety checks
+        if (!msg || msg->gaussians.empty())
         {
-            const auto &pose_obj = mean_trajectory.poses[k];
-            new_mode.emplace_back(
-                Eigen::Vector2d(pose_obj.pose.position.x, pose_obj.pose.position.y),
-                RosTools::quaternionToAngle(pose_obj.pose.orientation),
-                -1.0, // uncertainty ellipse major axis
-                -1.0  // uncertainty ellipse minor axis
-            );
+            LOG_WARN(_ego_robot_ns + ": Received invalid trajectory message from " + ns + ". Ignoring...");
+            return;
         }
 
-        // Check if this is meaningful trajectory data BEFORE the move
-        const bool has_meaningful_data = !new_mode.empty();
+        // Get the trajectory-based obstacle for this robot namespace
+        auto &robot_trajectory_obstacle = it->second;
 
-        // Replace the auto-created empty mode with our trajectory data
-        new_prediction.modes[0] = std::move(new_mode);
-
-        // Update the obstacle with the new prediction
-        robot_trajectory_obstacle.prediction = std::move(new_prediction);
-
-        LOG_DEBUG(_ego_robot_ns + " Updated trajectory prediction for " + ns +
-                  " with " + std::to_string(trajectory_size) + " trajectory points");
-
-        // Set the flag based on the check we did before the move
-        if (has_meaningful_data)
+        // Check if the obstacle id in msg corresponds with retrieved trajectory obstacle
+        if (robot_trajectory_obstacle.index != msg->id)
         {
-            // _have_received_meaningful_trajectory_data = true;
-            transitionTo(MPCPlanner::PlannerState::PLANNING_ACTIVE); // We have now received a normal trajectory and we can now actively plan
-
-            LOG_INFO(_ego_robot_ns + ": First meaningful trajectory data received from " + ns +
-                     " (" + std::to_string(trajectory_size) + " trajectory points) - ready for normal planning");
+            LOG_WARN(_ego_robot_ns + ": Trajectory obstacle ID mismatch for robot " + ns +
+                     " - expected ID: " + std::to_string(robot_trajectory_obstacle.index) +
+                     ", received ID: " + std::to_string(msg->id) + ". Ignoring...");
+            return;
         }
 
-        // Check if the obstacle is already in the _validated_trajectory_robots set
-        if (_validated_trajectory_robots.count(ns) == 0)
+        // Update current pose of the trajectory obstacle
+        const auto &position = msg->pose.position;
+        const auto &orientation = msg->pose.orientation;
+        robot_trajectory_obstacle.position = Eigen::Vector2d(position.x, position.y);
+        robot_trajectory_obstacle.angle = RosTools::quaternionToAngle(orientation);
+
+        // Get trajectory predictions
+        const auto &list_of_gaussians_trajectories = msg->gaussians;
+        // Remove unused variable: const auto &list_of_traject_costs = msg->probabilities;
+
+        if (!list_of_gaussians_trajectories.empty())
         {
-            _validated_trajectory_robots.insert(ns);
-            LOG_INFO(_ego_robot_ns + " Inserted: " + ns + " in _validated_trajectory_robots");
+            // We expect only 1 gaussian from the direct trajectory publisher
+            if (list_of_gaussians_trajectories.size() != 1)
+            {
+                LOG_WARN(_ego_robot_ns + ": Expected 1 trajectory, got " +
+                         std::to_string(list_of_gaussians_trajectories.size()) + " from " + ns);
+            }
+
+            // Process the first (and expected only) Gaussian trajectory
+            const auto &gaussian_trajectory = list_of_gaussians_trajectories[0];
+            const auto &mean_trajectory = gaussian_trajectory.mean;
+            const size_t trajectory_size = mean_trajectory.poses.size();
+
+            // Create new prediction - DETERMINISTIC constructor automatically creates one empty mode
+            MPCPlanner::Prediction new_prediction(MPCPlanner::PredictionType::DETERMINISTIC);
+
+            // Create a single mode for the trajectory
+            MPCPlanner::Mode new_mode;
+            new_mode.reserve(trajectory_size);
+
+            // Fill the mode with prediction steps from the mean trajectory
+            for (size_t k = 0; k < trajectory_size; ++k)
+            {
+                const auto &pose_obj = mean_trajectory.poses[k];
+                new_mode.emplace_back(
+                    Eigen::Vector2d(pose_obj.pose.position.x, pose_obj.pose.position.y),
+                    RosTools::quaternionToAngle(pose_obj.pose.orientation),
+                    -1.0, // uncertainty ellipse major axis
+                    -1.0  // uncertainty ellipse minor axis
+                );
+            }
+
+            // Check if this is meaningful trajectory data BEFORE the move
+            const bool has_meaningful_data = !new_mode.empty();
+
+            // Replace the auto-created empty mode with our trajectory data
+            new_prediction.modes[0] = std::move(new_mode);
+
+            // Update the obstacle with the new prediction
+            robot_trajectory_obstacle.prediction = std::move(new_prediction);
+
+            LOG_DEBUG(_ego_robot_ns + ": Updated trajectory prediction for " + ns +
+                      " with " + std::to_string(trajectory_size) + " trajectory points");
+
+            // State-specific handling
+            if (has_meaningful_data && _current_state == MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA)
+            {
+                transitionTo(_current_state, MPCPlanner::PlannerState::PLANNING_ACTIVE, _ego_robot_ns);
+                LOG_INFO(_ego_robot_ns + ": First meaningful trajectory data received from " + ns +
+                         " (" + std::to_string(trajectory_size) + " trajectory points) - transitioning to active planning");
+            }
+
+            // Track validated robots
+            if (_validated_trajectory_robots.count(ns) == 0)
+            {
+                _validated_trajectory_robots.insert(ns);
+                LOG_INFO(_ego_robot_ns + ": Added " + ns + " to validated trajectory robots and will now be considered in the MPC");
+            }
         }
+        else
+        {
+            LOG_ERROR(_ego_robot_ns + ": No trajectory prediction for " + ns +
+                      ", but received callback. This should not happen. Ignoring...");
+            return;
+        }
+        break;
     }
-    else
-    {
-        // No trajectory prediction available - use deterministic (current pose only)
-        LOG_ERROR(_ego_robot_ns + " No trajectory prediction for " + ns + ", but we received a callback. Ignoring....");
-        return;
+
+    default:
+        LOG_WARN(_ego_robot_ns + ": Received trajectory callback in unknown state: " +
+                 std::to_string(static_cast<int>(_current_state)));
+        break;
     }
 }
+
 void JulesJackalPlanner::allRobotsReachedObjectiveCallback(const std_msgs::Bool::ConstPtr &msg)
 {
     if (!(msg->data))
@@ -983,10 +1010,10 @@ void JulesJackalPlanner::allRobotsReachedObjectiveCallback(const std_msgs::Bool:
     LOG_INFO(_ego_robot_ns + ": Received message that all robots have reached their objective - resetting for new planning cycle");
 
     // Reset goal-related state to resume normal planning
-    _goal_reached = false;
+    // _goal_reached = false;
 
     // Reset trajectory data readiness to ensure fresh start
-    _have_received_meaningful_trajectory_data = false;
+    // _have_received_meaningful_trajectory_data = false;
 
     // Start startup timer to allow roadmap reversal and new path generation
     std_msgs::Empty empty_msg;
@@ -1006,12 +1033,10 @@ void JulesJackalPlanner::allRobotsReachedObjectiveCallback(const std_msgs::Bool:
              ", psi=" + std::to_string(_state.get("psi")) +
              ", v=" + std::to_string(_state.get("v")) + "]");
 
-    bool initialization_successful = this->initializeOtherRobotsAsObstacles(_other_robot_nss, _data, CONFIG["robot_radius"].as<double>()); // dont forget to reinitializeOtherobots as obstacles
-
     _startup_timer->setDuration(4.0); // Give time for roadmap to reverse and publish new path
     _startup_timer->start();
 
-    transitionTo(MPCPlanner::PlannerState::TIMER_STARTUP);
+    transitionTo(_current_state, MPCPlanner::PlannerState::TIMER_STARTUP, _ego_robot_ns);
     LOG_INFO(_ego_robot_ns + ": Ready to resume planning with new objectives in 2 seconds");
 }
 
@@ -1435,13 +1460,35 @@ std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> JulesJackalPlanner::g
 
     switch (current_state)
     {
+    case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
+    {
+        LOG_WARN(_ego_robot_ns + ": Waiting for first real trajectory data, planning with Dummy Obstacles");
+        output = _planner->solveMPC(_state, _data); // Override output
+        // LOG_INFO_THROTTLE(4, _ego_robot_ns + "OUTPUT: " + std::to_string(output.current_trajectory_cost));
+
+        if (_enable_output && output.success)
+        {
+            cmd.linear.x = _planner->getSolution(1, "v");
+            cmd.angular.z = _planner->getSolution(0, "w");
+            LOG_VALUE_DEBUG("Commanded", "v=" + std::to_string(cmd.linear.x) + ", w=" + std::to_string(cmd.angular.z));
+        }
+        else
+        {
+            applyBrakingCommand(cmd);
+            buildOutputFromBrakingCommand(output, cmd);
+            LOG_WARN(_ego_robot_ns + ": Applying braking command - solver failed or output disabled");
+        }
+        break;
+    }
     case MPCPlanner::PlannerState::JUST_REACHED_GOAL:
+    {
         applyBrakingCommand(cmd);
         buildOutputFromBrakingCommand(output, cmd); // Create a braking trajectory from our braking command which can be send to other robots
         LOG_INFO(_ego_robot_ns + ": JUST REACHED GOAL - Applying braking command");
         break;
-
+    }
     case MPCPlanner::PlannerState::PLANNING_ACTIVE:
+    {
         LOG_DEBUG(_ego_robot_ns + ": Calling MPC solver with " + std::to_string(_data.dynamic_obstacles.size()) + " obstacles");
         output = _planner->solveMPC(_state, _data); // Override output
         // LOG_INFO_THROTTLE(4, _ego_robot_ns + "OUTPUT: " + std::to_string(output.current_trajectory_cost));
@@ -1459,8 +1506,9 @@ std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> JulesJackalPlanner::g
             LOG_WARN(_ego_robot_ns + ": Applying braking command - solver failed or output disabled");
         }
         break;
-
+    }
     case MPCPlanner::PlannerState::GOAL_REACHED:
+    {
         cmd.linear.x = 0.0;
         cmd.angular.z = 0.0;
         LOG_DEBUG(_ego_robot_ns + ": Maintaining stopped state at goal");
@@ -1476,7 +1524,7 @@ std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> JulesJackalPlanner::g
         }
 
         break;
-
+    }
     default:
         break;
     }
@@ -1513,7 +1561,7 @@ void JulesJackalPlanner::rotatePiRadiansCw(geometry_msgs::Twist &cmd)
     if (_data.reference_path.psi.empty())
     {
         LOG_WARN(_ego_robot_ns + ": No reference path available for rotation");
-        transitionTo(MPCPlanner::PlannerState::ERROR_STATE);
+        transitionTo(_current_state, MPCPlanner::PlannerState::ERROR_STATE, _ego_robot_ns);
         _goal_reached = false;
         return;
     }
@@ -1545,30 +1593,143 @@ void JulesJackalPlanner::rotatePiRadiansCw(geometry_msgs::Twist &cmd)
     {
         // We publish that we reached our objective, it does not matter that we do this multiple times
         publishObjectiveReachedEvent();
-        transitionTo(MPCPlanner::PlannerState::RESETTING);
+        transitionTo(_current_state, MPCPlanner::PlannerState::RESETTING, _ego_robot_ns);
         LOG_INFO(_ego_robot_ns + " Is waiting for the rest of the robots to reach their objective before starting to follow reverserd path");
     }
 }
 
 // State Transition Logic
-void JulesJackalPlanner::transitionTo(MPCPlanner::PlannerState new_state)
+void JulesJackalPlanner::transitionTo(MPCPlanner::PlannerState &_current_state, const MPCPlanner::PlannerState &new_state, const std::string &ego_robot_ns)
 {
-    if (!canTransitionTo(new_state))
+    if (!canTransitionTo(_current_state, new_state, ego_robot_ns))
     {
-        LOG_ERROR(_ego_robot_ns + "Invalid state Transition");
+        LOG_ERROR(ego_robot_ns + ": Cannot Transitioning from state: " + MPCPlanner::stateToString(_current_state) + " to state: " + MPCPlanner::stateToString(new_state));
+        MPCPlanner::PlannerState error_state = MPCPlanner::PlannerState::ERROR_STATE;
+        onStateEnter(_current_state, error_state, ego_robot_ns);
         return;
     }
 
+    onStateEnter(_current_state, new_state, ego_robot_ns);
     _current_state = new_state;
 }
 
-bool JulesJackalPlanner::canTransitionTo(MPCPlanner::PlannerState new_state)
+bool JulesJackalPlanner::canTransitionTo(const MPCPlanner::PlannerState &_current_state, const MPCPlanner::PlannerState &new_state, const std::string &_ego_robot_ns)
 {
-    return true;
+    // Define valid state transitions based on your robot's workflow
+    switch (_current_state)
+    {
+    case MPCPlanner::PlannerState::UNINITIALIZED:
+        // From UNINITIALIZED, can only go to TIMER_STARTUP or ERROR_STATE
+        return (new_state == MPCPlanner::PlannerState::TIMER_STARTUP ||
+                new_state == MPCPlanner::PlannerState::ERROR_STATE);
+
+    case MPCPlanner::PlannerState::TIMER_STARTUP:
+        // From TIMER_STARTUP, can go to WAITING_FOR_FIRST_EGO_POSE or ERROR_STATE
+        return (new_state == MPCPlanner::PlannerState::WAITING_FOR_FIRST_EGO_POSE ||
+                new_state == MPCPlanner::PlannerState::ERROR_STATE);
+
+    case MPCPlanner::PlannerState::WAITING_FOR_FIRST_EGO_POSE:
+        // From WAITING_FOR_FIRST_EGO_POSE, can go to INITIALIZING_OBSTACLES or ERROR_STATE
+        return (new_state == MPCPlanner::PlannerState::INITIALIZING_OBSTACLES ||
+                new_state == MPCPlanner::PlannerState::ERROR_STATE);
+
+    case MPCPlanner::PlannerState::INITIALIZING_OBSTACLES:
+        // From INITIALIZING_OBSTACLES, can go to WAITING_FOR_TRAJECTORY_DATA or ERROR_STATE
+        return (new_state == MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA ||
+                new_state == MPCPlanner::PlannerState::ERROR_STATE);
+
+    case MPCPlanner::PlannerState::WAITING_FOR_OTHER_ROBOTS_FIRST_POSES:
+        // From WAITING_FOR_OTHER_ROBOTS_FIRST_POSES, can go to WAITING_FOR_SYNC or ERROR_STATE
+        return (new_state == MPCPlanner::PlannerState::WAITING_FOR_SYNC ||
+                new_state == MPCPlanner::PlannerState::ERROR_STATE);
+
+    case MPCPlanner::PlannerState::WAITING_FOR_SYNC:
+        // From WAITING_FOR_SYNC, can go to WAITING_FOR_TRAJECTORY_DATA or ERROR_STATE
+        return (new_state == MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA ||
+                new_state == MPCPlanner::PlannerState::ERROR_STATE);
+
+    case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
+        // From WAITING_FOR_TRAJECTORY_DATA, can go to PLANNING_ACTIVE or ERROR_STATE
+        return (new_state == MPCPlanner::PlannerState::PLANNING_ACTIVE ||
+                new_state == MPCPlanner::PlannerState::ERROR_STATE);
+
+    case MPCPlanner::PlannerState::PLANNING_ACTIVE:
+        // From PLANNING_ACTIVE, can go to JUST_REACHED_GOAL or ERROR_STATE
+        return (new_state == MPCPlanner::PlannerState::JUST_REACHED_GOAL ||
+                new_state == MPCPlanner::PlannerState::ERROR_STATE);
+
+    case MPCPlanner::PlannerState::JUST_REACHED_GOAL:
+        // From JUST_REACHED_GOAL, can go to GOAL_REACHED or ERROR_STATE
+        return (new_state == MPCPlanner::PlannerState::GOAL_REACHED ||
+                new_state == MPCPlanner::PlannerState::ERROR_STATE);
+
+    case MPCPlanner::PlannerState::GOAL_REACHED:
+        // From GOAL_REACHED, can go to RESETTING or ERROR_STATE
+        return (new_state == MPCPlanner::PlannerState::RESETTING ||
+                new_state == MPCPlanner::PlannerState::ERROR_STATE);
+
+    case MPCPlanner::PlannerState::RESETTING:
+        // From RESETTING, can go back to TIMER_STARTUP for new cycle or ERROR_STATE
+        return (new_state == MPCPlanner::PlannerState::TIMER_STARTUP ||
+                new_state == MPCPlanner::PlannerState::ERROR_STATE);
+
+    case MPCPlanner::PlannerState::ERROR_STATE:
+        // From ERROR_STATE, can only go to RESETTING (recovery) or stay in ERROR_STATE
+        return (new_state == MPCPlanner::PlannerState::RESETTING ||
+                new_state == MPCPlanner::PlannerState::ERROR_STATE);
+
+    default:
+        // Unknown current state - reject all transitions
+        LOG_ERROR(_ego_robot_ns + ": Unknown current state in canTransitionTo: " +
+                  std::to_string(static_cast<int>(_current_state)));
+        return false;
+    }
 }
 
-void JulesJackalPlanner::onStateEnter(MPCPlanner::PlannerState state)
+void JulesJackalPlanner::onStateEnter(const MPCPlanner::PlannerState &current_state, const MPCPlanner::PlannerState &new_state, const std::string &ego_robot_ns)
 {
+    switch (new_state)
+    {
+    case MPCPlanner::PlannerState::UNINITIALIZED:
+        LOG_INFO(ego_robot_ns + ": Transitioning from state: " + MPCPlanner::stateToString(current_state) + " to state: " + MPCPlanner::stateToString(new_state));
+        break;
+    case MPCPlanner::PlannerState::TIMER_STARTUP:
+        LOG_INFO(ego_robot_ns + ": Transitioning from state: " + MPCPlanner::stateToString(current_state) + " to state: " + MPCPlanner::stateToString(new_state));
+        break;
+    case MPCPlanner::PlannerState::WAITING_FOR_FIRST_EGO_POSE:
+        LOG_INFO(ego_robot_ns + ": Transitioning from state: " + MPCPlanner::stateToString(current_state) + " to state: " + MPCPlanner::stateToString(new_state));
+        break;
+    case MPCPlanner::PlannerState::INITIALIZING_OBSTACLES:
+        LOG_INFO(ego_robot_ns + ": Transitioning from state: " + MPCPlanner::stateToString(current_state) + " to state: " + MPCPlanner::stateToString(new_state));
+        break;
+    case MPCPlanner::PlannerState::WAITING_FOR_OTHER_ROBOTS_FIRST_POSES:
+        LOG_INFO(ego_robot_ns + ": Transitioning from state: " + MPCPlanner::stateToString(current_state) + " to state: " + MPCPlanner::stateToString(new_state));
+        break;
+    case MPCPlanner::PlannerState::WAITING_FOR_SYNC:
+        LOG_INFO(ego_robot_ns + ": Transitioning from state: " + MPCPlanner::stateToString(current_state) + " to state: " + MPCPlanner::stateToString(new_state));
+        break;
+    case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
+        LOG_INFO(ego_robot_ns + ": Transitioning from state: " + MPCPlanner::stateToString(current_state) + " to state: " + MPCPlanner::stateToString(new_state));
+        break;
+    case MPCPlanner::PlannerState::PLANNING_ACTIVE:
+        LOG_INFO(ego_robot_ns + ": Transitioning from state: " + MPCPlanner::stateToString(current_state) + " to state: " + MPCPlanner::stateToString(new_state));
+        break;
+    case MPCPlanner::PlannerState::JUST_REACHED_GOAL:
+        LOG_INFO(ego_robot_ns + ": Transitioning from state: " + MPCPlanner::stateToString(current_state) + " to state: " + MPCPlanner::stateToString(new_state));
+        break;
+    case MPCPlanner::PlannerState::GOAL_REACHED:
+        LOG_INFO(ego_robot_ns + ": Transitioning from state: " + MPCPlanner::stateToString(current_state) + " to state: " + MPCPlanner::stateToString(new_state));
+        break;
+    case MPCPlanner::PlannerState::RESETTING:
+        LOG_INFO(ego_robot_ns + ": Transitioning from state: " + MPCPlanner::stateToString(current_state) + " to state: " + MPCPlanner::stateToString(new_state));
+        break;
+    case MPCPlanner::PlannerState::ERROR_STATE:
+        LOG_ERROR(ego_robot_ns + ": Transitioning from state: " + MPCPlanner::stateToString(current_state) + " to state: " + MPCPlanner::stateToString(new_state));
+        break;
+    default:
+        LOG_WARN(ego_robot_ns + ": Unknown state transition from: " + MPCPlanner::stateToString(current_state) + " to: " + std::to_string(static_cast<int>(new_state)));
+        break;
+    }
 }
 
 int main(int argc, char **argv)

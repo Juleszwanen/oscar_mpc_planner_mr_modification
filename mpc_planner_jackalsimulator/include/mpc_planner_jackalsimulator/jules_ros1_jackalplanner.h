@@ -67,10 +67,10 @@ public:
     void allRobotsReachedObjectiveCallback(const std_msgs::Bool::ConstPtr &msg);
 
     // publish functions
-    void publishCurrentTrajectory(const MPCPlanner::PlannerOutput& output);
+    void publishCurrentTrajectory(const MPCPlanner::PlannerOutput &output);
     void publishObjectiveReachedEvent();
     void publishEgoPose();
-    void publishDirectTrajectory(const MPCPlanner::PlannerOutput& output);
+    void publishDirectTrajectory(const MPCPlanner::PlannerOutput &output);
 
     // Apply commands
     void applyBrakingCommand(geometry_msgs::Twist &cmd);
@@ -85,8 +85,6 @@ public:
     void buildOutputFromBrakingCommand(MPCPlanner::PlannerOutput &output, const geometry_msgs::Twist &cmd);
 
     void logDataState(const std::string &context = "") const;
-
-   
 
 private:
     bool isPathTheSame(const nav_msgs::Path::ConstPtr &msg) const;
@@ -167,7 +165,7 @@ private:
     // StateMachine logic
     MPCPlanner::PlannerState _current_state{MPCPlanner::PlannerState::UNINITIALIZED};
 
-    void transitionTo(MPCPlanner::PlannerState new_state);
-    bool canTransitionTo(MPCPlanner::PlannerState new_state);
-    void onStateEnter(MPCPlanner::PlannerState state);
+    void transitionTo(MPCPlanner::PlannerState &_current_state, const MPCPlanner::PlannerState& new_state, const std::string &ego_robot_ns);
+    bool canTransitionTo(const MPCPlanner::PlannerState &_current_state, const MPCPlanner::PlannerState& new_state, const std::string &ego_robot_ns);
+    void onStateEnter(const MPCPlanner::PlannerState &current_state, const MPCPlanner::PlannerState &new_state, const std::string &ego_robot_ns);
 };
