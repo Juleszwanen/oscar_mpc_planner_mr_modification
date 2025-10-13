@@ -42,3 +42,34 @@ void State::print() const
         }
     }
 }
+
+/** @note Jules: This function can be used to check if the localicazation mechanism has inserted valid data via the for instance statePoseCallback*/
+bool State::validData() const
+{
+    // Get the state values using the existing get() method
+    const double x = get("x");
+    const double y = get("y");
+    const double psi = get("psi");
+    const double v = get("v");
+    
+    // Check for uninitialized values (default is 0.0 from initialize())
+    // In robotics, it's extremely unlikely that x, y, and psi are all exactly 0.0
+    // unless they haven't been set yet
+    
+    // Basic validity checks:
+    // 1. Position shouldn't be exactly (0,0) unless robot actually started there
+    // 2. All values should be finite (not NaN or infinity)
+    // 3. Velocity should be reasonable (not negative for this robot model)
+    
+    // Check for NaN or infinity values
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(psi) || !std::isfinite(v)) {
+        return false;
+    }
+
+    // The state is initialized with zeros
+    if (x == 0.0 && y == 0.0 && psi == 0.0 && v == 0.0) {
+        return false;
+    }
+
+    return true;
+}

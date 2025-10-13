@@ -6,6 +6,8 @@
 
 #include <mpc_planner_util/parameters.h>
 
+#include <mpc_planner_types/realtime_data.h>
+
 #include <ros_tools/logging.h>
 #include <ros_tools/math.h>
 
@@ -192,5 +194,47 @@ namespace MPCPlanner
         {
                 for (auto &obstacle : obstacles)
                         propagatePredictionUncertainty(obstacle.prediction);
+        }
+
+        /** @note Jules: Functions from here on are added by you*/
+        namespace MultiRobot
+        {
+                void updateRobotObstaclesFromTrajectories(MPCPlanner::RealTimeData &_data, const std::set<std::string> &_validated_trajectory_robots, const std::string &_ego_robot_ns)
+                {
+                        LOG_DEBUG(_ego_robot_ns + ": Updating robot obstacles from " + std::to_string(_data.trajectory_dynamic_obstacles.size()) + " trajectory sources");
+
+                        int updated_count = 0;
+                        int added_count = 0;
+                        int skipped_count = 0;
+
+                        for (auto [ns, trajectory_obs] : _data.trajectory_dynamic_obstacles)
+                        {
+                                // If we cannot find the robot in the validated_trajectory it means that that robots has not yet send valid trajectory information
+                                if (_validated_trajectory_robots.find(ns) == _validated_trajectory_robots.end())
+                                {
+                                        LOG_WARN(_ego_robot_ns + ": Skipping updating info for " + ns + " this robot has not send valid trajectory information yet");
+                                        skipped_count++;
+                                        continue;
+                                }
+
+                                auto it = std::find_if(_data.dynamic_obstacles.begin(), _data.dynamic_obstacles.end(),
+                                                       [&](const auto &obs)
+                                                       { return obs.index == trajectory_obs.index; });
+
+                                if (it != _data.dynamic_obstacles.end())
+                                {
+                                        LOG_DEBUG(_ego_robot_ns + ": Updating existing obstacle for robot " + ns + " (ID: " + std::to_string(trajectory_obs.index) + ")");
+                                        *it = trajectory_obs;
+                                        updated_count++;
+                                }
+                                else
+                                {
+                                        LOG_DEBUG(_ego_robot_ns + ": Adding new obstacle for robot " + ns + " (ID: " + std::to_string(trajectory_obs.index) + ")");
+                                        _data.dynamic_obstacles.push_back(trajectory_obs);
+                                        added_count++;
+                                }
+                        }
+                }
+
         }
 }

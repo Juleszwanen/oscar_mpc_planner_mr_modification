@@ -31,7 +31,7 @@ recording:
   num_experiments: 5 # Stop after this number of experiments
 
 deceleration_at_infeasible: 3.0 # [m/s^2] Deceleration when MPC is infeasible
-max_obstacles: 12 # Max. number of dynamic obstacles
+max_obstacles: 4 # Max. number of dynamic obstacles, normally 12
 robot_radius: 0.325 # [m] Robot radius
 robot:
   length: 0.65 # [m]

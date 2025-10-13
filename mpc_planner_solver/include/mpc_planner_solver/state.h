@@ -22,6 +22,8 @@ namespace MPCPlanner
         void set(std::string &&var_name, double value);
         void print() const;
 
+        bool validData() const;
+
     private:
         std::vector<double> _state;
         YAML::Node _config, _model_map;

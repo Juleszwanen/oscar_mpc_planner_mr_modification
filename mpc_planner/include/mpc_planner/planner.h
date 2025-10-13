@@ -27,11 +27,12 @@ namespace MPCPlanner
         bool success{false};
 
         // ADD THESE FIELDS:
-        int selected_topology_id{-1};   // Homology class ID (from guidance_ID)
-        int selected_planner_index{-1}; // Which planner was chosen (0 to n_paths)
-        bool used_guidance{true};       // false if T-MPC++ (non-guided) was chosen
-        double trajectory_cost{0.0};    // Objective value of selected solution
-        int solver_exit_code{-1};       // Exit code (1=success, 0=max_iter, -1=infeasible)
+        int selected_topology_id{-9};       // Homology class ID (from guidance_ID)
+        int selected_planner_index{-9};     // Which planner was chosen (0 to n_paths)
+        bool used_guidance{true};           // false if T-MPC++ (non-guided) was chosen
+        double trajectory_cost{0.0};        // Objective value of selected solution
+        int solver_exit_code{-1};           // Exit code (1=success, 0=max_iter, -1=infeasible)
+        bool following_new_homology{true};  // Check if we are following a new homology or compared to the previous iteration
 
         PlannerOutput(double dt, int N) : trajectory(dt, N) {}
 
