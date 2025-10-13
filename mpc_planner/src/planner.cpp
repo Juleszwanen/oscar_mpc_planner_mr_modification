@@ -41,7 +41,9 @@ namespace MPCPlanner
     {
         LOG_MARK("Planner::solveMPC");
         bool was_feasible = _output.success;
-        
+        /** @note Jules: This is added by you to keep track of the previously selected topology */
+        const int prev_followed_topology = _output.selected_topology_id; // -1 is the default topology
+
         // Jules: Here we override the old _output data with a new one
         _output = PlannerOutput(_solver->dt, _solver->N);
 
@@ -172,6 +174,9 @@ namespace MPCPlanner
             _output.used_guidance = _module_data.used_guidance;
             _output.trajectory_cost = _module_data.trajectory_cost;
             _output.solver_exit_code = exit_flag;
+            _output.following_new_topology = (prev_followed_topology == _module_data.selected_topology_id) ? false : true;
+            _output.previous_topology_id = prev_followed_topology; // Add this line
+
             
         }
 
@@ -231,7 +236,7 @@ namespace MPCPlanner
     }
 
     /** @note Jules: Deze jij toegevoegd om meer controle te krijgen over wanneer dynamische obstacles worden gepublished */
-    // Jules: Dee heb je zelf toegevoegd om meer controle te kriijgen wanneer dynamische obstacles worden gepublished
+
     void Planner::visualizeObstaclePredictionsPlanner(const State &state, const RealTimeData &data, bool include_time)
     {
         if (!include_time)
@@ -280,6 +285,9 @@ namespace MPCPlanner
 
         state = State(); // Reset the state
         data.reset();    // Reset the data
+
+        /** @note Jules: you added this to reset the homology information */
+        _output = PlannerOutput(); // Reset the ouput to defaults so mainly for resetting homology information
         _was_reset = true;
         _startup_timer->start();
     }
@@ -293,53 +301,54 @@ namespace MPCPlanner
     }
 }
 
-    /** @note Jules: Deze heb jij toegevoegd om beter te kunnen zien wat de planner output */
-    std::string MPCPlanner::PlannerOutput::logOutput() const
+/** @note Jules: Deze heb jij toegevoegd om beter te kunnen zien wat de planner output */
+std::string MPCPlanner::PlannerOutput::logOutput() const
+{
+    std::ostringstream oss;
+
+    if (success && solver_exit_code == 1)
     {
-        std::ostringstream oss;
-
-        if (success && solver_exit_code == 1)
-        {
-            // Success case - log all details
-            oss << "MPC Planning SUCCESS ✓\n"
-                << "  Topology ID:     " << (selected_topology_id == -1 ? "N/A" : std::to_string(selected_topology_id)) << "\n"
-                << "  Planner Index:   " << (selected_planner_index == -1 ? "N/A" : std::to_string(selected_planner_index)) << "\n"
-                << "  Used Guidance:   " << (used_guidance ? "Yes" : "No (T-MPC++)") << "\n"
-                << "  Trajectory Cost: " << std::fixed << std::setprecision(4) << trajectory_cost << "\n"
-                << "  Solver Status:   SUCCESS (exit code: " << solver_exit_code << ")";
-        }
-        else
-        {
-            // Failure case - focus on failure reason
-            oss << "MPC Planning FAILED ✗\n"
-                << "  Solver Exit Code: " << solver_exit_code;
-
-            // Decode exit code meaning
-            switch (solver_exit_code)
-            {
-            case 1:
-                oss << " (SUCCESS - but success flag is false)";
-                break;
-            case 0:
-                oss << " (MAX_ITERATIONS_REACHED)";
-                break;
-            case -1:
-                oss << " (INFEASIBLE)";
-                break;
-            default:
-                oss << " (UNKNOWN_ERROR)";
-                break;
-            }
-
-            oss << "\n  Success Flag:     " << (success ? "true" : "false");
-
-            // Still show available metadata if present
-            if (selected_topology_id != -1 || selected_planner_index != -1)
-            {
-                oss << "\n  Topology ID:      " << (selected_topology_id == -1 ? "N/A" : std::to_string(selected_topology_id))
-                    << "\n  Planner Index:    " << (selected_planner_index == -1 ? "N/A" : std::to_string(selected_planner_index));
-            }
-        }
-
-        return oss.str();
+        // Success case - log all details
+        oss << "MPC Planning SUCCESS ✓\n"
+            << "  Topology ID:     " << (selected_topology_id == -1 ? "N/A" : std::to_string(selected_topology_id)) << "\n"
+            << "  Planner Index:   " << (selected_planner_index == -1 ? "N/A" : std::to_string(selected_planner_index)) << "\n"
+            << "  Used Guidance:   " << (used_guidance ? "Yes" : "No (T-MPC++)") << "\n"
+            << "  Trajectory Cost: " << std::fixed << std::setprecision(4) << trajectory_cost << "\n"
+            << "  Topology Switch: " << (following_new_topology ? ("Yes (from " + (previous_topology_id == -1 ? "N/A" : std::to_string(previous_topology_id)) + " to " + (selected_topology_id == -1 ? "N/A" : std::to_string(selected_topology_id)) + ")") : "No") << "\n"
+            << "  Solver Status:   SUCCESS (exit code: " << solver_exit_code << ")";
     }
+    else
+    {
+        // Failure case - focus on failure reason
+        oss << "MPC Planning FAILED ✗\n"
+            << "  Solver Exit Code: " << solver_exit_code;
+
+        // Decode exit code meaning
+        switch (solver_exit_code)
+        {
+        case 1:
+            oss << " (SUCCESS - but success flag is false)";
+            break;
+        case 0:
+            oss << " (MAX_ITERATIONS_REACHED)";
+            break;
+        case -1:
+            oss << " (INFEASIBLE)";
+            break;
+        default:
+            oss << " (UNKNOWN_ERROR)";
+            break;
+        }
+
+        oss << "\n  Success Flag:     " << (success ? "true" : "false");
+
+        // Still show available metadata if present
+        if (selected_topology_id != -1 || selected_planner_index != -1)
+        {
+            oss << "\n  Topology ID:      " << (selected_topology_id == -1 ? "N/A" : std::to_string(selected_topology_id))
+                << "\n  Planner Index:    " << (selected_planner_index == -1 ? "N/A" : std::to_string(selected_planner_index));
+        }
+    }
+
+    return oss.str();
+}
