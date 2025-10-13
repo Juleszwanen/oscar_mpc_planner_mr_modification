@@ -41,6 +41,8 @@ namespace MPCPlanner
     {
         LOG_MARK("Planner::solveMPC");
         bool was_feasible = _output.success;
+        
+        // Jules: Here we override the old _output data with a new one
         _output = PlannerOutput(_solver->dt, _solver->N);
 
         _module_data = ModuleData(); // Reset module data
@@ -152,7 +154,7 @@ namespace MPCPlanner
         }
 
         _output.success = true;
-        /* Jules @note Here we do from 1 and not from zero which is weird in my opinion   K WAS ORIGNIALLY 1 but now I SET IT TO 0) OCT 1*/
+        /**  Jules @note Here we do from 1 and not from zero which is weird in my opinion   K WAS ORIGNIALLY 1 but now I SET IT TO 0) OCT 1*/
         for (int k = 0; k < _solver->N; k++)
         {
             _output.trajectory.add(_solver->getOutput(k, "x"), _solver->getOutput(k, "y"));
@@ -170,6 +172,7 @@ namespace MPCPlanner
             _output.used_guidance = _module_data.used_guidance;
             _output.trajectory_cost = _module_data.trajectory_cost;
             _output.solver_exit_code = exit_flag;
+            
         }
 
         if (_output.success && CONFIG["debug_limits"].as<bool>())
