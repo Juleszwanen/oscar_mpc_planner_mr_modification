@@ -154,7 +154,7 @@ private:
 
     // Goal cache
     bool _goal_received{false};
-    bool _goal_reached{false};
+    
 
     Eigen::Vector2d _goal_xy{0.0, 0.0};
 

@@ -50,10 +50,8 @@ JulesJackalPlanner::JulesJackalPlanner(ros::NodeHandle &nh, ros::NodeHandle &pnh
     bool initialization_successful = this->initializeOtherRobotsAsObstacles(_other_robot_nss, _data, CONFIG["robot_radius"].as<double>());
 
     // Read parameters
-    bool wait_for_sync;
-    pnh.param("frames/global", this->_global_frame, this->_global_frame);
-    pnh.param("goal_tolerance", this->_goal_tolerance, this->_goal_tolerance);
-    nh.param<bool>("/wait_for_sync", wait_for_sync, false);
+    nh.param("frames/global", this->_global_frame, this->_global_frame);
+    nh.param("goal_tolerance", this->_goal_tolerance, this->_goal_tolerance);
 
     // Construct Planner after configuration is ready
     this->_planner = std::make_unique<MPCPlanner::Planner>();
@@ -729,9 +727,6 @@ void JulesJackalPlanner::allRobotsReachedObjectiveCallback(const std_msgs::Bool:
 
     LOG_INFO(_ego_robot_ns + ": Received message that all robots have reached their objective - resetting for new planning cycle");
 
-    // Reset goal-related state to resume normal planning
-    // _goal_reached = false;
-
     // Reset trajectory data readiness to ensure fresh start
     // _have_received_meaningful_trajectory_data = false;
 
@@ -1036,7 +1031,7 @@ void JulesJackalPlanner::buildOutputFromBrakingCommand(MPCPlanner::PlannerOutput
 // Add this function after handleInitialPlanningPhase()
 void JulesJackalPlanner::prepareObstacleData()
 {
-    if (_data.dynamic_obstacles.size() > CONFIG["max_obstacles"].as<int>())
+    if (static_cast<int>(_data.dynamic_obstacles.size()) > CONFIG["max_obstacles"].as<int>())
     {
         LOG_ERROR(_ego_robot_ns << "Received " << _data.dynamic_obstacles.size() << "That is too much removing most distant obstacles......");
     }
@@ -1056,7 +1051,6 @@ void JulesJackalPlanner::prepareObstacleData()
 }
 
 // Replace the existing generatePlanningCommand function with this updated version:
-
 std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> JulesJackalPlanner::generatePlanningCommand(const MPCPlanner::PlannerState &current_state)
 {
     geometry_msgs::Twist cmd;
@@ -1166,7 +1160,7 @@ void JulesJackalPlanner::rotatePiRadiansCw(geometry_msgs::Twist &cmd)
     {
         LOG_WARN(_ego_robot_ns + ": No reference path available for rotation");
         transitionTo(_current_state, MPCPlanner::PlannerState::ERROR_STATE, _ego_robot_ns);
-        _goal_reached = false;
+
         return;
     }
 
