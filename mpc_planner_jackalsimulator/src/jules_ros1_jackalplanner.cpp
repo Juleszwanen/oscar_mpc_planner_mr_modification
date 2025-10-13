@@ -251,6 +251,7 @@ void JulesJackalPlanner::loopDirectTrajectoryStateMachine(const ros::TimerEvent 
 
         prepareObstacleData();
         auto [cmd, output] = generatePlanningCommand(_current_state);
+        // LOG_INFO(_ego_robot_ns + output.logOutput());
         _data.past_trajectory.replaceTrajectory(output.trajectory);
         publishCmdAndVisualize(cmd, output);
         break;
