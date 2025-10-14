@@ -8,7 +8,7 @@ control_frequency: 20 # [Hz] Control frequency of the MPC 20-> normal
 
 debug_output: false # Show debug output
 debug_limits: false # Show when state/input limits are hit
-debug_visuals: false # Show extra visuals
+debug_visuals: true # Show extra visuals
 
 solver_settings:
   solver: "acados" # acados or forces
@@ -92,3 +92,4 @@ visualization:
 
 JULES:
     use_extra_params_module_data: true
+    assign_meaningful_topology_id_to_non_guided: true

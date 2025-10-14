@@ -39,6 +39,17 @@ namespace MPCPlanner
         _control_frequency = CONFIG["control_frequency"].as<double>();
         _planning_time = 1. / _control_frequency;
 
+        // JULES: Load the meaningful topology assignment setting
+        try
+        {
+            _assign_meaningful_topology = CONFIG["JULES"]["assign_meaningful_topology_id_to_non_guided"].as<bool>();
+            LOG_VALUE("Assign Meaningful Topology", _assign_meaningful_topology);
+        }
+        catch (...)
+        {
+            _assign_meaningful_topology = false; // Default to false if config parameter not found
+            LOG_INFO("Config 'assign_meaningful_topology_id_to_non_guided' not found, defaulting to false");
+        }
         // Initialize the constraint modules
         int n_solvers = global_guidance_->GetConfig()->n_paths_; // + 1 for the main lmpcc solver?
 
@@ -300,8 +311,8 @@ namespace MPCPlanner
             // CONSTRUCT CONSTRAINTS
             if (planner.is_original_planner || (!_enable_constraints))
             {
-                planner.guidance_constraints->update(state, empty_data_, module_data);
-                planner.safety_constraints->update(state, data, module_data); // Updates collision avoidance constraints
+                planner.guidance_constraints->update(state, empty_data_, module_data); // Updates linearization of constraints
+                planner.safety_constraints->update(state, data, module_data);          // Updates collision avoidance constraints
             }
             else
             {
@@ -375,6 +386,59 @@ namespace MPCPlanner
             auto &best_planner = planners_[best_planner_index_];
             auto &best_solver = best_planner.local_solver;
             // LOG_INFO("Best Planner ID: " << best_planner.id);
+            /** @note Jules: This is what you added to the planner to find the topology of the non guided planner whenever the is_original_planner is chosen */
+            if (best_planner.is_original_planner && _assign_meaningful_topology)
+            {
+                if (global_guidance_->NumberOfGuidanceTrajectories() > 0)
+                {
+                    LOG_DEBUG("Assigning meaningful topology ID to non-guided trajectory");
+
+                    try
+                    {
+                        GuidancePlanner::GeometricPath mpc_path = convertMPCTrajectoryToGeometricPath(best_solver);
+
+                        int meaningful_topology_id = global_guidance_->FindTopologyClassForPath(mpc_path);
+
+                        if (meaningful_topology_id != TOPOLOGY_NO_MATCH)
+                        {
+                            // Override the default fallback ID with the meaningful one
+                            best_planner.result.guidance_ID = meaningful_topology_id;
+
+                            // Try to assign matching color
+                            best_planner.result.color = -1;
+                            for (int i = 0; i < global_guidance_->NumberOfGuidanceTrajectories(); i++)
+                            {
+                                auto &guidance_traj = global_guidance_->GetGuidanceTrajectory(i);
+                                if (guidance_traj.topology_class == meaningful_topology_id)
+                                {
+                                    best_planner.result.color = guidance_traj.color_;
+                                    LOG_DEBUG("Non-guided trajectory matched topology class "
+                                              << meaningful_topology_id
+                                              << " with color " << best_planner.result.color);
+                                    break;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            LOG_WARN("Failed to find topology class, keeping fallback ID: "
+                                     << best_planner.result.guidance_ID);
+                            // Keep the default ID that was already assigned above
+                        }
+                    }
+                    catch (const std::exception &e)
+                    {
+                        LOG_ERROR("Exception during topology assignment: " << e.what()
+                                                                           << ", keeping fallback ID: " << best_planner.result.guidance_ID);
+                        // Keep the default ID that was already assigned above
+                    }
+                }
+                else
+                {
+                    LOG_WARN("No guidance trajectories available for topology comparison");
+                    // Keep the default ID that was already assigned above
+                }
+            }
 
             // Communicate to the guidance which topology class we follow (none if it was the original planner)
             global_guidance_->OverrideSelectedTrajectory(best_planner.result.guidance_ID, best_planner.is_original_planner);
@@ -603,6 +667,67 @@ namespace MPCPlanner
         global_guidance_->saveData(data_saver); // Save data from the guidance planner
     }
 
+    GuidancePlanner::GeometricPath GuidanceConstraints::convertMPCTrajectoryToGeometricPath(
+        std::shared_ptr<Solver> solver,
+        GuidancePlanner::NodeType node_type)
+    {
+        // Clear any previous temporary nodes to avoid memory issues
+        mpc_trajectory_nodes_.clear();
+
+        // Vector to store raw pointers for GeometricPath construction
+        std::vector<GuidancePlanner::Node *> node_ptrs;
+        node_ptrs.reserve(solver->N); // Pre-allocate for efficiency
+
+        // Create nodes for each MPC trajectory point
+        // Starting from k=0 to include the current state
+        for (int k = 0; k < solver->N; k++)
+        {
+            // Extract position from MPC solver output
+            double x = solver->getOutput(k, "x");
+            double y = solver->getOutput(k, "y");
+
+            // Create SpaceTimePoint with discrete time index k
+            // CRITICAL: Use discrete time index k (NOT k*dt)
+            // This matches how PRM creates nodes and is essential for:
+            // 1. Temporal alignment with dynamic obstacles in homology comparison
+            // 2. Proper integration bounds in the h-value computation
+            GuidancePlanner::SpaceTimePoint point(x, y, k);
+
+            // Create node with unique ID
+            // NodeType doesn't affect homology comparison (only positions matter),
+            // but CONNECTOR is semantically correct for trajectory points
+            auto node = std::make_unique<GuidancePlanner::Node>(
+                MPC_NODE_BASE_ID + k, // Unique ID: 1000000 + 0, 100000 + 1, ...
+                point,                // Space-time location
+                node_type             // Default: CONNECTOR
+            );
+
+            // Store raw pointer for GeometricPath construction
+            node_ptrs.push_back(node.get());
+
+            // Move unique_ptr into storage for memory management
+            // IMPORTANT: These nodes must persist while GeometricPath is in use
+            mpc_trajectory_nodes_.push_back(std::move(node));
+        }
+
+        // Verify we have enough nodes for a valid path
+        if (node_ptrs.size() < 2)
+        {
+            LOG_WARN("MPC trajectory has insufficient points (" << node_ptrs.size()
+                                                                << ") for homotopy comparison. Need at least 2 nodes.");
+            return GuidancePlanner::GeometricPath();
+        }
+
+        // Create GeometricPath from the node sequence
+        // The constructor will create Connection objects between consecutive nodes
+        // These connections are what the homology integration uses
+        GuidancePlanner::GeometricPath mpc_path(node_ptrs);
+
+        LOG_INFO_THROTTLE(4000, "Created GeometricPath from MPC trajectory: "
+                                    << node_ptrs.size() << " nodes, time range [0, " << (solver->N - 1) << "]");
+
+        return mpc_path;
+    }
 }
 
 // namespace MPCPlanner

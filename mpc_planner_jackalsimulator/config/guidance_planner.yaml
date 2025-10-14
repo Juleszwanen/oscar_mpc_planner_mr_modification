@@ -66,3 +66,4 @@ guidance_planner:
 
   JULES:
     use_extra_params_module_data: true  # This uses the extra variables in the module_data struct which are filled inside the GuidanceConstraints::optimize() func 
+    assign_meaningful_topology_id_to_non_guided: true #Default: should be false for backward compatibility
