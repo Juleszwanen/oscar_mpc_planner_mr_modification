@@ -55,7 +55,7 @@ guidance_planner:
     transparency: 0.5 # Transparency of obstacle predictions (0-1)
     visualize_all_samples: false # Visualize all PRM samples (slow!)
     visualize_homology: false # Visualize the H-signature
-    show_indices: false # Show trajectory indices
+    show_indices: true # Show trajectory indices
 
   enable:
     dynamically_propagate_nodes: true  # Propagate the nodes in time (dropping them)

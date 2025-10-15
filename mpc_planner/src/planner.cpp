@@ -36,6 +36,50 @@ namespace MPCPlanner
         _startup_timer = std::make_unique<RosTools::Timer>(1.0); // Give some time to receive data
     }
 
+    Planner::Planner(std::string ego_robot_ns) : _ego_robot_ns(ego_robot_ns)
+    {
+        // Initialize the solver
+        _solver = std::make_shared<Solver>();
+        _solver->reset();
+
+        initializeModules(_modules, _solver);
+
+        _experiment_util = std::make_shared<ExperimentUtil>();
+
+        _startup_timer = std::make_unique<RosTools::Timer>(1.0); // Give some time to receive data
+
+        LOG_INFO("CREATED THE MPCPlanner for " + _ego_robot_ns);
+
+        setEgoNameSpaceGuidanceModule(_ego_robot_ns);
+
+    }
+
+    bool Planner::setEgoNameSpaceGuidanceModule(const std::string &ego_robot_ns)
+    {
+        bool found = false;
+        for (auto &module : _modules)
+        {
+            // Try to cast the module to GuidanceConstraints
+            auto *guidance_module = dynamic_cast<GuidanceConstraints *>(module.get());
+
+            if (guidance_module != nullptr)
+            {
+                // Successfully cast - this is a GuidanceConstraints module
+                guidance_module->_ego_robot_ns = ego_robot_ns;
+                found = true;
+                LOG_INFO("Set ego namespace to '" + ego_robot_ns + "' in GuidanceConstraints module");
+                break; // Assuming only one GuidanceConstraints module exists
+            }
+        }
+
+        if (!found)
+        {
+            LOG_WARN("GuidanceConstraints module not found in planner modules");
+        }
+
+        return found;
+    }
+
     // Given real-time data, solve the MPC problem
     PlannerOutput Planner::solveMPC(State &state, RealTimeData &data)
     {
@@ -176,8 +220,6 @@ namespace MPCPlanner
             _output.solver_exit_code = exit_flag;
             _output.following_new_topology = (prev_followed_topology == _module_data.selected_topology_id) ? false : true;
             _output.previous_topology_id = prev_followed_topology; // Add this line
-
-            
         }
 
         if (_output.success && CONFIG["debug_limits"].as<bool>())
@@ -212,6 +254,7 @@ namespace MPCPlanner
         (void)state;
 
         for (auto &module : _modules)
+
             module->visualize(data, _module_data);
 
         visualizeTrajectory(_output.trajectory, "planned_trajectory", true, 0.2);

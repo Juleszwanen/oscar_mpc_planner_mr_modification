@@ -406,23 +406,26 @@ namespace MPCPlanner
 
                             // Try to assign matching color
                             best_planner.result.color = -1;
-                            for (int i = 0; i < global_guidance_->NumberOfGuidanceTrajectories(); i++)
-                            {
-                                auto &guidance_traj = global_guidance_->GetGuidanceTrajectory(i);
-                                if (guidance_traj.topology_class == meaningful_topology_id)
-                                {
-                                    best_planner.result.color = guidance_traj.color_;
-                                    LOG_DEBUG("Non-guided trajectory matched topology class "
-                                              << meaningful_topology_id
-                                              << " with color " << best_planner.result.color);
-                                    break;
-                                }
-                            }
+
+                            LOG_INFO("NON-GUIDED PLANNER SELECTED AS BEST PLANNER| Topology match SUCCESS | ID: " << meaningful_topology_id
+                                                                                                                  << " | Visualization: Dark red elevated | Color assignment disabled for verification");
+                            // for (int i = 0; i < global_guidance_->NumberOfGuidanceTrajectories(); i++)
+                            // {
+                            //     auto &guidance_traj = global_guidance_->GetGuidanceTrajectory(i);
+                            //     if (guidance_traj.topology_class == meaningful_topology_id)
+                            //     {
+                            //         best_planner.result.color = guidance_traj.color_;
+                            //         LOG_DEBUG("Non-guided trajectory matched topology class "
+                            //                   << meaningful_topology_id
+                            //                   << " with color " << best_planner.result.color);
+                            //         break;
+                            //     }
+                            // }
                         }
                         else
                         {
-                            LOG_WARN("Failed to find topology class, keeping fallback ID: "
-                                     << best_planner.result.guidance_ID);
+                            LOG_WARN("NON-GUIDED PLANNER SELECTED AS BEST PLANNER| Topology match FAILED - TOPOLOGY SWITCH detected | Fallback ID: "
+                                     << best_planner.result.guidance_ID << " | Visualization: Dark red elevated");
                             // Keep the default ID that was already assigned above
                         }
                     }
@@ -516,7 +519,10 @@ namespace MPCPlanner
 
         // global_guidance_->Visualize(highlight_selected_guidance_, visualized_guidance_trajectory_nr_);
         if (!(_use_tmpcpp && global_guidance_->GetConfig()->n_paths_ == 0)) // If global guidance
+            // Jules: visualize if we got more than 0 guidance trajectories and when we set _use_tmpcpp = true, -1 show all topology alternatives
+            /** @note Only visualizes the guidance trajectories not the non_guided planner */
             global_guidance_->Visualize(CONFIG["t-mpc"]["highlight_selected"].as<bool>(), -1);
+
         for (size_t i = 0; i < planners_.size(); i++)
         {
             auto &planner = planners_[i];
@@ -525,6 +531,7 @@ namespace MPCPlanner
 
             if (i == 0)
             {
+                /** @note What I dont get is why we only plot the guidance costraints once these should be different for each planner right? */
                 planner.guidance_constraints->visualize(data, module_data);
                 planner.safety_constraints->visualize(data, module_data);
             }
@@ -546,10 +553,61 @@ namespace MPCPlanner
                     trajectory.add(planner.local_solver->getOutput(k, "x"), planner.local_solver->getOutput(k, "y"));
 
                 if ((int)i == best_planner_index_)
+                {
+                    // CASE 1: This is THE SELECTED trajectory (will be executed)
                     visualizeTrajectory(trajectory, _name + "/optimized_trajectories", false, 1.0, -1, 12, true, false);
+
+                    /** @note Jules: you implemented this to make the non-guided more visible */
+                    if (planner.is_original_planner && CONFIG["JULES"]["have_non_guided_standout"].as<bool>())
+                    {
+                        auto &marker_pub = VISUALS.getPublisher(_name + "/non_guided_markers");
+                        auto &cubes = marker_pub.getNewPointMarker("CUBE");
+                        cubes.setColor(1.0, 1.0, 0.0, 1.0); // Yellow cubes
+                        cubes.setScale(0.3, 0.3, 0.3);
+
+                        // Add cube markers every 5 points along the trajectory
+                        for (int k = 1; k < _solver->N; k += 5)
+                        {
+                            Eigen::Vector3d point(planner.local_solver->getOutput(k, "x"),
+                                                  planner.local_solver->getOutput(k, "y"),
+                                                  0.1); // Slightly elevated
+                            cubes.addPointMarker(point);
+                        }
+                        marker_pub.publish();
+
+                        LOG_INFO(_ego_robot_ns + ": NON-GUIDED PLANNER SELECTED | Topology ID: " << planner.result.guidance_ID
+                                                                                                 << " | Visualization: Dark red path + YELLOW CUBES");
+                    }
+                }
                 else if (planner.is_original_planner)
+                {
+                    // CASE 2: This is the NON-GUIDED planner (T-MPC++), but NOT selected
                     visualizeTrajectory(trajectory, _name + "/optimized_trajectories", false, 1.0, 11, 12, true, false);
+
+                    /** @note Jules: you implemented this to make the non-guided more visible */
+                    if (CONFIG["JULES"]["have_non_guided_standout"].as<bool>())
+                    {
+                        auto &marker_pub = VISUALS.getPublisher(_name + "/non_guided_markers");
+                        auto &spheres = marker_pub.getNewPointMarker("SPHERE");
+                        spheres.setColor(0.0, 1.0, 1.0, 0.7); // Cyan spheres, semi-transparent
+                        spheres.setScale(0.25, 0.25, 0.25);
+
+                        // Add sphere markers every 5 points along the trajectory
+                        for (int k = 1; k < _solver->N; k += 5)
+                        {
+                            Eigen::Vector3d point(planner.local_solver->getOutput(k, "x"),
+                                                  planner.local_solver->getOutput(k, "y"),
+                                                  0.05); // Slightly elevated
+                            spheres.addPointMarker(point);
+                        }
+                        marker_pub.publish();
+
+                        LOG_DEBUG(_ego_robot_ns + ": NON-GUIDED PLANNER (not selected) | Topology ID: " << planner.result.guidance_ID
+                                                                                                        << " | Visualization: Colored path + CYAN SPHERES");
+                    }
+                }
                 else
+                    // CASE 3: This is a GUIDED planner, but NOT selected
                     visualizeTrajectory(trajectory, _name + "/optimized_trajectories", false, 1.0, planner.result.color, global_guidance_->GetConfig()->n_paths_, true, false);
                 // else if (!planner.existing_guidance) // Visualizes new homotopy classes
                 // visualizeTrajectory(trajectory, _name + "/optimized_trajectories", false, 0.2, 11, 12, true, false);
@@ -713,8 +771,8 @@ namespace MPCPlanner
         // Verify we have enough nodes for a valid path
         if (node_ptrs.size() < 2)
         {
-            LOG_WARN("MPC trajectory has insufficient points (" << node_ptrs.size()
-                                                                << ") for homotopy comparison. Need at least 2 nodes.");
+            LOG_WARN(_ego_robot_ns + ": MPC trajectory has insufficient points (" << node_ptrs.size()
+                                                                                  << ") for homotopy comparison. Need at least 2 nodes.");
             return GuidancePlanner::GeometricPath();
         }
 
@@ -723,7 +781,7 @@ namespace MPCPlanner
         // These connections are what the homology integration uses
         GuidancePlanner::GeometricPath mpc_path(node_ptrs);
 
-        LOG_INFO_THROTTLE(4000, "Created GeometricPath from MPC trajectory: "
+        LOG_INFO_THROTTLE(4000, _ego_robot_ns + " Created GeometricPath from MPC trajectory: "
                                     << node_ptrs.size() << " nodes, time range [0, " << (solver->N - 1) << "]");
 
         return mpc_path;

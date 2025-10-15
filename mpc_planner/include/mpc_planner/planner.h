@@ -46,6 +46,7 @@ namespace MPCPlanner
     {
     public:
         Planner();
+        Planner(std::string ego_robot_ns);
 
     public:
         PlannerOutput solveMPC(State &state, RealTimeData &data);
@@ -64,6 +65,8 @@ namespace MPCPlanner
 
         RosTools::DataSaver &getDataSaver() const;
 
+        bool setEgoNameSpaceGuidanceModule(const std::string &ego_robot_ns);
+
     private:
         bool _is_data_ready{false}, _was_reset{true};
 
@@ -78,6 +81,10 @@ namespace MPCPlanner
         std::unique_ptr<RosTools::Timer> _startup_timer;
 
         std::vector<std::shared_ptr<ControllerModule>> _modules; // Will contain all modules used in the mpc formulation and the _modules are filled by the function initializeModules() in the file modules.h
+    
+    public:
+        /** @note Jules: Created this variable for debugging purposes, so log messages of different robots can be distinguished*/
+        std::string _ego_robot_ns{"jackalX"};
     };
 
 }

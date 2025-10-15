@@ -93,3 +93,4 @@ visualization:
 JULES:
     use_extra_params_module_data: true
     assign_meaningful_topology_id_to_non_guided: true
+    have_non_guided_standout: true #Enable special markers for non-guided planner

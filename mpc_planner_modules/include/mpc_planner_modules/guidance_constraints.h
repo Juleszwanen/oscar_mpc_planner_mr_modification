@@ -127,6 +127,9 @@ namespace MPCPlanner
         RealTimeData empty_data_;
 
         int best_planner_index_ = -1;
+    public:
+        std::string _ego_robot_ns{"jackalX"};
+        
     
     /** @note Jules: The functions under this public keyword are set by you */
     private:
@@ -145,28 +148,30 @@ namespace MPCPlanner
      *       to match the PRM's space-time representation
      * @note Nodes are stored in mpc_trajectory_nodes_ for memory management
      */
-    GuidancePlanner::GeometricPath convertMPCTrajectoryToGeometricPath(
-        std::shared_ptr<Solver> solver,
-        GuidancePlanner::NodeType node_type = GuidancePlanner::NodeType::CONNECTOR);
+        GuidancePlanner::GeometricPath convertMPCTrajectoryToGeometricPath(
+            std::shared_ptr<Solver> solver,
+            GuidancePlanner::NodeType node_type = GuidancePlanner::NodeType::CONNECTOR);
     
-    /**
-     * @brief Storage for temporary nodes created during MPC trajectory conversion
-     * 
-     * These nodes must persist while the GeometricPath is being used for
-     * homotopy comparison, as GeometricPath stores raw pointers to them.
-     */
-    std::vector<std::unique_ptr<GuidancePlanner::Node>> mpc_trajectory_nodes_;
+        /**
+         * @brief Storage for temporary nodes created during MPC trajectory conversion
+         * 
+         * These nodes must persist while the GeometricPath is being used for
+         * homotopy comparison, as GeometricPath stores raw pointers to them.
+         */
+        std::vector<std::unique_ptr<GuidancePlanner::Node>> mpc_trajectory_nodes_;
     
-    /**
-     * @brief Base ID for MPC trajectory nodes to avoid conflicts with PRM nodes
-     * 
-     * PRM uses:
-     * - Negative IDs for special nodes (START=-1, GOAL=-2, etc.)
-     * - Non-negative IDs for regular graph nodes (0, 1, 2, ...)
-     * 
-     * We use 1000000+ to ensure no conflicts
-     */
-    static constexpr int MPC_NODE_BASE_ID = 1000000;
+        /**
+         * @brief Base ID for MPC trajectory nodes to avoid conflicts with PRM nodes
+         * 
+         * PRM uses:
+         * - Negative IDs for special nodes (START=-1, GOAL=-2, etc.)
+         * - Non-negative IDs for regular graph nodes (0, 1, 2, ...)
+         * 
+         * We use 1000000+ to ensure no conflicts
+         */
+        static constexpr int MPC_NODE_BASE_ID = 1000000;
+
+    
     };
 } // namespace MPCPlanner
 #endif // __GUIDANCE_CONSTRAINTS_H__

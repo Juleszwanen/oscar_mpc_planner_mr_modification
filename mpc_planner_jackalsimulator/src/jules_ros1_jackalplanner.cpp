@@ -54,7 +54,9 @@ JulesJackalPlanner::JulesJackalPlanner(ros::NodeHandle &nh, ros::NodeHandle &pnh
     nh.param("goal_tolerance", this->_goal_tolerance, this->_goal_tolerance);
 
     // Construct Planner after configuration is ready
-    this->_planner = std::make_unique<MPCPlanner::Planner>();
+    this->_planner = std::make_unique<MPCPlanner::Planner>(_ego_robot_ns);
+    // Set the _ego_robot_ns inside the planner
+    
 
     // Setup ROS I/O
     this->initializeSubscribersAndPublishers(nh, pnh);
