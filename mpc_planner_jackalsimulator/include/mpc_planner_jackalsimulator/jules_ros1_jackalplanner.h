@@ -90,7 +90,7 @@ private:
 
     // Functions structuring planning phase:
     void prepareObstacleData();
-   
+
     std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> generatePlanningCommand(const MPCPlanner::PlannerState &current_state);
     void publishCmdAndVisualize(const geometry_msgs::Twist &cmd, const MPCPlanner::PlannerOutput &output);
     void rotatePiRadiansCw(geometry_msgs::Twist &cmd);
@@ -149,12 +149,13 @@ private:
     bool _received_obstacle_callback_first_time{true};
     bool _have_received_meaningful_trajectory_data{false}; // Track trajectory data readiness
     bool _stop_when_reached_goal{false};                   // This is a configuration parameter that determines if we stop at out goal or that we will rotate pi radians.
+    bool _communicate_on_topology_switch_only{false};       // This is a configuration parameter that determiens if an _ego_robot only communicates its trajectory when a topology switch is detected.
 
-    std::set<std::string> _validated_trajectory_robots; // this set will record whihc robot has send a correct trajectory, this is important during the initialization phase.
+    std::set<std::string>
+        _validated_trajectory_robots; // this set will record whihc robot has send a correct trajectory, this is important during the initialization phase.
 
     // Goal cache
     bool _goal_received{false};
-    
 
     Eigen::Vector2d _goal_xy{0.0, 0.0};
 

@@ -25,7 +25,7 @@ namespace GuidancePlanner
 {
     class GlobalGuidance;
     struct GeometricPath;
-    enum  class NodeType;
+    enum class NodeType;
     struct Node;
 }
 
@@ -83,8 +83,7 @@ namespace MPCPlanner
         void reset() override;
         void saveData(RosTools::DataSaver &data_saver) override;
         // void GetMethodName(std::string &name) override;
-    
-  
+
     private: // Private functions
         struct LocalPlanner
         {
@@ -121,57 +120,55 @@ namespace MPCPlanner
         bool _use_tmpcpp{true}, _enable_constraints{true};
         double _control_frequency{20.};
         double _planning_time;
-        bool   _assign_meaningful_topology{false};
+        bool _assign_meaningful_topology{false};
 
-        static constexpr int TOPOLOGY_NO_MATCH = -999; //Indicates top
+        int TOPOLOGY_NO_MATCH{8}; // Indicates top
         RealTimeData empty_data_;
 
         int best_planner_index_ = -1;
+
     public:
         std::string _ego_robot_ns{"jackalX"};
-        
-    
-    /** @note Jules: The functions under this public keyword are set by you */
+
+        /** @note Jules: The functions under this public keyword are set by you */
     private:
-    /**
-     * @brief Convert MPC solver trajectory to GeometricPath for homotopy comparison
-     * 
-     * Creates a sequence of nodes from the MPC optimization output, converting
-     * the continuous trajectory into a discrete geometric path compatible with
-     * the PRM's homotopy equivalence checking.
-     * 
-     * @param solver The MPC solver containing the optimized trajectory
-     * @param node_type The type of nodes to create (default: CONNECTOR)
-     * @return GeometricPath object that can be compared with guidance trajectories
-     * 
-     * @note The function creates nodes with discrete time indices k (not k*dt)
-     *       to match the PRM's space-time representation
-     * @note Nodes are stored in mpc_trajectory_nodes_ for memory management
-     */
+        /**
+         * @brief Convert MPC solver trajectory to GeometricPath for homotopy comparison
+         *
+         * Creates a sequence of nodes from the MPC optimization output, converting
+         * the continuous trajectory into a discrete geometric path compatible with
+         * the PRM's homotopy equivalence checking.
+         *
+         * @param solver The MPC solver containing the optimized trajectory
+         * @param node_type The type of nodes to create (default: CONNECTOR)
+         * @return GeometricPath object that can be compared with guidance trajectories
+         *
+         * @note The function creates nodes with discrete time indices k (not k*dt)
+         *       to match the PRM's space-time representation
+         * @note Nodes are stored in mpc_trajectory_nodes_ for memory management
+         */
         GuidancePlanner::GeometricPath convertMPCTrajectoryToGeometricPath(
             std::shared_ptr<Solver> solver,
             GuidancePlanner::NodeType node_type = GuidancePlanner::NodeType::CONNECTOR);
-    
+
         /**
          * @brief Storage for temporary nodes created during MPC trajectory conversion
-         * 
+         *
          * These nodes must persist while the GeometricPath is being used for
          * homotopy comparison, as GeometricPath stores raw pointers to them.
          */
         std::vector<std::unique_ptr<GuidancePlanner::Node>> mpc_trajectory_nodes_;
-    
+
         /**
          * @brief Base ID for MPC trajectory nodes to avoid conflicts with PRM nodes
-         * 
+         *
          * PRM uses:
          * - Negative IDs for special nodes (START=-1, GOAL=-2, etc.)
          * - Non-negative IDs for regular graph nodes (0, 1, 2, ...)
-         * 
+         *
          * We use 1000000+ to ensure no conflicts
          */
         static constexpr int MPC_NODE_BASE_ID = 1000000;
-
-    
     };
 } // namespace MPCPlanner
 #endif // __GUIDANCE_CONSTRAINTS_H__

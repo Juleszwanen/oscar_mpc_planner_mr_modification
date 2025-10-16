@@ -39,6 +39,7 @@ namespace MPCPlanner
         _control_frequency = CONFIG["control_frequency"].as<double>();
         _planning_time = 1. / _control_frequency;
 
+        TOPOLOGY_NO_MATCH = 2 * global_guidance_->GetConfig()->n_paths_;
         // JULES: Load the meaningful topology assignment setting
         try
         {
@@ -397,7 +398,7 @@ namespace MPCPlanner
                     {
                         GuidancePlanner::GeometricPath mpc_path = convertMPCTrajectoryToGeometricPath(best_solver);
 
-                        int meaningful_topology_id = global_guidance_->FindTopologyClassForPath(mpc_path);
+                        int meaningful_topology_id = global_guidance_->FindTopologyClassForPath(mpc_path, _ego_robot_ns);
 
                         if (meaningful_topology_id != TOPOLOGY_NO_MATCH)
                         {
@@ -407,8 +408,8 @@ namespace MPCPlanner
                             // Try to assign matching color
                             best_planner.result.color = -1;
 
-                            LOG_INFO("NON-GUIDED PLANNER SELECTED AS BEST PLANNER| Topology match SUCCESS | ID: " << meaningful_topology_id
-                                                                                                                  << " | Visualization: Dark red elevated | Color assignment disabled for verification");
+                            LOG_INFO_THROTTLE(5000, _ego_robot_ns + " NON-GUIDED PLANNER SELECTED AS BEST PLANNER| Topology match SUCCESS | ID: " << meaningful_topology_id
+                                                                                                                                                  << " | Visualization: Dark red elevated | Color assignment disabled for verification");
                             // for (int i = 0; i < global_guidance_->NumberOfGuidanceTrajectories(); i++)
                             // {
                             //     auto &guidance_traj = global_guidance_->GetGuidanceTrajectory(i);
@@ -424,8 +425,8 @@ namespace MPCPlanner
                         }
                         else
                         {
-                            LOG_WARN("NON-GUIDED PLANNER SELECTED AS BEST PLANNER| Topology match FAILED - TOPOLOGY SWITCH detected | Fallback ID: "
-                                     << best_planner.result.guidance_ID << " | Visualization: Dark red elevated");
+                            LOG_WARN_THROTTLE(5000, "NON-GUIDED PLANNER SELECTED AS BEST PLANNER| Topology match FAILED - TOPOLOGY SWITCH detected | Fallback ID: "
+                                                        << best_planner.result.guidance_ID << " | Visualization: Dark red elevated");
                             // Keep the default ID that was already assigned above
                         }
                     }
@@ -438,18 +439,32 @@ namespace MPCPlanner
                 }
                 else
                 {
-                    LOG_WARN("No guidance trajectories available for topology comparison");
+                    LOG_DEBUG(_ego_robot_ns + "...No guidance trajectories available for topology comparison");
                     // Keep the default ID that was already assigned above
                 }
             }
 
             // Communicate to the guidance which topology class we follow (none if it was the original planner)
-            global_guidance_->OverrideSelectedTrajectory(best_planner.result.guidance_ID, best_planner.is_original_planner);
+            // Determine if we should clear the selection
+            bool clear_selection = best_planner.is_original_planner; // Default behavior
+
+            if (CONFIG["JULES"]["override_selected_traject_of_topology_non_guided"].as<bool>())
+            {
+                // Feature enabled: Clear only if non-guided planner didn't match any topology
+                bool non_guided_matched = (best_planner.result.guidance_ID != (2 * global_guidance_->GetConfig()->n_paths_));
+                clear_selection = best_planner.is_original_planner && !non_guided_matched;
+            }
+
+            // original line
+            // global_guidance_->OverrideSelectedTrajectory(best_planner.result.guidance_ID, best_planner.is_original_planner);
+            // Single call to OverrideSelectedTrajectory
+            global_guidance_->OverrideSelectedTrajectory(best_planner.result.guidance_ID, clear_selection);
 
             _solver->_output = best_solver->_output; // Load the solution into the main lmpcc solver
             _solver->_info = best_solver->_info;
             _solver->_params = best_solver->_params;
 
+            /** @note These assignments only happen when the solver was succesfull */
             if (CONFIG["JULES"]["use_extra_params_module_data"].as<bool>())
             {
                 module_data.selected_topology_id = best_planner.result.guidance_ID;
@@ -575,8 +590,8 @@ namespace MPCPlanner
                         }
                         marker_pub.publish();
 
-                        LOG_INFO(_ego_robot_ns + ": NON-GUIDED PLANNER SELECTED | Topology ID: " << planner.result.guidance_ID
-                                                                                                 << " | Visualization: Dark red path + YELLOW CUBES");
+                        LOG_DEBUG(_ego_robot_ns + ": NON-GUIDED PLANNER SELECTED | Topology ID: " << planner.result.guidance_ID
+                                                                                                  << " | Visualization: Dark red path + YELLOW CUBES");
                     }
                 }
                 else if (planner.is_original_planner)
@@ -781,7 +796,7 @@ namespace MPCPlanner
         // These connections are what the homology integration uses
         GuidancePlanner::GeometricPath mpc_path(node_ptrs);
 
-        LOG_INFO_THROTTLE(4000, _ego_robot_ns + " Created GeometricPath from MPC trajectory: "
+        LOG_INFO_THROTTLE(5000, _ego_robot_ns + " Created GeometricPath from MPC trajectory: "
                                     << node_ptrs.size() << " nodes, time range [0, " << (solver->N - 1) << "]");
 
         return mpc_path;

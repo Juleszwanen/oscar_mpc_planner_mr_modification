@@ -205,6 +205,14 @@ namespace MPCPlanner
             return "UNKNOWN_STATE";
         }
     }
+
+    enum class SolverState
+    {
+        SOLVED_WITH_HOMOLOGY_ID, // The mpc formulation was solved with a homology id.
+        SOLVED_NO_HOMOLOGY_ID,   // The mpc formulaiton was not solved with a meaningfull homology id.
+        SOLVED_FAILD             // The solver failed, a braking command as generated.
+
+    };
 }
 
 #endif

@@ -47,6 +47,7 @@ JulesJackalPlanner::JulesJackalPlanner(ros::NodeHandle &nh, ros::NodeHandle &pnh
     this->_control_frequency = CONFIG["control_frequency"].as<double>();
     this->_enable_output = CONFIG["enable_output"].as<bool>();
     this->_infeasible_deceleration = CONFIG["deceleration_at_infeasible"].as<double>();
+    this->_communicate_on_topology_switch_only = CONFIG["JULES"]["communicate_on_topology_switch_only"];
     bool initialization_successful = this->initializeOtherRobotsAsObstacles(_other_robot_nss, _data, CONFIG["robot_radius"].as<double>());
 
     // Read parameters
@@ -56,7 +57,6 @@ JulesJackalPlanner::JulesJackalPlanner(ros::NodeHandle &nh, ros::NodeHandle &pnh
     // Construct Planner after configuration is ready
     this->_planner = std::make_unique<MPCPlanner::Planner>(_ego_robot_ns);
     // Set the _ego_robot_ns inside the planner
-    
 
     // Setup ROS I/O
     this->initializeSubscribersAndPublishers(nh, pnh);
@@ -64,7 +64,7 @@ JulesJackalPlanner::JulesJackalPlanner(ros::NodeHandle &nh, ros::NodeHandle &pnh
     _reconfigure = std::make_unique<JackalsimulatorReconfigure>(); // Initialize RQT reconfigure
 
     _startup_timer = std::make_unique<RosTools::Timer>();
-    _startup_timer->setDuration(10.0);
+    _startup_timer->setDuration(15.0);
     _startup_timer->start();
 
     transitionTo(_current_state, MPCPlanner::PlannerState::TIMER_STARTUP, _ego_robot_ns);
@@ -238,8 +238,9 @@ void JulesJackalPlanner::loopDirectTrajectoryStateMachine(const ros::TimerEvent 
 
         prepareObstacleData();
         auto [cmd, output] = generatePlanningCommand(_current_state);
-        _data.past_trajectory.replaceTrajectory(output.trajectory);
+
         publishCmdAndVisualize(cmd, output);
+        _data.past_trajectory.replaceTrajectory(output.trajectory);
         // The state transition is be triggered by a trajectory callback function
         break;
     }
@@ -254,8 +255,8 @@ void JulesJackalPlanner::loopDirectTrajectoryStateMachine(const ros::TimerEvent 
         prepareObstacleData();
         auto [cmd, output] = generatePlanningCommand(_current_state);
         // LOG_INFO(_ego_robot_ns + output.logOutput());
-        _data.past_trajectory.replaceTrajectory(output.trajectory);
         publishCmdAndVisualize(cmd, output);
+        _data.past_trajectory.replaceTrajectory(output.trajectory);
         break;
     }
     case MPCPlanner::PlannerState::JUST_REACHED_GOAL:
@@ -1059,13 +1060,11 @@ std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> JulesJackalPlanner::g
     geometry_msgs::Twist cmd;
     MPCPlanner::PlannerOutput output; // Initialize with default values
 
-    switch (current_state)
+    // Lambda to handle MPC solving and command extraction
+    // Captures: cmd & output by reference (to modify), this for class members
+    auto solveMPCAndExtractCommand = [&cmd, &output, this]()
     {
-    case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
-    {
-        LOG_WARN(_ego_robot_ns + ": Waiting for first real trajectory data, planning with Dummy Obstacles");
-        output = _planner->solveMPC(_state, _data); // Override output
-        // LOG_INFO_THROTTLE(4, _ego_robot_ns + "OUTPUT: " + std::to_string(output.current_trajectory_cost));
+        output = _planner->solveMPC(_state, _data);
 
         if (_enable_output && output.success)
         {
@@ -1079,33 +1078,34 @@ std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> JulesJackalPlanner::g
             buildOutputFromBrakingCommand(output, cmd);
             LOG_WARN(_ego_robot_ns + ": Applying braking command - solver failed or output disabled");
         }
+    };
+
+    // Lambda to handle braking scenarios
+    // Captures: cmd & output by reference (to modify), this for class member functions
+    auto applyBrakingScenario = [&cmd, &output, this]()
+    {
+        applyBrakingCommand(cmd);
+        buildOutputFromBrakingCommand(output, cmd);
+    };
+
+    switch (current_state)
+    {
+    case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
+    {
+        LOG_WARN(_ego_robot_ns + ": Waiting for first real trajectory data, planning with Dummy Obstacles");
+        solveMPCAndExtractCommand();
         break;
     }
     case MPCPlanner::PlannerState::JUST_REACHED_GOAL:
     {
-        applyBrakingCommand(cmd);
-        buildOutputFromBrakingCommand(output, cmd); // Create a braking trajectory from our braking command which can be send to other robots
+        applyBrakingScenario();
         LOG_INFO(_ego_robot_ns + ": JUST REACHED GOAL - Applying braking command");
         break;
     }
     case MPCPlanner::PlannerState::PLANNING_ACTIVE:
     {
         LOG_DEBUG(_ego_robot_ns + ": Calling MPC solver with " + std::to_string(_data.dynamic_obstacles.size()) + " obstacles");
-        output = _planner->solveMPC(_state, _data); // Override output
-        // LOG_INFO_THROTTLE(4, _ego_robot_ns + "OUTPUT: " + std::to_string(output.current_trajectory_cost));
-
-        if (_enable_output && output.success)
-        {
-            cmd.linear.x = _planner->getSolution(1, "v");
-            cmd.angular.z = _planner->getSolution(0, "w");
-            LOG_VALUE_DEBUG("Commanded", "v=" + std::to_string(cmd.linear.x) + ", w=" + std::to_string(cmd.angular.z));
-        }
-        else
-        {
-            applyBrakingCommand(cmd);
-            buildOutputFromBrakingCommand(output, cmd);
-            LOG_WARN(_ego_robot_ns + ": Applying braking command - solver failed or output disabled");
-        }
+        solveMPCAndExtractCommand();
         break;
     }
     case MPCPlanner::PlannerState::GOAL_REACHED:
@@ -1113,17 +1113,17 @@ std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> JulesJackalPlanner::g
         cmd.linear.x = 0.0;
         cmd.angular.z = 0.0;
         LOG_DEBUG(_ego_robot_ns + ": Maintaining stopped state at goal");
+
         if (_stop_when_reached_goal)
         {
-            buildOutputFromBrakingCommand(output, cmd); // Create a complete stop trajectory, dont rotate at the goal
+            buildOutputFromBrakingCommand(output, cmd);
             publishObjectiveReachedEvent();
         }
         else
         {
-            rotatePiRadiansCw(cmd); // wait with publishing that we reached our goal until we have finished rotating within an error margin
+            rotatePiRadiansCw(cmd);
             buildOutputFromBrakingCommand(output, cmd);
         }
-
         break;
     }
     default:
@@ -1136,21 +1136,74 @@ std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> JulesJackalPlanner::g
 // Add this function after generatePlanningCommand()
 void JulesJackalPlanner::publishCmdAndVisualize(const geometry_msgs::Twist &cmd, const MPCPlanner::PlannerOutput &output)
 {
-    // Publish the velocity command to the robot's differential drive
+    bool should_communicate = true; // Default: always communicate (safer)
+    if (_communicate_on_topology_switch_only)
+    {
+        const int n_paths = CONFIG["JULES"]["n_paths"].as<int>();
+        const int non_guided_topology_id = 2 * n_paths;
+
+        // Case 1: MPC solver failed
+        if (!output.success)
+        {
+            should_communicate = true;
+            LOG_INFO(_ego_robot_ns + ": Communicating - MPC failed");
+        }
+
+        // Case 2a: Switched TO non-guided (special case of topology switch)
+        else if (output.following_new_topology &&
+                 output.selected_topology_id == non_guided_topology_id)
+        {
+            should_communicate = true;
+            LOG_INFO(_ego_robot_ns + ": Communicating - Switched to non-guided from topology " +
+                     std::to_string(output.previous_topology_id));
+        }
+
+        // Case 2b: Topology switch (between guided topologies or from non-guided to guided)
+        else if (output.following_new_topology)
+        {
+            should_communicate = true;
+            LOG_INFO(_ego_robot_ns + ": Communicating - Topology switch from " +
+                     std::to_string(output.previous_topology_id) + " to " +
+                     std::to_string(output.selected_topology_id));
+        }
+
+        // Case 3: Staying in non-guided topology (continuous communication)
+        else if (output.selected_topology_id == non_guided_topology_id)
+        {
+            should_communicate = true;
+            LOG_DEBUG(_ego_robot_ns + ": Communicating - Staying in non-guided (unidentified topology)");
+        }
+
+        // Case 4: Same guided topology
+        else
+        {
+            should_communicate = false;
+            LOG_DEBUG(_ego_robot_ns + ": NOT communicating - Same guided topology (" +
+                      std::to_string(output.selected_topology_id) + ")");
+        }
+    }
+    // else: _communicate_on_topology_switch_only is false, so should_communicate stays true
+
+    // Always publish velocity command
     _cmd_pub.publish(cmd);
 
-    // Publish trajectories for robot-to-robot communication
-    this->publishDirectTrajectory(output);
-    this->publishCurrentTrajectory(output);
+    // Conditional trajectory communication
+    if (should_communicate)
+    {
+        this->publishDirectTrajectory(output);
+        this->publishCurrentTrajectory(output);
+        LOG_VALUE_DEBUG("Communication", "Published trajectory (Topology: " +
+                                             std::to_string(output.selected_topology_id) + ")");
+    }
+    else
+    {
+        LOG_VALUE_DEBUG("Communication", "Skipped (Same topology: " +
+                                             std::to_string(output.selected_topology_id) + ")");
+    }
 
-    // Keep downstream consumers updated with our current pose (for RViz/aggregator)
-    // this->publishPose();
-
-    // Built-in planner visuals (predicted trajectory, footprints, etc.), if available
+    // Always visualize
     _planner->visualizeObstaclePredictionsPlanner(_state, _data, false);
     _planner->visualize(_state, _data);
-
-    // Quick heading ray for sanity checking
     // visualize();
 }
 
