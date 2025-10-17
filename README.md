@@ -336,7 +336,10 @@ In multi-robot scenarios, robots share their planned trajectories to enable coll
 - `JULES/communicate_on_topology_switch_only` (boolean, default: `false`) - Enable topology-aware communication to reduce network overhead in multi-robot scenarios. When `true`, trajectories are only published on topology switches or failures.
 - `JULES/use_extra_params_module_data` (boolean, default: `false`) - Enable topology metadata tracking in PlannerOutput (required for topology-aware communication to function).
 
-For detailed documentation on multi-robot features, see `docs/guidance_constraints_documentation.md`.
+For detailed documentation on multi-robot features:
+- **Topology-aware communication implementation**: See [Topology-Aware Communication section](docs/guidance_constraints_documentation.md#topology-aware-communication-for-multi-robot-systems) in Guidance Constraints Documentation
+- **Topology metadata fields and usage**: See [Topology Metadata Feature](docs/topology_metadata_feature.md)
+- **Multi-robot state machine**: See [JulesJackalPlanner Documentation](mpc_planner_jackalsimulator/docs/)
 
 ## Examples
 

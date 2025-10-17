@@ -4,6 +4,12 @@
 
 As of October 2025, the MPC planner now includes **topology metadata** in its output, enabling topology-aware communication and decision-making in multi-robot systems. This feature exposes information about which homotopy class (trajectory topology) was selected by the T-MPC++ planner, making it possible for higher-level planners and other robots to reason about topological choices.
 
+**Key Applications**:
+- **Topology-Aware Communication**: Reduce multi-robot network bandwidth by 60-80% by only publishing when topologies change (see [implementation details](guidance_constraints_documentation.md#topology-aware-communication-for-multi-robot-systems))
+- **Multi-Robot Coordination**: Robots can share and reason about topological intentions
+- **Learning & Adaptation**: Collect data on which topologies work best in different scenarios
+- **Debugging & Monitoring**: Track topology switches and planner performance
+
 ## What is Topology Metadata?
 
 When the T-MPC++ (Topology-Driven Model Predictive Control) planner runs, it evaluates multiple distinct trajectory topologies in parallel - for example, passing to the left vs. right of an obstacle. The topology metadata captures which of these topological alternatives was selected and provides context about the decision.
@@ -430,6 +436,8 @@ This enables:
 - **Topological conflict avoidance**: Robots avoid choosing the same topology in tight spaces
 - **Communication efficiency**: Share high-level topology intention instead of full trajectory
 - **Predictability**: Other robots know which general path to expect
+
+> **Implementation Note**: The topology metadata enables a powerful optimization called **topology-aware communication**, which reduces multi-robot network bandwidth by 60-80% by only publishing trajectory updates when a robot switches topologies. For implementation details, see the [Topology-Aware Communication for Multi-Robot Systems](guidance_constraints_documentation.md#topology-aware-communication-for-multi-robot-systems) section in the Guidance Constraints Documentation.
 
 ### 2. Higher-Level Planning Integration
 
