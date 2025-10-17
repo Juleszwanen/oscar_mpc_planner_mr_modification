@@ -39,9 +39,10 @@ Simulated Mobile Robot | Real-World Mobile Robot |  Static and Dynamic Obstacles
 3. [Usage](#usage) 
 4. [Configuration](#configuration) 
 5. [Examples](#examples) 
-6. [License](#license) 
-7. [Citing](#citing) 
-8. [Contributing](#contributing)
+6. [Documentation](#documentation) 
+7. [License](#license) 
+8. [Citing](#citing) 
+9. [Contributing](#contributing)
 
 ## Features
 This is a planner implementation for mobile robots navigating in 2D dynamic environments. It is designed to be:
@@ -354,6 +355,32 @@ For a `C++` cost and constraint example see [goal_module.cpp](mpc_planner_module
 As an example, by replacing the contouring cost with the goal module, the robot navigates to the user clicked goal instead of following a reference path.
 
 <p align="center"><img src="https://imgur.com/5EjTmYf.gif" width="60%"/></p>
+
+
+## Documentation
+
+Comprehensive documentation is available in the [`docs/`](docs/) directory:
+
+### Core Documentation
+
+- **[MPC Pipeline Documentation](docs/mpc_pipeline_documentation.md)** - Complete guide to the MPC planner architecture, module system, data flow, and customization
+- **[Guidance Constraints Documentation](docs/guidance_constraints_documentation.md)** - In-depth guide to the T-MPC++ implementation with parallel topology optimization
+- **[Topology Metadata Feature](docs/topology_metadata_feature.md)** - Guide to using topology information for multi-robot coordination and learning
+
+### System-Specific Documentation
+
+- **[JulesJackalPlanner](mpc_planner_jackalsimulator/docs/)** - Multi-robot simulator with state machine implementation
+  - [State Machine Implementation](mpc_planner_jackalsimulator/docs/State_Machine_Implementation.md) - Finite state machine refactoring (October 2025)
+  - [Architecture Guide](mpc_planner_jackalsimulator/docs/JulesJackalPlanner_Architecture.md) - ROS wrapper and multi-robot coordination
+
+### Quick Start
+
+For a quick introduction, see:
+- **Architecture overview**: [MPC Pipeline Documentation](docs/mpc_pipeline_documentation.md)
+- **T-MPC++ details**: [Guidance Constraints Documentation](docs/guidance_constraints_documentation.md)
+- **Multi-robot setup**: [JulesJackalPlanner Documentation](mpc_planner_jackalsimulator/docs/)
+
+All documentation is maintained and up-to-date as of October 2025.
 
 
 ## License

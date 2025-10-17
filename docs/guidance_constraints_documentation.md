@@ -2078,3 +2078,44 @@ To enable higher-level planning with topology awareness:
 - Maintains real-time performance through parallelization
 
 **Result**: More robust, optimal, and reliable autonomous navigation in complex dynamic environments.
+
+---
+
+## NEW: Topology Metadata Feature (October 2025)
+
+The GuidanceConstraints module now populates **topology metadata** in the PlannerOutput, enabling topology-aware decision making and multi-robot coordination.
+
+### What's New
+
+After the best planner is selected in `optimize()`, the module populates:
+
+```cpp
+if (CONFIG["JULES"]["use_extra_params_module_data"].as<bool>()) {
+    module_data.selected_topology_id = best_planner.result.guidance_ID;
+    module_data.selected_planner_index = best_planner_index_;
+    module_data.used_guidance = !best_planner.is_original_planner;
+    module_data.trajectory_cost = best_planner.result.objective;
+    module_data.solver_exit_code = best_planner.result.exit_code;
+}
+```
+
+This metadata is then transferred to `PlannerOutput` in `planner.cpp`, making it available to the robot controller.
+
+### Benefits
+
+- **Multi-robot coordination**: Robots can share which topology they're following
+- **Learning**: Collect data on which topologies work best in different scenarios
+- **Debugging**: Understand why a particular topology was chosen
+- **Monitoring**: Track topology switches and planner performance
+
+### Complete Documentation
+
+For comprehensive documentation on the topology metadata feature, including:
+- Detailed field descriptions
+- Usage examples (logging, tracking, coordination)
+- ROS message integration
+- Multi-robot applications
+
+See: **[Topology Metadata Feature Documentation](topology_metadata_feature.md)**
+
+---
