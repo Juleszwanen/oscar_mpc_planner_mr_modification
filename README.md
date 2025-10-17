@@ -328,6 +328,12 @@ Settings of the online solver can be modified in `config/settings.yaml`. Importa
 - `t-mpc/use_t-mpc++` - Enable T-MPC++, adding the non guided planner in parallel
 - `weights/` - Default weights of the MPC. Can be modified online in `rqt_reconfigure`.
 
+**Multi-Robot Configuration** (for systems like `mpc_planner_jackalsimulator`):
+- `JULES/communicate_on_topology_switch_only` - Enable topology-aware communication to reduce network overhead by 60-80% in multi-robot scenarios
+- `JULES/use_extra_params_module_data` - Enable topology metadata tracking (required for topology-aware communication)
+
+For detailed documentation on multi-robot features, see `docs/guidance_constraints_documentation.md`.
+
 ## Examples
 
 ### Custom System
