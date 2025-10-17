@@ -81,4 +81,36 @@ namespace MultiRobot
         return result;
     }
 
+    double interpolateAngle(double psi_k, double psi_kl, double alpha)
+    {
+        // Compute angle difference
+        double diff = psi_kl - psi_k; //
+
+        // Wrap to shortest arc [-π, π]
+        double wrapped_diff = wrapAngleDifference(diff);
+
+        // Interpolate along shortest arc
+        double psi_interp = psi_k + wrapped_diff * alpha;
+
+        // Wrap result back to [-π, π]
+        return wrapAngle(psi_interp);
+    }
+
+    // Both have the same implementation:
+    double wrapAngle(double angle)
+    {
+        while (angle > M_PI)
+            angle -= 2.0 * M_PI;
+        while (angle < -M_PI)
+            angle += 2.0 * M_PI;
+        return angle;
+    }
+
+    double wrapAngleDifference(double diff)
+    {
+        // Semantically the same as wrapAngle, but used for differences
+        // Ensures shortest arc representation
+        return wrapAngle(diff);
+    }
+
 }

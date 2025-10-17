@@ -2,7 +2,7 @@
 #define MPC_DATA_TYPES_H
 
 #include <Eigen/Dense>
-
+#include <ros/time.h>
 #include <vector>
 
 /** Basic high-level data types for motion planning */
@@ -95,6 +95,13 @@ namespace MPCPlanner
         ObstacleType type{ObstacleType::DYNAMIC};
 
         Prediction prediction;
+
+        // ========== NEW FIELDS TO ADD ==========
+        // Timestamp tracking for trajectory interpolation
+        ros::Time last_trajectory_update_time;
+        // Set to false when received via callback, set to true when consumed by a control loop
+        bool trajectory_needs_interpolation{false};
+        // =======================================
 
         DynamicObstacle(int _index, const Eigen::Vector2d &_position, double _angle, double _radius, ObstacleType _type = ObstacleType::DYNAMIC);
         DynamicObstacle(int _index, double _radius, ObstacleType _type = ObstacleType::DYNAMIC); // Jules deze heb jij toevegoed

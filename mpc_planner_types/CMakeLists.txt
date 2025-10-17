@@ -5,7 +5,9 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-find_package(catkin REQUIRED COMPONENTS)
+
+find_package(catkin REQUIRED COMPONENTS 
+            roscpp)
 
 find_package(Eigen3 REQUIRED)
 add_definitions(${EIGEN_DEFINITIONS})
@@ -13,6 +15,7 @@ add_definitions(${EIGEN_DEFINITIONS})
 catkin_package(
   INCLUDE_DIRS include ${EIGEN3_INCLUDE_DIRS}
   LIBRARIES ${PROJECT_NAME}
+  CATKIN_DEPENDS roscpp
   DEPENDS EIGEN3
 )
 

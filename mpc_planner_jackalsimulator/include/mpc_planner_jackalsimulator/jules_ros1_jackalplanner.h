@@ -81,7 +81,6 @@ public:
     bool initializeOtherRobotsAsObstacles(const std::set<std::string> &_other_robot_nss, MPCPlanner::RealTimeData &_data, const double);
     bool objectiveReached(MPCPlanner::State _state, MPCPlanner::RealTimeData _data) const;
     void buildOutputFromBrakingCommand(MPCPlanner::PlannerOutput &output, const geometry_msgs::Twist &cmd);
-
     void logDataState(const std::string &context = "") const;
 
 private:
@@ -90,6 +89,7 @@ private:
 
     // Functions structuring planning phase:
     void prepareObstacleData();
+    void interpolateTrajectoryPredictionsByTime();
 
     std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> generatePlanningCommand(const MPCPlanner::PlannerState &current_state);
     void publishCmdAndVisualize(const geometry_msgs::Twist &cmd, const MPCPlanner::PlannerOutput &output);
