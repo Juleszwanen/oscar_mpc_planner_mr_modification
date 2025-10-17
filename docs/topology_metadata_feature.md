@@ -24,8 +24,9 @@ struct PlannerOutput {
     bool success{false};                // Did optimization succeed?
     
     // Topology Metadata (Added October 2025)
-    int selected_topology_id{-9};       // Homology class ID
-    int selected_planner_index{-9};     // Which parallel planner was chosen
+    int previous_topology_id{-1};       // Previous topology for logging purposesS
+    int selected_topology_id{-1};       // Homology class ID
+    int selected_planner_index{-1};     // Which parallel planner was chosen
     bool used_guidance{true};           // Whether guidance constraints were used
     double trajectory_cost{0.0};        // Objective value of selected solution
     int solver_exit_code{-1};           // Solver exit status
