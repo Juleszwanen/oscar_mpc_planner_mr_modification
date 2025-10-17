@@ -47,6 +47,7 @@ JulesJackalPlanner::JulesJackalPlanner(ros::NodeHandle &nh, ros::NodeHandle &pnh
     this->_control_frequency = CONFIG["control_frequency"].as<double>();
     this->_enable_output = CONFIG["enable_output"].as<bool>();
     this->_infeasible_deceleration = CONFIG["deceleration_at_infeasible"].as<double>();
+    this->_communicate_on_topology_switch_only = CONFIG["JULES"]["communicate_on_topology_switch_only"];
     bool initialization_successful = this->initializeOtherRobotsAsObstacles(_other_robot_nss, _data, CONFIG["robot_radius"].as<double>());
 
     // Read parameters
@@ -54,7 +55,8 @@ JulesJackalPlanner::JulesJackalPlanner(ros::NodeHandle &nh, ros::NodeHandle &pnh
     nh.param("goal_tolerance", this->_goal_tolerance, this->_goal_tolerance);
 
     // Construct Planner after configuration is ready
-    this->_planner = std::make_unique<MPCPlanner::Planner>();
+    this->_planner = std::make_unique<MPCPlanner::Planner>(_ego_robot_ns);
+    // Set the _ego_robot_ns inside the planner
 
     // Setup ROS I/O
     this->initializeSubscribersAndPublishers(nh, pnh);
@@ -62,7 +64,7 @@ JulesJackalPlanner::JulesJackalPlanner(ros::NodeHandle &nh, ros::NodeHandle &pnh
     _reconfigure = std::make_unique<JackalsimulatorReconfigure>(); // Initialize RQT reconfigure
 
     _startup_timer = std::make_unique<RosTools::Timer>();
-    _startup_timer->setDuration(10.0);
+    _startup_timer->setDuration(15.0);
     _startup_timer->start();
 
     transitionTo(_current_state, MPCPlanner::PlannerState::TIMER_STARTUP, _ego_robot_ns);
@@ -236,8 +238,9 @@ void JulesJackalPlanner::loopDirectTrajectoryStateMachine(const ros::TimerEvent 
 
         prepareObstacleData();
         auto [cmd, output] = generatePlanningCommand(_current_state);
-        _data.past_trajectory.replaceTrajectory(output.trajectory);
+
         publishCmdAndVisualize(cmd, output);
+        _data.past_trajectory.replaceTrajectory(output.trajectory);
         // The state transition is be triggered by a trajectory callback function
         break;
     }
@@ -251,8 +254,9 @@ void JulesJackalPlanner::loopDirectTrajectoryStateMachine(const ros::TimerEvent 
 
         prepareObstacleData();
         auto [cmd, output] = generatePlanningCommand(_current_state);
-        _data.past_trajectory.replaceTrajectory(output.trajectory);
+        // LOG_INFO(_ego_robot_ns + output.logOutput());
         publishCmdAndVisualize(cmd, output);
+        _data.past_trajectory.replaceTrajectory(output.trajectory);
         break;
     }
     case MPCPlanner::PlannerState::JUST_REACHED_GOAL:
@@ -683,6 +687,12 @@ void JulesJackalPlanner::trajectoryCallback(const mpc_planner_msgs::ObstacleGMM:
             // Update the obstacle with the new prediction
             robot_trajectory_obstacle.prediction = std::move(new_prediction);
 
+            /** @note this is needed for the interpolation functionality */
+            // ========== USE ros::Time ==========
+            robot_trajectory_obstacle.last_trajectory_update_time = ros::Time::now();
+            robot_trajectory_obstacle.trajectory_needs_interpolation = false;
+            // ===================================
+
             LOG_DEBUG(_ego_robot_ns + ": Updated trajectory prediction for " + ns +
                       " with " + std::to_string(trajectory_size) + " trajectory points");
 
@@ -913,6 +923,10 @@ bool JulesJackalPlanner::initializeOtherRobotsAsObstacles(const std::set<std::st
                 0.0,
                 radius));
 
+        auto &traj_obs = data.trajectory_dynamic_obstacles.at((robot_ns));
+        traj_obs.last_trajectory_update_time = ros::Time::now();
+        traj_obs.trajectory_needs_interpolation = false;
+
         // Create corresponding dynamic obstacle
         MPCPlanner::DynamicObstacle dummy_obstacle = data.trajectory_dynamic_obstacles.at(robot_ns);
         data.dynamic_obstacles.push_back(dummy_obstacle);
@@ -1036,6 +1050,7 @@ void JulesJackalPlanner::prepareObstacleData()
         LOG_ERROR(_ego_robot_ns << "Received " << _data.dynamic_obstacles.size() << "That is too much removing most distant obstacles......");
     }
 
+    interpolateTrajectoryPredictionsByTime(); // NEW: Interpolate stale trajectories
     MPCPlanner::MultiRobot::updateRobotObstaclesFromTrajectories(_data, _validated_trajectory_robots, _ego_robot_ns);
 
     // LOG_ERROR(_ego_robot_ns + " Received " << _data.dynamic_obstacles.size() << " < " << max_obstacles << " obstacles. Adding dummies.");
@@ -1050,19 +1065,247 @@ void JulesJackalPlanner::prepareObstacleData()
     }
 }
 
+void JulesJackalPlanner::interpolateTrajectoryPredictionsByTime()
+{
+    const double dt = CONFIG["integrator_step"].as<double>();
+    const int N = CONFIG["N"].as<int>();
+    const bool enable_interpolation = CONFIG["enable_trajectory_interpolation"].as<bool>(true);
+
+    if (!enable_interpolation)
+    {
+        return;
+    }
+
+    ros::Time now = ros::Time::now();
+    for (auto &[ns, traj_obs] : _data.trajectory_dynamic_obstacles)
+    {
+        // ============================================================
+        // VALIDATION CHECKS
+        // ============================================================
+
+        if (_validated_trajectory_robots.find(ns) == _validated_trajectory_robots.end())
+        {
+            continue;
+        }
+
+        if (traj_obs.prediction.modes.empty() || traj_obs.prediction.modes[0].empty())
+        {
+            continue;
+        }
+
+        auto &mode = traj_obs.prediction.modes[0];
+        int n_measured = mode.size();
+
+        if (n_measured != N)
+        {
+            LOG_WARN(_ego_robot_ns + ": Trajectory for " + ns + " has " +
+                     std::to_string(n_measured) + " points, expected " + std::to_string(N) +
+                     ". Skipping interpolation.");
+            continue;
+        }
+
+        // ========== CALCULATE ELAPSED TIME WITH ros::Time ==========
+        ros::Duration elapsed_time = now - traj_obs.last_trajectory_update_time;
+        double dt_interp = elapsed_time.toSec();
+        // ===========================================================
+
+        double min_age_threshold = 1.0 / _control_frequency;
+        if (dt_interp < min_age_threshold)
+        {
+            traj_obs.trajectory_needs_interpolation = false;
+            continue; // Skip interpolation entirely for fresh trajectories
+        }
+
+        //
+        int k = static_cast<int>(std::floor(dt_interp / dt));
+        double tau = dt_interp - k * dt;
+        double alpha = tau / dt; // Fractional remainder [0, 1)
+
+        // Cap k to prevent going beyond trajectory
+        if (k >= N)
+        {
+            LOG_ERROR(_ego_robot_ns + ": Trajectory for " + ns + " is critically stale! " +
+                      "dt_interp=" + std::to_string(dt_interp) + "s exceeds horizon " +
+                      std::to_string(N * dt) + "s. Regenerating trajectory.");
+
+            // regenerateTrajectoryFromCurrentPose(traj_obs, N, dt);
+            traj_obs.trajectory_needs_interpolation = false; // Mark as not using interpolated data
+            continue;
+        }
+
+        // Skip if no meaningful shift
+        if (k == 0 && alpha < 0.01)
+        {
+            traj_obs.trajectory_needs_interpolation = false; // No interpolation needed
+            continue;
+        }
+
+        LOG_DEBUG(_ego_robot_ns + ": Interpolating trajectory for " + ns +
+                  " (dt_interp=" + std::to_string(dt_interp) + "s, k=" + std::to_string(k) +
+                  ", tau=" + std::to_string(tau) + "s, alpha=" + std::to_string(alpha) + ")");
+
+        // This vector will filled with pionts we extrapolate from the back of the original prediction vector
+        std::vector<MPCPlanner::PredictionStep> extrapolated_points;
+        int num_extrap_points = k + 1; // Need k + 1 for properinterpolation, the new trajectory will still contain N points but we will interpolate between N + 1 points to get N points back again
+        if (n_measured >= 2)
+        {
+            const auto &x_last = mode.back();
+            const auto &x_second_last = mode[n_measured - 2];
+
+            Eigen::Vector2d v = (x_last.position - x_second_last.position) / dt;
+            double psi_dot = MultiRobot::wrapAngleDifference(x_last.angle - x_second_last.angle) / dt;
+
+            // clamp velocities to physical limits
+            double v_mag = v.norm();
+            double v_max = CONFIG["JULES"]["robot_max_velocity"].as<double>(2.0);
+            if (v_mag > v_max)
+            {
+                LOG_WARN_THROTTLE(2000, _ego_robot_ns + ": Clamping extrapolated velocity for " + ns +
+                                            " from " + std::to_string(v_mag) + " to " + std::to_string(v_max) + " m/s");
+                v = v.normalized() * v_max;
+            }
+
+            double psi_dot_max = CONFIG["JULES"]["robot_max_angular_velocity"].as<double>(2.0);
+            if (std::abs(psi_dot) > psi_dot_max)
+            {
+                LOG_WARN_THROTTLE(2000, _ego_robot_ns + ": Clamping angular velocity for " + ns);
+                psi_dot = std::clamp(psi_dot, -psi_dot_max, psi_dot_max);
+            }
+
+            // Generate k + 1 extrapolated points
+
+            for (int i = 1; i <= num_extrap_points; ++i)
+            {
+                double t_extrap = i * dt;
+
+                Eigen::Vector2d pos_extrap = x_last.position + v * t_extrap;
+                double psi_extrap = MultiRobot::wrapAngle(x_last.angle + psi_dot * t_extrap);
+
+                extrapolated_points.emplace_back(
+                    pos_extrap,
+                    psi_extrap,
+                    -1.0,
+                    -1.0);
+            }
+        }
+
+        else
+        {
+            LOG_ERROR(_ego_robot_ns + ": Cannot extrapolate for " + ns +
+                      " - insufficient points (need at least 2)");
+        }
+
+        // ============================================================
+        // STEP 2: REMOVE FIRST k POINTS -> we have moved beyond them in time
+        // ============================================================
+        if (k > 0)
+        {
+            mode.erase(mode.begin(), mode.begin() + k);
+            // e.g given that we have 8 points and k = 5 we should have a new mode with size = 3
+            ROSTOOLS_ASSERT(mode.size() == (n_measured - k), "The size of mode should be equal to N_original - k");
+            LOG_DEBUG(_ego_robot_ns + ": Removed first " + std::to_string(k) +
+                      " points from trajectory for " + ns);
+        }
+
+        // ============================================================
+        // STEP 3: APPEND EXTRAPOLATED POINTS
+        // ============================================================
+        mode.insert(mode.end(), extrapolated_points.begin(), extrapolated_points.end());
+        ROSTOOLS_ASSERT(mode.size() == (n_measured + 1), "The size of the mode should be equal to N_original + 1");
+
+        // ============================================================
+        // STEP 4: INTERPOLATE ALL POINTS BY alpha
+        // ============================================================
+        if (alpha > 0.001)
+        {
+            std::vector<MPCPlanner::PredictionStep> interpolated_mode;
+            interpolated_mode.reserve(N);
+            // Interpolate between consecutive pairs
+            // We have (N+1) points, so we get N interpolated points
+            for (size_t i = 0; i < mode.size() - 1; ++i)
+            {
+                const auto x_curr = mode[i];
+                const auto x_next = mode[i + 1];
+                Eigen::Vector2d pos_interp = (1 - alpha) * x_curr.position + alpha * x_next.position;
+                double psi_interp = MultiRobot::interpolateAngle(x_curr.angle, x_next.angle, alpha);
+
+                interpolated_mode.emplace_back(
+                    pos_interp,
+                    psi_interp,
+                    -1,
+                    -1);
+            }
+
+            mode = std::move(interpolated_mode);
+        }
+
+        else
+        {
+            // No fractional shift needed, check if we have an extra point
+            if (mode.size() > static_cast<size_t>(N))
+            {
+                mode.pop_back();
+            }
+        }
+
+        // ============================================================
+        // STEP 5: VERIFY EXACTLY N POINTS
+        // ============================================================
+        if (mode.size() != static_cast<size_t>(N))
+        {
+            LOG_ERROR(_ego_robot_ns + ": Trajectory length mismatch for " + ns +
+                      " after interpolation! Expected " + std::to_string(N) +
+                      ", got " + std::to_string(mode.size()) + ". Applying fix.");
+
+            // Emergency fix: pad or trim
+            while (mode.size() < static_cast<size_t>(N))
+            {
+                LOG_WARN(_ego_robot_ns + ": Padding trajectory for " + ns);
+                mode.push_back(mode.back());
+            }
+            while (mode.size() > static_cast<size_t>(N))
+            {
+                LOG_WARN(_ego_robot_ns + ": Trimming trajectory for " + ns);
+                mode.pop_back();
+            }
+        }
+
+        if (!mode.empty())
+        {
+            traj_obs.position = mode[0].position;
+            traj_obs.angle = mode[0].angle;
+        }
+
+        traj_obs.trajectory_needs_interpolation = true;
+
+        // ============================================================
+        // CRITICAL: Update timestamp to prevent compounding drift
+        // ============================================================
+        // We've successfully interpolated/extrapolated the trajectory forward by dt_interp seconds.
+        // Update the timestamp to reflect that we've "consumed" this time shift.
+        // This prevents the next interpolation from using the ORIGINAL timestamp and
+        // creating cumulative errors (e.g., shifting by 0.2s, then 0.4s, then 0.6s...)
+        traj_obs.last_trajectory_update_time = now;
+
+        LOG_DEBUG(_ego_robot_ns + ": Successfully interpolated trajectory for " + ns +
+                  " (shifted by " + std::to_string(dt_interp) + "s)" +
+                  " - new start pose: (" + std::to_string(mode[0].position.x()) + ", " +
+                  std::to_string(mode[0].position.y()) + ", " +
+                  std::to_string(mode[0].angle * 180.0 / M_PI) + "°)");
+
+    } // loop end for each _data.trajectory_dynamic_obstacles
+}
 // Replace the existing generatePlanningCommand function with this updated version:
 std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> JulesJackalPlanner::generatePlanningCommand(const MPCPlanner::PlannerState &current_state)
 {
     geometry_msgs::Twist cmd;
     MPCPlanner::PlannerOutput output; // Initialize with default values
 
-    switch (current_state)
+    // Lambda to handle MPC solving and command extraction
+    // Captures: cmd & output by reference (to modify), this for class members
+    auto solveMPCAndExtractCommand = [&cmd, &output, this]()
     {
-    case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
-    {
-        LOG_WARN(_ego_robot_ns + ": Waiting for first real trajectory data, planning with Dummy Obstacles");
-        output = _planner->solveMPC(_state, _data); // Override output
-        // LOG_INFO_THROTTLE(4, _ego_robot_ns + "OUTPUT: " + std::to_string(output.current_trajectory_cost));
+        output = _planner->solveMPC(_state, _data);
 
         if (_enable_output && output.success)
         {
@@ -1076,33 +1319,34 @@ std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> JulesJackalPlanner::g
             buildOutputFromBrakingCommand(output, cmd);
             LOG_WARN(_ego_robot_ns + ": Applying braking command - solver failed or output disabled");
         }
+    };
+
+    // Lambda to handle braking scenarios
+    // Captures: cmd & output by reference (to modify), this for class member functions
+    auto applyBrakingScenario = [&cmd, &output, this]()
+    {
+        applyBrakingCommand(cmd);
+        buildOutputFromBrakingCommand(output, cmd);
+    };
+
+    switch (current_state)
+    {
+    case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
+    {
+        LOG_WARN(_ego_robot_ns + ": Waiting for first real trajectory data, planning with Dummy Obstacles");
+        solveMPCAndExtractCommand();
         break;
     }
     case MPCPlanner::PlannerState::JUST_REACHED_GOAL:
     {
-        applyBrakingCommand(cmd);
-        buildOutputFromBrakingCommand(output, cmd); // Create a braking trajectory from our braking command which can be send to other robots
+        applyBrakingScenario();
         LOG_INFO(_ego_robot_ns + ": JUST REACHED GOAL - Applying braking command");
         break;
     }
     case MPCPlanner::PlannerState::PLANNING_ACTIVE:
     {
         LOG_DEBUG(_ego_robot_ns + ": Calling MPC solver with " + std::to_string(_data.dynamic_obstacles.size()) + " obstacles");
-        output = _planner->solveMPC(_state, _data); // Override output
-        // LOG_INFO_THROTTLE(4, _ego_robot_ns + "OUTPUT: " + std::to_string(output.current_trajectory_cost));
-
-        if (_enable_output && output.success)
-        {
-            cmd.linear.x = _planner->getSolution(1, "v");
-            cmd.angular.z = _planner->getSolution(0, "w");
-            LOG_VALUE_DEBUG("Commanded", "v=" + std::to_string(cmd.linear.x) + ", w=" + std::to_string(cmd.angular.z));
-        }
-        else
-        {
-            applyBrakingCommand(cmd);
-            buildOutputFromBrakingCommand(output, cmd);
-            LOG_WARN(_ego_robot_ns + ": Applying braking command - solver failed or output disabled");
-        }
+        solveMPCAndExtractCommand();
         break;
     }
     case MPCPlanner::PlannerState::GOAL_REACHED:
@@ -1110,17 +1354,17 @@ std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> JulesJackalPlanner::g
         cmd.linear.x = 0.0;
         cmd.angular.z = 0.0;
         LOG_DEBUG(_ego_robot_ns + ": Maintaining stopped state at goal");
+
         if (_stop_when_reached_goal)
         {
-            buildOutputFromBrakingCommand(output, cmd); // Create a complete stop trajectory, dont rotate at the goal
+            buildOutputFromBrakingCommand(output, cmd);
             publishObjectiveReachedEvent();
         }
         else
         {
-            rotatePiRadiansCw(cmd); // wait with publishing that we reached our goal until we have finished rotating within an error margin
+            rotatePiRadiansCw(cmd);
             buildOutputFromBrakingCommand(output, cmd);
         }
-
         break;
     }
     default:
@@ -1133,21 +1377,74 @@ std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> JulesJackalPlanner::g
 // Add this function after generatePlanningCommand()
 void JulesJackalPlanner::publishCmdAndVisualize(const geometry_msgs::Twist &cmd, const MPCPlanner::PlannerOutput &output)
 {
-    // Publish the velocity command to the robot's differential drive
+    bool should_communicate = true; // Default: always communicate (safer)
+    if (_communicate_on_topology_switch_only)
+    {
+        const int n_paths = CONFIG["JULES"]["n_paths"].as<int>();
+        const int non_guided_topology_id = 2 * n_paths;
+
+        // Case 1: MPC solver failed
+        if (!output.success)
+        {
+            should_communicate = true;
+            LOG_DEBUG(_ego_robot_ns + ": Communicating - MPC failed");
+        }
+
+        // Case 2a: Switched TO non-guided (special case of topology switch)
+        else if (output.following_new_topology &&
+                 output.selected_topology_id == non_guided_topology_id)
+        {
+            should_communicate = true;
+            LOG_DEBUG(_ego_robot_ns + ": Communicating - Switched to non-guided from topology " +
+                      std::to_string(output.previous_topology_id));
+        }
+
+        // Case 2b: Topology switch (between guided topologies or from non-guided to guided)
+        else if (output.following_new_topology)
+        {
+            should_communicate = true;
+            LOG_DEBUG(_ego_robot_ns + ": Communicating - Topology switch from " +
+                      std::to_string(output.previous_topology_id) + " to " +
+                      std::to_string(output.selected_topology_id));
+        }
+
+        // Case 3: Staying in non-guided topology (continuous communication)
+        else if (output.selected_topology_id == non_guided_topology_id)
+        {
+            should_communicate = true;
+            LOG_DEBUG(_ego_robot_ns + ": Communicating - Staying in non-guided (unidentified topology)");
+        }
+
+        // Case 4: Same guided topology
+        else
+        {
+            should_communicate = false;
+            LOG_DEBUG(_ego_robot_ns + ": NOT communicating - Same guided topology (" +
+                      std::to_string(output.selected_topology_id) + ")");
+        }
+    }
+    // else: _communicate_on_topology_switch_only is false, so should_communicate stays true
+
+    // Always publish velocity command
     _cmd_pub.publish(cmd);
 
-    // Publish trajectories for robot-to-robot communication
-    this->publishDirectTrajectory(output);
-    this->publishCurrentTrajectory(output);
+    // Conditional trajectory communication
+    if (should_communicate)
+    {
+        this->publishDirectTrajectory(output);
+        this->publishCurrentTrajectory(output);
+        LOG_VALUE_DEBUG("Communication", "Published trajectory (Topology: " +
+                                             std::to_string(output.selected_topology_id) + ")");
+    }
+    else
+    {
+        LOG_VALUE_DEBUG("Communication", "Skipped (Same topology: " +
+                                             std::to_string(output.selected_topology_id) + ")");
+    }
 
-    // Keep downstream consumers updated with our current pose (for RViz/aggregator)
-    // this->publishPose();
-
-    // Built-in planner visuals (predicted trajectory, footprints, etc.), if available
+    // Always visualize
     _planner->visualizeObstaclePredictionsPlanner(_state, _data, false);
     _planner->visualize(_state, _data);
-
-    // Quick heading ray for sanity checking
     // visualize();
 }
 
