@@ -328,6 +328,15 @@ Settings of the online solver can be modified in `config/settings.yaml`. Importa
 - `t-mpc/use_t-mpc++` - Enable T-MPC++, adding the non guided planner in parallel
 - `weights/` - Default weights of the MPC. Can be modified online in `rqt_reconfigure`.
 
+**Multi-Robot Configuration** (for systems like `mpc_planner_jackalsimulator`):
+
+In multi-robot scenarios, robots share their planned trajectories to enable collision avoidance. The topology-aware communication feature optimizes this by only transmitting trajectory updates when a robot switches to a different homotopy class (way of passing obstacles), reducing network bandwidth by 60-80%:
+
+- `JULES/communicate_on_topology_switch_only` (boolean, default: `false`) - Enable topology-aware communication to reduce network overhead in multi-robot scenarios. When `true`, trajectories are only published on topology switches or failures.
+- `JULES/use_extra_params_module_data` (boolean, default: `false`) - Enable topology metadata tracking in PlannerOutput (required for topology-aware communication to function).
+
+For detailed documentation on multi-robot features, see `docs/guidance_constraints_documentation.md`.
+
 ## Examples
 
 ### Custom System

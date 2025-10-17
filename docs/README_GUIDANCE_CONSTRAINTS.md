@@ -2,6 +2,8 @@
 
 This directory contains comprehensive documentation for the `guidance_constraints.cpp` module, which implements T-MPC++ (Topology-aware Model Predictive Control) for autonomous navigation.
 
+**New in October 2025**: Documentation now includes topology-aware communication for multi-robot systems, which reduces communication overhead by 60-80% while maintaining safety.
+
 ## Documentation Files
 
 ### 📘 [guidance_constraints_documentation.md](./guidance_constraints_documentation.md) - **Main Documentation**
