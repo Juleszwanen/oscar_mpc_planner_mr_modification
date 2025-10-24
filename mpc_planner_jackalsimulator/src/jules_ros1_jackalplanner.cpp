@@ -687,7 +687,7 @@ void JulesJackalPlanner::trajectoryCallback(const mpc_planner_msgs::ObstacleGMM:
             // Update the obstacle with the new prediction
             robot_trajectory_obstacle.prediction = std::move(new_prediction);
 
-            /** @note this is needed for the interpolation functionality */
+            /** @note Jules this is needed for the interpolation functionality */
             // ========== USE ros::Time ==========
             robot_trajectory_obstacle.last_trajectory_update_time = ros::Time::now();
             robot_trajectory_obstacle.trajectory_needs_interpolation = false;

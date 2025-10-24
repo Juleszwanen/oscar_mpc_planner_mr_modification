@@ -200,6 +200,7 @@ void JackalPlanner::rotateToGoal()
     }
 }
 
+// This is the callback that is actually used for filling in the state
 void JackalPlanner::stateCallback(const nav_msgs::Odometry::ConstPtr &msg)
 {
     _state.set("x", msg->pose.pose.position.x);
@@ -209,6 +210,7 @@ void JackalPlanner::stateCallback(const nav_msgs::Odometry::ConstPtr &msg)
     // _state.set("v", std::sqrt(std::pow(msg->twist.twist.linear.x, 2.) + std::pow(msg->twist.twist.linear.y, 2.)));
 }
 
+// The topic for this callback is remapped from "/input/state_pose" -> "none_state_pose"
 void JackalPlanner::statePoseCallback(const geometry_msgs::PoseStamped::ConstPtr &msg)
 {
     _state.set("x", msg->pose.position.x);
