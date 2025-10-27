@@ -200,7 +200,7 @@ void JackalPlanner::rotateToGoal()
     }
 }
 
-// This is the callback that is actually used for filling in the state
+// This is the callback that is actually used for filling in the state and is remapped from "/input/state" -> /$(arg jackal_name)/odometry/filtered"/>
 void JackalPlanner::stateCallback(const nav_msgs::Odometry::ConstPtr &msg)
 {
     _state.set("x", msg->pose.pose.position.x);
