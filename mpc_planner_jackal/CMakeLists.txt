@@ -35,6 +35,10 @@ add_executable(jackal_planner src/ros1_jackal.cpp)
 add_dependencies(jackal_planner ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(jackal_planner ${catkin_LIBRARIES})
 
+add_executable(jules_ros1_real_jackalplanner src/jules_ros1_real_jackalplanner.cpp)
+add_dependencies(jules_ros1_real_jackalplanner ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(jules_ros1_real_jackalplanner ${catkin_LIBRARIES})
+
 add_definitions(-DMPC_PLANNER_ROS)
 
 install(

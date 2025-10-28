@@ -35,10 +35,10 @@ namespace MPCPlanner
 
         std::chrono::system_clock::time_point planning_start_time;
 
-        virtual ~RealTimeData() = default;
+        ~RealTimeData() = default;
         RealTimeData() = default;
 
-        virtual void reset()
+        void reset()
         {
             // Copy data that should remain at reset
             std::vector<Disc> robot_area_copy = robot_area;

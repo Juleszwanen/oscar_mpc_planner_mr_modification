@@ -113,4 +113,136 @@ namespace MultiRobot
         return wrapAngle(diff);
     }
 
+    void transitionTo(MPCPlanner::PlannerState &_current_state, const MPCPlanner::PlannerState &new_state, const std::string &ego_robot_ns)
+    {
+        if (!canTransitionTo(_current_state, new_state, ego_robot_ns))
+        {
+            LOG_ERROR(ego_robot_ns + ": Cannot Transitioning from state: " + MPCPlanner::stateToString(_current_state) + " to state: " + MPCPlanner::stateToString(new_state));
+            MPCPlanner::PlannerState error_state = MPCPlanner::PlannerState::ERROR_STATE;
+            onStateEnter(_current_state, error_state, ego_robot_ns);
+            return;
+        }
+
+        onStateEnter(_current_state, new_state, ego_robot_ns);
+        _current_state = new_state;
+    }
+
+    bool canTransitionTo(const MPCPlanner::PlannerState &_current_state, const MPCPlanner::PlannerState &new_state, const std::string &_ego_robot_ns)
+    {
+        // Define valid state transitions based on your robot's workflow
+        switch (_current_state)
+        {
+        case MPCPlanner::PlannerState::UNINITIALIZED:
+            // From UNINITIALIZED, can only go to TIMER_STARTUP or ERROR_STATE
+            return (new_state == MPCPlanner::PlannerState::TIMER_STARTUP ||
+                    new_state == MPCPlanner::PlannerState::ERROR_STATE);
+
+        case MPCPlanner::PlannerState::TIMER_STARTUP:
+            // From TIMER_STARTUP, can go to WAITING_FOR_FIRST_EGO_POSE or ERROR_STATE
+            return (new_state == MPCPlanner::PlannerState::WAITING_FOR_FIRST_EGO_POSE ||
+                    new_state == MPCPlanner::PlannerState::ERROR_STATE);
+
+        case MPCPlanner::PlannerState::WAITING_FOR_FIRST_EGO_POSE:
+            // From WAITING_FOR_FIRST_EGO_POSE, can go to INITIALIZING_OBSTACLES or ERROR_STATE
+            return (new_state == MPCPlanner::PlannerState::INITIALIZING_OBSTACLES ||
+                    new_state == MPCPlanner::PlannerState::ERROR_STATE);
+
+        case MPCPlanner::PlannerState::INITIALIZING_OBSTACLES:
+            // From INITIALIZING_OBSTACLES, can go to WAITING_FOR_TRAJECTORY_DATA or ERROR_STATE
+            return (new_state == MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA ||
+                    new_state == MPCPlanner::PlannerState::ERROR_STATE);
+
+        case MPCPlanner::PlannerState::WAITING_FOR_OTHER_ROBOTS_FIRST_POSES:
+            // From WAITING_FOR_OTHER_ROBOTS_FIRST_POSES, can go to WAITING_FOR_SYNC or ERROR_STATE
+            return (new_state == MPCPlanner::PlannerState::WAITING_FOR_SYNC ||
+                    new_state == MPCPlanner::PlannerState::ERROR_STATE);
+
+        case MPCPlanner::PlannerState::WAITING_FOR_SYNC:
+            // From WAITING_FOR_SYNC, can go to WAITING_FOR_TRAJECTORY_DATA or ERROR_STATE
+            return (new_state == MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA ||
+                    new_state == MPCPlanner::PlannerState::ERROR_STATE);
+
+        case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
+            // From WAITING_FOR_TRAJECTORY_DATA, can go to PLANNING_ACTIVE or ERROR_STATE
+            return (new_state == MPCPlanner::PlannerState::PLANNING_ACTIVE ||
+                    new_state == MPCPlanner::PlannerState::ERROR_STATE);
+
+        case MPCPlanner::PlannerState::PLANNING_ACTIVE:
+            // From PLANNING_ACTIVE, can go to JUST_REACHED_GOAL or ERROR_STATE
+            return (new_state == MPCPlanner::PlannerState::JUST_REACHED_GOAL ||
+                    new_state == MPCPlanner::PlannerState::ERROR_STATE);
+
+        case MPCPlanner::PlannerState::JUST_REACHED_GOAL:
+            // From JUST_REACHED_GOAL, can go to GOAL_REACHED or ERROR_STATE
+            return (new_state == MPCPlanner::PlannerState::GOAL_REACHED ||
+                    new_state == MPCPlanner::PlannerState::ERROR_STATE);
+
+        case MPCPlanner::PlannerState::GOAL_REACHED:
+            // From GOAL_REACHED, can go to RESETTING or ERROR_STATE
+            return (new_state == MPCPlanner::PlannerState::RESETTING ||
+                    new_state == MPCPlanner::PlannerState::ERROR_STATE);
+
+        case MPCPlanner::PlannerState::RESETTING:
+            // From RESETTING, can go back to TIMER_STARTUP for new cycle or ERROR_STATE
+            return (new_state == MPCPlanner::PlannerState::TIMER_STARTUP ||
+                    new_state == MPCPlanner::PlannerState::ERROR_STATE);
+
+        case MPCPlanner::PlannerState::ERROR_STATE:
+            // From ERROR_STATE, can only go to RESETTING (recovery) or stay in ERROR_STATE
+            return (new_state == MPCPlanner::PlannerState::RESETTING ||
+                    new_state == MPCPlanner::PlannerState::ERROR_STATE);
+
+        default:
+            // Unknown current state - reject all transitions
+            LOG_ERROR(_ego_robot_ns + ": Unknown current state in canTransitionTo: " +
+                      std::to_string(static_cast<int>(_current_state)));
+            return false;
+        }
+    }
+
+    void onStateEnter(const MPCPlanner::PlannerState &current_state, const MPCPlanner::PlannerState &new_state, const std::string &ego_robot_ns)
+    {
+        switch (new_state)
+        {
+        case MPCPlanner::PlannerState::UNINITIALIZED:
+            LOG_INFO(ego_robot_ns + ": Transitioning from state: " + MPCPlanner::stateToString(current_state) + " to state: " + MPCPlanner::stateToString(new_state));
+            break;
+        case MPCPlanner::PlannerState::TIMER_STARTUP:
+            LOG_INFO(ego_robot_ns + ": Transitioning from state: " + MPCPlanner::stateToString(current_state) + " to state: " + MPCPlanner::stateToString(new_state));
+            break;
+        case MPCPlanner::PlannerState::WAITING_FOR_FIRST_EGO_POSE:
+            LOG_INFO(ego_robot_ns + ": Transitioning from state: " + MPCPlanner::stateToString(current_state) + " to state: " + MPCPlanner::stateToString(new_state));
+            break;
+        case MPCPlanner::PlannerState::INITIALIZING_OBSTACLES:
+            LOG_INFO(ego_robot_ns + ": Transitioning from state: " + MPCPlanner::stateToString(current_state) + " to state: " + MPCPlanner::stateToString(new_state));
+            break;
+        case MPCPlanner::PlannerState::WAITING_FOR_OTHER_ROBOTS_FIRST_POSES:
+            LOG_INFO(ego_robot_ns + ": Transitioning from state: " + MPCPlanner::stateToString(current_state) + " to state: " + MPCPlanner::stateToString(new_state));
+            break;
+        case MPCPlanner::PlannerState::WAITING_FOR_SYNC:
+            LOG_INFO(ego_robot_ns + ": Transitioning from state: " + MPCPlanner::stateToString(current_state) + " to state: " + MPCPlanner::stateToString(new_state));
+            break;
+        case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
+            LOG_INFO(ego_robot_ns + ": Transitioning from state: " + MPCPlanner::stateToString(current_state) + " to state: " + MPCPlanner::stateToString(new_state));
+            break;
+        case MPCPlanner::PlannerState::PLANNING_ACTIVE:
+            LOG_INFO(ego_robot_ns + ": Transitioning from state: " + MPCPlanner::stateToString(current_state) + " to state: " + MPCPlanner::stateToString(new_state));
+            break;
+        case MPCPlanner::PlannerState::JUST_REACHED_GOAL:
+            LOG_INFO(ego_robot_ns + ": Transitioning from state: " + MPCPlanner::stateToString(current_state) + " to state: " + MPCPlanner::stateToString(new_state));
+            break;
+        case MPCPlanner::PlannerState::GOAL_REACHED:
+            LOG_INFO(ego_robot_ns + ": Transitioning from state: " + MPCPlanner::stateToString(current_state) + " to state: " + MPCPlanner::stateToString(new_state));
+            break;
+        case MPCPlanner::PlannerState::RESETTING:
+            LOG_INFO(ego_robot_ns + ": Transitioning from state: " + MPCPlanner::stateToString(current_state) + " to state: " + MPCPlanner::stateToString(new_state));
+            break;
+        case MPCPlanner::PlannerState::ERROR_STATE:
+            LOG_ERROR(ego_robot_ns + ": Transitioning from state: " + MPCPlanner::stateToString(current_state) + " to state: " + MPCPlanner::stateToString(new_state));
+            break;
+        default:
+            LOG_WARN(ego_robot_ns + ": Unknown state transition from: " + MPCPlanner::stateToString(current_state) + " to: " + std::to_string(static_cast<int>(new_state)));
+            break;
+        }
+    }
 }

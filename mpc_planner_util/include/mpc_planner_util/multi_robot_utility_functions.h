@@ -21,7 +21,7 @@ namespace MultiRobot
     // Angle interpolation (shortest arc and in the correct direction)
     // Interpolate between two angles using shortest arc
     // psi_k: start angle (radians)
-    // psi_kl: end angle (radians)  
+    // psi_kl: end angle (radians)
     // alpha: interpolation factor [0, 1]
     // Returns: interpolated angle in [-π, π]
     double interpolateAngle(double psi_k, double psi_kl, double alpha);
@@ -31,5 +31,11 @@ namespace MultiRobot
 
     // Wrap angle difference to shortest arc [-π, π]
     double wrapAngleDifference(double angle);
+
+    void transitionTo(MPCPlanner::PlannerState &_current_state, const MPCPlanner::PlannerState &new_state, const std::string &ego_robot_ns);
+
+    bool canTransitionTo(const MPCPlanner::PlannerState &_current_state, const MPCPlanner::PlannerState &new_state, const std::string &_ego_robot_ns);
+
+    void onStateEnter(const MPCPlanner::PlannerState &current_state, const MPCPlanner::PlannerState &new_state, const std::string &ego_robot_ns);
 
 }

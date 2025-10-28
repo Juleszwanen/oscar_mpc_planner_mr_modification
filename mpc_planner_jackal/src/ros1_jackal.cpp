@@ -101,7 +101,7 @@ bool JackalPlanner::objectiveReached()
 
 void JackalPlanner::loop(const ros::TimerEvent &event)
 {
-    (void)event;
+    (void)event; 
     LOG_MARK("============= Loop =============");
 
     if (objectiveReached())
@@ -135,6 +135,7 @@ void JackalPlanner::loop(const ros::TimerEvent &event)
         LOG_VALUE_DEBUG("Commanded w", cmd.angular.z);
         CONFIG["enable_output"] = true;
     }
+    
     else if (!_enable_output)
     {
         _state.set("v", _measured_velocity); // Use the commanded speed
@@ -270,16 +271,24 @@ void JackalPlanner::obstacleCallback(const derived_object_msgs::ObjectArray::Con
     _data.dynamic_obstacles.clear();
 
     int additions = 0;
+    // Will hold all the angles of the obstacles
     std::vector<double> angles;
+    // Will hold all the positions of the obstacles
     std::vector<Eigen::Vector2d> positions;
+    // Will hold all the radii of the obstacles
     std::vector<double> radii;
+    // Will hold all the current velocties of all the obstacles
     std::vector<Eigen::Vector2d> twists;
+    // Will hold all the types of the obstacles
     std::vector<ObstacleType> types;
 
+    // This part will fill in alle the containers above
     for (auto &object : msg->objects)
     {
         if (object.id == 0)
             continue;
+        
+        // Align orientation whith motion orientation
         double object_angle = RosTools::quaternionToAngle(object.pose.orientation) +
                               std::atan2(object.twist.linear.y, object.twist.linear.x) +
                               M_PI_2;
@@ -339,6 +348,9 @@ void JackalPlanner::obstacleCallback(const derived_object_msgs::ObjectArray::Con
 void JackalPlanner::parseObstacle(const derived_object_msgs::Object &object, double object_angle,
                                   std::vector<Eigen::Vector2d> &positions_out, std::vector<double> &radii_out)
 {
+    /** @note Jules: Called in obstacleCallback with -> parseObstacle(object, object_angle, positions, radii); */
+    
+    
     // Depending on the shape of the obstacle, interpret it differently
     if (object.shape.type == object.shape.CYLINDER)
     {
@@ -347,6 +359,7 @@ void JackalPlanner::parseObstacle(const derived_object_msgs::Object &object, dou
     }
     else if (object.shape.type == object.shape.BOX)
     {
+        // Then it is a sqaure
         if (object.shape.dimensions[0] == object.shape.dimensions[1])
         {
             positions_out.emplace_back(object.pose.position.x, object.pose.position.y);
