@@ -67,8 +67,8 @@ def configuration_tmpc(settings):
     modules.add_module(ContouringModule(settings))
     # modules.add_module(PathReferenceVelocityModule(settings))
 
-    # modules.add_module(GuidanceConstraintModule(settings, constraint_submodule=EllipsoidConstraintModule))
-    modules.add_module(GuidanceConstraintModule(settings, constraint_submodule=GaussianConstraintModule))
+    modules.add_module(GuidanceConstraintModule(settings, constraint_submodule=EllipsoidConstraintModule))
+    # modules.add_module(GuidanceConstraintModule(settings, constraint_submodule=GaussianConstraintModule))
 
     return model, modules
 

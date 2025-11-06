@@ -113,7 +113,7 @@ namespace MultiRobot
         return wrapAngle(diff);
     }
 
-    void transitionTo(MPCPlanner::PlannerState &_current_state, const MPCPlanner::PlannerState &new_state, const std::string &ego_robot_ns)
+    void transitionTo(MPCPlanner::PlannerState &_current_state, MPCPlanner::PlannerState &_previous_state, const MPCPlanner::PlannerState &new_state, const std::string &ego_robot_ns)
     {
         if (!canTransitionTo(_current_state, new_state, ego_robot_ns))
         {
@@ -124,6 +124,7 @@ namespace MultiRobot
         }
 
         onStateEnter(_current_state, new_state, ego_robot_ns);
+        _previous_state = _current_state; // Track previous state before changing
         _current_state = new_state;
     }
 
@@ -165,11 +166,13 @@ namespace MultiRobot
         case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
             // From WAITING_FOR_TRAJECTORY_DATA, can go to PLANNING_ACTIVE or ERROR_STATE
             return (new_state == MPCPlanner::PlannerState::PLANNING_ACTIVE ||
+                    new_state == MPCPlanner::PlannerState::GOAL_REACHED ||
                     new_state == MPCPlanner::PlannerState::ERROR_STATE);
 
         case MPCPlanner::PlannerState::PLANNING_ACTIVE:
             // From PLANNING_ACTIVE, can go to JUST_REACHED_GOAL or ERROR_STATE
             return (new_state == MPCPlanner::PlannerState::JUST_REACHED_GOAL ||
+                    new_state == MPCPlanner::PlannerState::GOAL_REACHED ||
                     new_state == MPCPlanner::PlannerState::ERROR_STATE);
 
         case MPCPlanner::PlannerState::JUST_REACHED_GOAL:
@@ -204,6 +207,7 @@ namespace MultiRobot
     {
         switch (new_state)
         {
+
         case MPCPlanner::PlannerState::UNINITIALIZED:
             LOG_INFO(ego_robot_ns + ": Transitioning from state: " + MPCPlanner::stateToString(current_state) + " to state: " + MPCPlanner::stateToString(new_state));
             break;

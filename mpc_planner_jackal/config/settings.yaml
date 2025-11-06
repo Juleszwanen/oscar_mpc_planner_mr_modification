@@ -28,7 +28,7 @@ debug_limits: false
 debug_output: false
 debug_visuals: false
 
-enable_output: true
+enable_output: false
 control_frequency: 20
 deceleration_at_infeasible: 3.0
 max_obstacles: 5

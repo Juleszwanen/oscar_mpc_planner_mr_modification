@@ -18,7 +18,8 @@ JulesRealJackalPlanner::JulesRealJackalPlanner(ros::NodeHandle &nh)
 {
     LOG_HEADER("JULES: Jackal planner " + ros::this_node::getName() + " starting");
 
-    _ego_robot_ns = ros::this_node::getNamespace();
+    // _ego_robot_ns = ros::this_node::getNamespace();
+    nh.param("/ego_robot_ns", this->_ego_robot_ns, this->_ego_robot_ns);
     _ego_robot_id = MultiRobot::extractRobotIdFromNamespace(_ego_robot_ns);
 
     if (!nh.getParam("/robot_ns_list", _robot_ns_list))
@@ -27,7 +28,7 @@ JulesRealJackalPlanner::JulesRealJackalPlanner(ros::NodeHandle &nh)
     }
 
     _other_robot_nss = MultiRobot::identifyOtherRobotNamespaces(_robot_ns_list, _ego_robot_ns);
-    // Initialize the configuration
+    // Initialize the configuration, her
     Configuration::getInstance().initialize(SYSTEM_CONFIG_PATH(__FILE__, "settings"));
 
     _data.robot_area = {MPCPlanner::Disc(0., CONFIG["robot_radius"].as<double>())};
@@ -50,7 +51,7 @@ JulesRealJackalPlanner::JulesRealJackalPlanner(ros::NodeHandle &nh)
     _startup_timer->setDuration(15.0);
     _startup_timer->start();
 
-    MultiRobot::transitionTo(_current_state, MPCPlanner::PlannerState::TIMER_STARTUP, _ego_robot_ns);
+    MultiRobot::transitionTo(_current_state, _previous_state, MPCPlanner::PlannerState::TIMER_STARTUP, _ego_robot_ns);
     _benchmarker = std::make_unique<RosTools::Benchmarker>("loop");
 
     RosTools::Instrumentor::Get().BeginSession("mpc_planner_jackal");
@@ -72,10 +73,10 @@ JulesRealJackalPlanner::~JulesRealJackalPlanner()
 
 void JulesRealJackalPlanner::initializeSubscribersAndPublishers(ros::NodeHandle &nh)
 {
-    LOG_INFO("initializeSubscriberAndPublisher");
+    LOG_INFO(_ego_robot_ns + ": initializeSubscriberAndPublisher");
 
     _state_sub = nh.subscribe<nav_msgs::Odometry>(
-        "input/state", 5,
+        "/input/state", 5,
         boost::bind(&JulesRealJackalPlanner::stateCallback, this, _1));
 
     /** @note Jules: The roadmap publishes on this whenever the planner node has send a signal to the roadmap node that is want to reverse*/
@@ -84,15 +85,15 @@ void JulesRealJackalPlanner::initializeSubscribersAndPublishers(ros::NodeHandle 
         boost::bind(&JulesRealJackalPlanner::goalCallback, this, _1));
 
     _path_sub = nh.subscribe<nav_msgs::Path>(
-        "input/reference_path", 1,
+        "/input/reference_path", 1,
         boost::bind(&JulesRealJackalPlanner::pathCallback, this, _1));
 
     _obstacle_sub = nh.subscribe<derived_object_msgs::ObjectArray>(
-        "input/obstacles", 1,
+        "/input/obstacles", 1,
         boost::bind(&JulesRealJackalPlanner::obstacleCallback, this, _1));
 
     _bluetooth_sub = nh.subscribe<sensor_msgs::Joy>(
-        "input/bluetooth", 1,
+        "/input/bluetooth", 1,
         boost::bind(&JulesRealJackalPlanner::bluetoothCallback, this, _1)); // Deadman switch
 
     _all_robots_reached_objective_sub = nh.subscribe<std_msgs::Bool>(
@@ -102,7 +103,7 @@ void JulesRealJackalPlanner::initializeSubscribersAndPublishers(ros::NodeHandle 
     this->subscribeToOtherRobotTopics(nh, _other_robot_nss);
 
     _cmd_pub = nh.advertise<geometry_msgs::Twist>(
-        "output/command", 1);
+        "/output/command", 1);
 
     _pose_pub = nh.advertise<geometry_msgs::PoseStamped>("output/pose", 1);
 
@@ -111,7 +112,7 @@ void JulesRealJackalPlanner::initializeSubscribersAndPublishers(ros::NodeHandle 
     _objective_pub = nh.advertise<std_msgs::Bool>("events/objective_reached", 1);
 
     // Roadmap reverse
-    _reverse_roadmap_pub = nh.advertise<std_msgs::Empty>("roadmap/reverse", 1);
+    _reverse_roadmap_pub = nh.advertise<std_msgs::Empty>("/roadmap/reverse", 1);
 }
 
 void JulesRealJackalPlanner::loop(const ros::TimerEvent &event)
@@ -125,7 +126,7 @@ void JulesRealJackalPlanner::loop(const ros::TimerEvent &event)
     {
     case MPCPlanner::PlannerState::UNINITIALIZED:
     {
-        LOG_WARN(_ego_robot_ns + ": In UNINITIALIZED state - this should not happen during planning loop");
+        LOG_ERROR(_ego_robot_ns + ": In UNINITIALIZED state - this should not happen during planning loop");
         break;
     }
     case MPCPlanner::PlannerState::TIMER_STARTUP:
@@ -137,7 +138,7 @@ void JulesRealJackalPlanner::loop(const ros::TimerEvent &event)
         }
         else
         {
-            MultiRobot::transitionTo(_current_state, MPCPlanner::PlannerState::WAITING_FOR_FIRST_EGO_POSE, _ego_robot_ns);
+            MultiRobot::transitionTo(_current_state, _previous_state, MPCPlanner::PlannerState::WAITING_FOR_FIRST_EGO_POSE, _ego_robot_ns);
         }
 
         break;
@@ -148,7 +149,7 @@ void JulesRealJackalPlanner::loop(const ros::TimerEvent &event)
     {
         if (_state.validData())
         {
-            MultiRobot::transitionTo(_current_state, MPCPlanner::PlannerState::INITIALIZING_OBSTACLES, _ego_robot_ns);
+            MultiRobot::transitionTo(_current_state, _previous_state, MPCPlanner::PlannerState::INITIALIZING_OBSTACLES, _ego_robot_ns);
         }
         else
         {
@@ -163,23 +164,35 @@ void JulesRealJackalPlanner::loop(const ros::TimerEvent &event)
     case MPCPlanner::PlannerState::INITIALIZING_OBSTACLES:
     {
         bool initialization_successful = initializeOtherRobotsAsObstacles(_other_robot_nss, _data, CONFIG["robot_radius"].as<double>());
-        MultiRobot::transitionTo(_current_state, MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA, _ego_robot_ns);
+        MultiRobot::transitionTo(_current_state, _previous_state, MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA, _ego_robot_ns);
+        // Try and visualize the reference path
+        _planner->visualize(_state, _data);
         break;
     }
     case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
     {
         // While we are waiting for the first trajectory data what we can do is plan with the dummy obstacles which we initialized in initializeOtherRobotsAsObstacles
-        LOG_INFO(_ego_robot_ns + ": INITIAL PLANNING (waiting for trajectory data) - State: [" +
-                 std::to_string(_state.get("x")) + ", " +
-                 std::to_string(_state.get("y")) + ", " +
-                 std::to_string(_state.get("psi")) + "]");
+        LOG_INFO_THROTTLE(4000, _ego_robot_ns + ": WAITING_FOR_TRAJECTORY_DATA (waiting for trajectory data - intial planning state) - State: [" +
+                                    std::to_string(_state.get("x")) + ", " +
+                                    std::to_string(_state.get("y")) + ", " +
+                                    std::to_string(_state.get("psi")) + "]");
 
-        prepareObstacleData();
-        auto [cmd, output] = generatePlanningCommand(_current_state);
+        if (_enable_output)
+        {
+            if (this->objectiveReached())
+            {
+                MultiRobot::transitionTo(_current_state, _previous_state, MPCPlanner::PlannerState::GOAL_REACHED, _ego_robot_ns);
+            }
 
-        publishCmdAndVisualize(cmd, output);
-        _data.past_trajectory.replaceTrajectory(output.trajectory);
-        // The state transition is be triggered by a trajectory callback function
+            prepareObstacleData();
+            auto [cmd, output] = generatePlanningCommand(_current_state);
+
+            publishCmdAndVisualize(cmd, output);
+            _data.past_trajectory.replaceTrajectory(output.trajectory);
+            // The state transition is be triggered by a trajectory callback function
+
+            // The state transition is be triggered by a trajectory callback function
+        }
         break;
     }
     case MPCPlanner::PlannerState::PLANNING_ACTIVE: // This state is transitioned to by the trajectory callback function
@@ -187,7 +200,7 @@ void JulesRealJackalPlanner::loop(const ros::TimerEvent &event)
         // Use braces to create a new scope for variable declarations
         if (this->objectiveReached())
         {
-            MultiRobot::transitionTo(_current_state, MPCPlanner::PlannerState::JUST_REACHED_GOAL, _ego_robot_ns);
+            MultiRobot::transitionTo(_current_state, _previous_state, MPCPlanner::PlannerState::GOAL_REACHED, _ego_robot_ns);
         }
 
         prepareObstacleData();
@@ -195,16 +208,6 @@ void JulesRealJackalPlanner::loop(const ros::TimerEvent &event)
         // LOG_INFO(_ego_robot_ns + output.logOutput());
         publishCmdAndVisualize(cmd, output);
         _data.past_trajectory.replaceTrajectory(output.trajectory);
-        break;
-    }
-    case MPCPlanner::PlannerState::JUST_REACHED_GOAL:
-    {
-        // Use braces to create a new scope for variable declarations
-        prepareObstacleData();
-        auto [cmd, output] = generatePlanningCommand(_current_state);
-        _data.past_trajectory.replaceTrajectory(output.trajectory);
-        publishCmdAndVisualize(cmd, output);
-        MultiRobot::transitionTo(_current_state, MPCPlanner::PlannerState::GOAL_REACHED, _ego_robot_ns);
         break;
     }
     case MPCPlanner::PlannerState::GOAL_REACHED:
@@ -232,7 +235,8 @@ void JulesRealJackalPlanner::loop(const ros::TimerEvent &event)
         break;
     }
     }
-
+    // visualize the lab limits and visualize when there is a goal
+    this->visualize();
     LOG_DEBUG("============= End Loop =============");
 }
 
@@ -252,16 +256,18 @@ void JulesRealJackalPlanner::goalCallback(const geometry_msgs::PoseStamped::Cons
     _data.goal(1) = msg->pose.position.y;
     _data.goal_received = true;
 
+    LOG_INFO(_ego_robot_ns + "Received the following goals X_goal: " + std::to_string(msg->pose.position.x) + " Y_goal: " + std::to_string(msg->pose.position.y));
+
     _planner->onDataReceived(_data, "goal");
 }
 
 void JulesRealJackalPlanner::pathCallback(const nav_msgs::Path::ConstPtr &msg)
 {
-    LOG_DEBUG("Path callback");
 
     if (isPathTheSame(msg))
         return;
 
+    LOG_WARN(_ego_robot_ns + ": Path callback");
     _data.reference_path.clear();
 
     for (auto &pose : msg->poses)
@@ -307,7 +313,6 @@ void JulesRealJackalPlanner::trajectoryCallback(const mpc_planner_msgs::Obstacle
 
     case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
     case MPCPlanner::PlannerState::PLANNING_ACTIVE:
-    case MPCPlanner::PlannerState::JUST_REACHED_GOAL:
     case MPCPlanner::PlannerState::GOAL_REACHED:
     case MPCPlanner::PlannerState::RESETTING:
     case MPCPlanner::PlannerState::ERROR_STATE:
@@ -408,16 +413,16 @@ void JulesRealJackalPlanner::trajectoryCallback(const mpc_planner_msgs::Obstacle
             // State-specific handling
             if (has_meaningful_data && _current_state == MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA)
             {
-                MultiRobot::transitionTo(_current_state, MPCPlanner::PlannerState::PLANNING_ACTIVE, _ego_robot_ns);
-                LOG_INFO(_ego_robot_ns + ": First meaningful trajectory data received from " + ns +
-                         " (" + std::to_string(trajectory_size) + " trajectory points) - transitioning to active planning");
+                MultiRobot::transitionTo(_current_state, _previous_state, MPCPlanner::PlannerState::PLANNING_ACTIVE, _ego_robot_ns);
+                LOG_INFO_THROTTLE(1500, _ego_robot_ns + ": First meaningful trajectory data received from " + ns +
+                                            " (" + std::to_string(trajectory_size) + " trajectory points) - transitioning to active planning");
             }
 
             // Track validated robots
             if (_validated_trajectory_robots.count(ns) == 0)
             {
                 _validated_trajectory_robots.insert(ns);
-                LOG_INFO(_ego_robot_ns + ": Added " + ns + " to validated trajectory robots and will now be considered in the MPC");
+                LOG_INFO_THROTTLE(1500, _ego_robot_ns + ": Added " + ns + " to validated trajectory robots and will now be considered in the MPC");
             }
         }
         else
@@ -450,6 +455,7 @@ void JulesRealJackalPlanner::allRobotsReachedObjectiveCallback(const std_msgs::B
     // _have_received_meaningful_trajectory_data = false;
 
     // In the simulation one, we do the roadmap reverse here but that is not neccessary
+    this->reset();
 }
 
 bool JulesRealJackalPlanner::objectiveReached()
@@ -469,7 +475,7 @@ void JulesRealJackalPlanner::rotateToGoal(geometry_msgs::Twist &cmd)
     LOG_INFO_THROTTLE(1500, _ego_robot_ns + ": Rotating to the goal");
     if (!_data.goal_received)
     {
-        LOG_INFO(_ego_robot_ns + ": Waiting for the goal");
+        LOG_INFO(_ego_robot_ns + ": Waiting for the goal, just stopping for now");
         return;
     }
 
@@ -491,7 +497,7 @@ void JulesRealJackalPlanner::rotateToGoal(geometry_msgs::Twist &cmd)
     {
         // We publish that we reached our objective, it does not matter that we do this multiple times
         publishObjectiveReachedEvent();
-        MultiRobot::transitionTo(_current_state, MPCPlanner::PlannerState::RESETTING, _ego_robot_ns);
+        MultiRobot::transitionTo(_current_state, _previous_state, MPCPlanner::PlannerState::RESETTING, _ego_robot_ns);
         LOG_INFO(_ego_robot_ns + " Is waiting for the rest of the robots to reach their objective before starting to follow reverserd path");
     }
 }
@@ -525,7 +531,7 @@ void JulesRealJackalPlanner::reset()
     _startup_timer->setDuration(4.0); // Give time for roadmap to reversqe and publish new path
     _startup_timer->start();
 
-    MultiRobot::transitionTo(_current_state, MPCPlanner::PlannerState::TIMER_STARTUP, _ego_robot_ns);
+    MultiRobot::transitionTo(_current_state, _previous_state, MPCPlanner::PlannerState::TIMER_STARTUP, _ego_robot_ns);
     LOG_INFO(_ego_robot_ns + ": Ready to resume planning with new objectives in 2 seconds");
 }
 
@@ -950,7 +956,7 @@ std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> JulesRealJackalPlanne
         {
             applyBrakingCommand(cmd);
             buildOutputFromBrakingCommand(output, cmd);
-            LOG_WARN(_ego_robot_ns + ": Applying braking command - solver failed or output disabled");
+            LOG_WARN_THROTTLE(2000, _ego_robot_ns + ": Applying braking command - solver failed or output disabled");
         }
     };
 
@@ -966,17 +972,8 @@ std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> JulesRealJackalPlanne
     {
     case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
     {
-        LOG_WARN(_ego_robot_ns + ": Waiting for first real trajectory data, planning with Dummy Obstacles");
+        LOG_WARN_THROTTLE(8000, _ego_robot_ns + ": Waiting for first real trajectory data, planning with Dummy Obstacles");
         solveMPCAndExtractCommand();
-        break;
-    }
-    case MPCPlanner::PlannerState::JUST_REACHED_GOAL:
-    {
-        applyBrakingScenario();
-        std_msgs::Empty empty_msg;
-        _reverse_roadmap_pub.publish(empty_msg); // this does not only reverse the reference path but also sends a goal to rotate pi radians to
-        // Ask for the roadmap to be reve
-        LOG_INFO(_ego_robot_ns + ": JUST REACHED GOAL - Applying braking command");
         break;
     }
     case MPCPlanner::PlannerState::PLANNING_ACTIVE:
@@ -987,6 +984,17 @@ std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> JulesRealJackalPlanne
     }
     case MPCPlanner::PlannerState::GOAL_REACHED:
     {
+        if (_previous_state != MPCPlanner::PlannerState::GOAL_REACHED)
+        {
+            // Send the reverse message only 1 time
+            std_msgs::Empty empty_msg;
+            _reverse_roadmap_pub.publish(empty_msg); // this does not only reverse the reference path but also sends a goal to rotate pi radians to
+            LOG_INFO(_ego_robot_ns + ": JUST REACHED GOAL - Applying braking command");
+
+            // CRITICAL: Update _previous_state immediately to prevent duplicate execution on next loop iteration, otherwise we will not rotate because we send the reverse roadmap twice
+            _previous_state = MPCPlanner::PlannerState::GOAL_REACHED;
+        }
+
         cmd.linear.x = 0.0;
         cmd.angular.z = 0.0;
         LOG_DEBUG(_ego_robot_ns + ": Maintaining stopped state at goal");

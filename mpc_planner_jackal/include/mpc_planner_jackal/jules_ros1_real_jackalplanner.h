@@ -40,7 +40,7 @@ public:
 
     void initializeSubscribersAndPublishers(ros::NodeHandle &nh);
     bool objectiveReached();
-    void rotateToGoal(geometry_msgs::Twist& cmd);
+    void rotateToGoal(geometry_msgs::Twist &cmd);
     void reset();
 
     void parseObstacle(const derived_object_msgs::Object &object, double object_angle,
@@ -62,7 +62,6 @@ public:
     void publishCmdAndVisualize(const geometry_msgs::Twist &cmd, const MPCPlanner::PlannerOutput &output);
     void publishDirectTrajectory(const MPCPlanner::PlannerOutput &output);
     void publishObjectiveReachedEvent();
-    
 
 public:
     void loop(const ros::TimerEvent &event);
@@ -94,8 +93,8 @@ private:
 
     double y_max{2.4}; // 2.6 when the blocks are not at the wall
     double y_min{-2.0};
-    double x_max{3.5};
-    double x_min{-3.5};
+    double x_max{3.6};
+    double x_min{-3.6};
 
     std::unique_ptr<RosTools::Benchmarker> _benchmarker;
 
@@ -133,4 +132,5 @@ private:
     std::set<std::string> _validated_trajectory_robots;
 
     MPCPlanner::PlannerState _current_state{MPCPlanner::PlannerState::UNINITIALIZED};
+    MPCPlanner::PlannerState _previous_state{MPCPlanner::PlannerState::UNINITIALIZED};
 };
