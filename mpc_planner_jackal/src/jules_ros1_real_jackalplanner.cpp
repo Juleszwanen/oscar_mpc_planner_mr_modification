@@ -20,6 +20,7 @@ JulesRealJackalPlanner::JulesRealJackalPlanner(ros::NodeHandle &nh)
 
     // _ego_robot_ns = ros::this_node::getNamespace();
     nh.param("/ego_robot_ns", this->_ego_robot_ns, this->_ego_robot_ns);
+    nh.param("/forward_experiment", this->_forward_x_experiment, this->_forward_x_experiment);
     _ego_robot_id = MultiRobot::extractRobotIdFromNamespace(_ego_robot_ns);
 
     if (!nh.getParam("/robot_ns_list", _robot_ns_list))
@@ -105,11 +106,11 @@ void JulesRealJackalPlanner::initializeSubscribersAndPublishers(ros::NodeHandle 
     _cmd_pub = nh.advertise<geometry_msgs::Twist>(
         "/output/command", 1);
 
-    _pose_pub = nh.advertise<geometry_msgs::PoseStamped>("output/pose", 1);
+    _pose_pub = nh.advertise<geometry_msgs::PoseStamped>("/output/pose", 1);
 
-    _direct_trajectory_pub = nh.advertise<mpc_planner_msgs::ObstacleGMM>("robot_to_robot/output/current_trajectory", 1);
+    _direct_trajectory_pub = nh.advertise<mpc_planner_msgs::ObstacleGMM>("/robot_to_robot/output/current_trajectory", 1);
 
-    _objective_pub = nh.advertise<std_msgs::Bool>("events/objective_reached", 1);
+    _objective_pub = nh.advertise<std_msgs::Bool>("/events/objective_reached", 1);
 
     // Roadmap reverse
     _reverse_roadmap_pub = nh.advertise<std_msgs::Empty>("/roadmap/reverse", 1);
@@ -133,7 +134,7 @@ void JulesRealJackalPlanner::loop(const ros::TimerEvent &event)
     {
         if (!_startup_timer->hasFinished())
         {
-            LOG_INFO_THROTTLE(2000, _ego_robot_ns + ": In startup period, skipping planning");
+            LOG_INFO_THROTTLE(4000, _ego_robot_ns + ": In startup period, skipping planning");
             return;
         }
         else
@@ -221,7 +222,13 @@ void JulesRealJackalPlanner::loop(const ros::TimerEvent &event)
     }
     case MPCPlanner::PlannerState::RESETTING:
     {
-        LOG_INFO_THROTTLE(2000, _ego_robot_ns + ": In resetting state, waiting for allRobotsReachedObjecitveCallback... to change _ego state to TIMER_STARTUP");
+        if (_previous_state != MPCPlanner::PlannerState::RESETTING)
+        {
+            LOG_INFO(_ego_robot_ns + ": In resetting state, waiting for allRobotsReachedObjecitveCallback... to change _ego state to TIMER_STARTUP");
+            _previous_state = MPCPlanner::PlannerState::RESETTING;
+        }
+
+        LOG_DEBUG_THROTTLE(2000, _ego_robot_ns + ": In resetting state, waiting for allRobotsReachedObjecitveCallback... to change _ego state to TIMER_STARTUP");
         break;
     }
     case MPCPlanner::PlannerState::ERROR_STATE:
