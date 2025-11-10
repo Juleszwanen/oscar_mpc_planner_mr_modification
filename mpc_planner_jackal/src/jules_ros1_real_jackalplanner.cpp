@@ -21,6 +21,7 @@ JulesRealJackalPlanner::JulesRealJackalPlanner(ros::NodeHandle &nh)
     // _ego_robot_ns = ros::this_node::getNamespace();
     nh.param("/ego_robot_ns", this->_ego_robot_ns, this->_ego_robot_ns);
     nh.param("/forward_experiment", this->_forward_x_experiment, this->_forward_x_experiment);
+    nh.param("/rqt_dead_man_switch", this->_rqt_dead_man_switch, this->_rqt_dead_man_switch);
     _ego_robot_id = MultiRobot::extractRobotIdFromNamespace(_ego_robot_ns);
 
     if (!nh.getParam("/robot_ns_list", _robot_ns_list))
@@ -96,6 +97,10 @@ void JulesRealJackalPlanner::initializeSubscribersAndPublishers(ros::NodeHandle 
     _bluetooth_sub = nh.subscribe<sensor_msgs::Joy>(
         "/input/bluetooth", 1,
         boost::bind(&JulesRealJackalPlanner::bluetoothCallback, this, _1)); // Deadman switch
+
+    _rqt_dead_man_sub = nh.subscribe<geometry_msgs::Twist>(
+        "/jackal_deadman_switch", 1,
+        boost::bind(&JulesRealJackalPlanner::rqtDeadManSwitchCallback, this, _1)); // Deadman switch
 
     _all_robots_reached_objective_sub = nh.subscribe<std_msgs::Bool>(
         "/all_robots_reached_objective", 1,
@@ -173,10 +178,10 @@ void JulesRealJackalPlanner::loop(const ros::TimerEvent &event)
     case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
     {
         // While we are waiting for the first trajectory data what we can do is plan with the dummy obstacles which we initialized in initializeOtherRobotsAsObstacles
-        LOG_INFO_THROTTLE(4000, _ego_robot_ns + ": WAITING_FOR_TRAJECTORY_DATA (waiting for trajectory data - intial planning state) - State: [" +
-                                    std::to_string(_state.get("x")) + ", " +
-                                    std::to_string(_state.get("y")) + ", " +
-                                    std::to_string(_state.get("psi")) + "]");
+        LOG_DEBUG_THROTTLE(4000, _ego_robot_ns + ": WAITING_FOR_TRAJECTORY_DATA (waiting for trajectory data - intial planning state) - State: [" +
+                                     std::to_string(_state.get("x")) + ", " +
+                                     std::to_string(_state.get("y")) + ", " +
+                                     std::to_string(_state.get("psi")) + "]");
 
         if (_enable_output)
         {
@@ -292,13 +297,16 @@ void JulesRealJackalPlanner::obstacleCallback(const derived_object_msgs::ObjectA
 
 void JulesRealJackalPlanner::bluetoothCallback(const sensor_msgs::Joy::ConstPtr &msg)
 {
-    if (msg->axes[2] < -0.9 && !_enable_output)
-        LOG_INFO(_ego_robot_ns + ": Planning enabled (deadman switch pressed)");
-    else if (msg->axes[2] > -0.9 && _enable_output)
-        LOG_INFO(_ego_robot_ns + ": Deadmanswitch enabled (deadman switch released)");
+    if (!_rqt_dead_man_switch)
+    {
+        if (msg->axes[2] < -0.9 && !_enable_output)
+            LOG_INFO(_ego_robot_ns + ": Planning enabled (deadman switch pressed)");
+        else if (msg->axes[2] > -0.9 && _enable_output)
+            LOG_INFO(_ego_robot_ns + ": Deadmanswitch enabled (deadman switch released)");
 
-    _enable_output = msg->axes[2] < -0.9;
-    CONFIG["enable_output"] = _enable_output;
+        _enable_output = msg->axes[2] < -0.9;
+        CONFIG["enable_output"] = _enable_output;
+    }
 }
 
 void JulesRealJackalPlanner::poseOtherRobotCallback(const geometry_msgs::PoseStamped::ConstPtr &msg, const std::string ns)
@@ -463,6 +471,21 @@ void JulesRealJackalPlanner::allRobotsReachedObjectiveCallback(const std_msgs::B
 
     // In the simulation one, we do the roadmap reverse here but that is not neccessary
     this->reset();
+}
+
+void JulesRealJackalPlanner::rqtDeadManSwitchCallback(const geometry_msgs::Twist::ConstPtr &msg)
+{
+    if (_rqt_dead_man_switch)
+    {
+        if (msg->angular.z >= 2.0 && !_enable_output)
+            LOG_INFO(_ego_robot_ns + ": RQT: Planning enabled (deadman switch pressed)");
+        else if (msg->angular.z < 2.0 && _enable_output)
+            LOG_INFO(_ego_robot_ns + ": RQT: Deadmanswitch enabled (deadman switch released)");
+
+        _enable_output = msg->angular.z >= 2.0;
+        CONFIG["enable_output"] = _enable_output;
+    }
+    return;
 }
 
 bool JulesRealJackalPlanner::objectiveReached()
