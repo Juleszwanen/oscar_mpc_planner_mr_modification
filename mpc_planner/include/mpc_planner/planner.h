@@ -26,8 +26,8 @@ namespace MPCPlanner
         Trajectory trajectory;
         bool success{false};
 
-        /** @note Jules: new vriables to record data about if we used the guidance and other stuff*/ 
-        int previous_topology_id{-1};       // Previous topology for logging purposes
+        /** @note Jules: new vriables to record data about if we used the guidance and other stuff*/
+        int previous_topology_id{-1};      // Previous topology for logging purposes
         int selected_topology_id{-1};      // Homology class ID (from guidance_ID)
         int selected_planner_index{-1};    // Which planner was chosen (0 to n_paths)
         bool used_guidance{true};          // false if T-MPC++ (non-guided) was chosen
@@ -46,7 +46,7 @@ namespace MPCPlanner
     {
     public:
         Planner();
-        Planner(std::string ego_robot_ns);
+        Planner(std::string ego_robot_ns, bool safe_extra_data);
 
     public:
         PlannerOutput solveMPC(State &state, RealTimeData &data);
@@ -67,6 +67,11 @@ namespace MPCPlanner
 
         bool setEgoNameSpaceGuidanceModule(const std::string &ego_robot_ns);
 
+    public:
+        /** @note Jules: Created this variable for debugging purposes, so log messages of different robots can be distinguished*/
+        std::string _ego_robot_ns{"jackalX"};
+        bool _safe_extra_data{false};
+
     private:
         bool _is_data_ready{false}, _was_reset{true};
 
@@ -81,11 +86,7 @@ namespace MPCPlanner
         std::unique_ptr<RosTools::Timer> _startup_timer;
 
         std::vector<std::shared_ptr<ControllerModule>> _modules; // Will contain all modules used in the mpc formulation and the _modules are filled by the function initializeModules() in the file modules.h
-    
-    public:
-        /** @note Jules: Created this variable for debugging purposes, so log messages of different robots can be distinguished*/
-        std::string _ego_robot_ns{"jackalX"};
-    };
+        };
 
 }
 

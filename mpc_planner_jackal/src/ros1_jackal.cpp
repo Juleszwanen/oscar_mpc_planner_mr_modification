@@ -101,7 +101,7 @@ bool JackalPlanner::objectiveReached()
 
 void JackalPlanner::loop(const ros::TimerEvent &event)
 {
-    (void)event; 
+    (void)event;
     LOG_MARK("============= Loop =============");
 
     if (objectiveReached())
@@ -135,7 +135,7 @@ void JackalPlanner::loop(const ros::TimerEvent &event)
         LOG_VALUE_DEBUG("Commanded w", cmd.angular.z);
         CONFIG["enable_output"] = true;
     }
-    
+
     else if (!_enable_output)
     {
         _state.set("v", _measured_velocity); // Use the commanded speed
@@ -285,8 +285,11 @@ void JackalPlanner::obstacleCallback(const derived_object_msgs::ObjectArray::Con
     // This part will fill in alle the containers above
     for (auto &object : msg->objects)
     {
+        // Dont process the ego_robot
         if (object.id == 0)
             continue;
+
+        //
         
         // Align orientation whith motion orientation
         double object_angle = RosTools::quaternionToAngle(object.pose.orientation) +
@@ -304,12 +307,12 @@ void JackalPlanner::obstacleCallback(const derived_object_msgs::ObjectArray::Con
         for (int i = 0; i < new_obstacles; i++)
             angles.push_back(object_angle);
 
-        geometry_msgs::Twist global_twist = object.twist;
+        geometry_msgs::Twist body_twist = object.twist;
         Eigen::Matrix2d rot_matrix = RosTools::rotationMatrixFromHeading(-RosTools::quaternionToAngle(object.pose.orientation));
-        Eigen::Vector2d twist_out = rot_matrix * Eigen::Vector2d(global_twist.linear.x, global_twist.linear.y);
+        Eigen::Vector2d global_twist = rot_matrix * Eigen::Vector2d(body_twist.linear.x, body_twist.linear.y);
 
         for (int i = 0; i < new_obstacles; i++)
-            twists.push_back(twist_out);
+            twists.push_back(global_twist);
 
         // Assume obstacles consisting of multiple parts are static
         if (new_obstacles > 1)
@@ -349,8 +352,7 @@ void JackalPlanner::parseObstacle(const derived_object_msgs::Object &object, dou
                                   std::vector<Eigen::Vector2d> &positions_out, std::vector<double> &radii_out)
 {
     /** @note Jules: Called in obstacleCallback with -> parseObstacle(object, object_angle, positions, radii); */
-    
-    
+
     // Depending on the shape of the obstacle, interpret it differently
     if (object.shape.type == object.shape.CYLINDER)
     {

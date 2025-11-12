@@ -124,6 +124,7 @@ private:
     std::string _global_frame{"map"};
     std::string _ego_robot_ns{"/jackalX"};
     int _ego_robot_id{-1};
+    int _num_non_com_obj{0};
     std::set<std::string> _other_robot_nss;
     std::vector<std::string> _robot_ns_list;
 

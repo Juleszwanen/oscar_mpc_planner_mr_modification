@@ -36,7 +36,7 @@ namespace MPCPlanner
         _startup_timer = std::make_unique<RosTools::Timer>(1.0); // Give some time to receive data
     }
 
-    Planner::Planner(std::string ego_robot_ns) : _ego_robot_ns(ego_robot_ns)
+    Planner::Planner(std::string ego_robot_ns, bool safe_extra_data) : _ego_robot_ns(ego_robot_ns), _safe_extra_data(safe_extra_data)
     {
         // Initialize the solver
         _solver = std::make_shared<Solver>();
@@ -51,7 +51,6 @@ namespace MPCPlanner
         LOG_INFO("CREATED THE MPCPlanner for " + _ego_robot_ns);
 
         setEgoNameSpaceGuidanceModule(_ego_robot_ns);
-
     }
 
     bool Planner::setEgoNameSpaceGuidanceModule(const std::string &ego_robot_ns)
@@ -235,6 +234,7 @@ namespace MPCPlanner
         return _solver->getOutput(k, std::forward<std::string>(var_name));
     }
 
+    // Jules: Dont think this one is actually used
     RosTools::DataSaver &Planner::getDataSaver() const
     {
         return _experiment_util->getDataSaver();
@@ -312,6 +312,19 @@ namespace MPCPlanner
 
         for (auto &module : _modules)
             module->saveData(data_saver);
+
+        // JULES: Save topology/homology metadata from PlannerOutput
+        if (CONFIG["JULES"]["use_extra_params_module_data"].as<bool>())
+        {
+            data_saver.AddData("jules_selected_topology_id", _output.selected_topology_id);
+            data_saver.AddData("jules_selected_planner_index", _output.selected_planner_index);
+            data_saver.AddData("jules_used_guidance", _output.used_guidance ? 1.0 : 0.0);
+            data_saver.AddData("jules_trajectory_cost", _output.trajectory_cost);
+            data_saver.AddData("jules_solver_exit_code", static_cast<double>(_output.solver_exit_code));
+            data_saver.AddData("jules_following_new_topology", _output.following_new_topology ? 1.0 : 0.0);
+            data_saver.AddData("jules_previous_topology_id", _output.previous_topology_id);
+            data_saver.AddData("jules_communicated_trajectory", data.communicated_trajectory ? 1.0 : 0.0);
+        }
 
         _experiment_util->update(state, _solver, data);
     }

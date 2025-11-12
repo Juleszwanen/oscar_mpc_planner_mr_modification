@@ -30,6 +30,9 @@ namespace MPCPlanner
         Eigen::Vector2d goal;
         bool goal_received{false};
 
+        // Variable which resembles if the ego_robot communicated its trajectory
+        bool communicated_trajectory{false};
+
         // Feedback data
         double intrusion;
 

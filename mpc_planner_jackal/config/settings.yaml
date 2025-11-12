@@ -19,10 +19,11 @@ solver_settings:
 recording:
   enable: false
   # folder: "/home/r2c1/Documents/publications/multi-mpc-2023/results/data"
-  folder: "/home/r2c1/tmpc_revision/experiments/data"
-  file: "GMPCC"
+  folder: "/home/r2c1/JULES/experiments/data"
+  # folder: "/home/r2c1/tmpc_revision/experiments/data"
+  file: "mr_test"
   timestamp: true
-  num_experiments: 30
+  num_experiments: 10
 
 debug_limits: false
 debug_output: false
@@ -37,7 +38,7 @@ robot:
   length: 0.65
   width: 0.65
   com_to_back: 0.0
-obstacle_radius: 0.35
+obstacle_radius: 0.5
 
 linearized_constraints:
   add_halfspaces: 0 #2  # For road constraints
@@ -68,9 +69,9 @@ t-mpc:
   warmstart_with_mpc_solution: false
 
 probabilistic:
-  enable: true
+  enable: false
   risk: 0.05
-  propagate_uncertainty: true
+  propagate_uncertainty: false
 
 weights:
   goal_weight: 10.
@@ -99,3 +100,4 @@ JULES:
     # Robot physical limits (for velocity clamping during extrapolation)
     robot_max_velocity: 2.0        # m/s
     robot_max_angular_velocity: 2.0  # rad/s
+    safe_extra_data: true

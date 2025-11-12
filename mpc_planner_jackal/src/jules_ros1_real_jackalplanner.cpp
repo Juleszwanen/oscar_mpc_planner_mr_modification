@@ -22,6 +22,7 @@ JulesRealJackalPlanner::JulesRealJackalPlanner(ros::NodeHandle &nh)
     nh.param("/ego_robot_ns", this->_ego_robot_ns, this->_ego_robot_ns);
     nh.param("/forward_experiment", this->_forward_x_experiment, this->_forward_x_experiment);
     nh.param("/rqt_dead_man_switch", this->_rqt_dead_man_switch, this->_rqt_dead_man_switch);
+    nh.param("/num_non_com_obj", this->_num_non_com_obj, this->_num_non_com_obj);
     _ego_robot_id = MultiRobot::extractRobotIdFromNamespace(_ego_robot_ns);
 
     if (!nh.getParam("/robot_ns_list", _robot_ns_list))
@@ -30,6 +31,7 @@ JulesRealJackalPlanner::JulesRealJackalPlanner(ros::NodeHandle &nh)
     }
 
     _other_robot_nss = MultiRobot::identifyOtherRobotNamespaces(_robot_ns_list, _ego_robot_ns);
+
     // Initialize the configuration, her
     Configuration::getInstance().initialize(SYSTEM_CONFIG_PATH(__FILE__, "settings"));
 
@@ -42,7 +44,7 @@ JulesRealJackalPlanner::JulesRealJackalPlanner(ros::NodeHandle &nh)
     nh.param("goal_tolerance", this->_goal_tolerance, this->_goal_tolerance);
 
     // Initialize the planner
-    _planner = std::make_unique<MPCPlanner::Planner>(_ego_robot_ns);
+    _planner = std::make_unique<MPCPlanner::Planner>(_ego_robot_ns, CONFIG["JULES"]["safe_extra_data"].as<bool>());
 
     // Initialize the ROS interface
     initializeSubscribersAndPublishers(nh);
@@ -177,6 +179,7 @@ void JulesRealJackalPlanner::loop(const ros::TimerEvent &event)
     }
     case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
     {
+
         // While we are waiting for the first trajectory data what we can do is plan with the dummy obstacles which we initialized in initializeOtherRobotsAsObstacles
         LOG_DEBUG_THROTTLE(4000, _ego_robot_ns + ": WAITING_FOR_TRAJECTORY_DATA (waiting for trajectory data - intial planning state) - State: [" +
                                      std::to_string(_state.get("x")) + ", " +
@@ -189,7 +192,7 @@ void JulesRealJackalPlanner::loop(const ros::TimerEvent &event)
             {
                 MultiRobot::transitionTo(_current_state, _previous_state, MPCPlanner::PlannerState::GOAL_REACHED, _ego_robot_ns);
             }
-
+            _benchmarker->start();
             prepareObstacleData();
             auto [cmd, output] = generatePlanningCommand(_current_state);
 
@@ -198,11 +201,14 @@ void JulesRealJackalPlanner::loop(const ros::TimerEvent &event)
             // The state transition is be triggered by a trajectory callback function
 
             // The state transition is be triggered by a trajectory callback function
+            _benchmarker->stop();
         }
+
         break;
     }
     case MPCPlanner::PlannerState::PLANNING_ACTIVE: // This state is transitioned to by the trajectory callback function
     {
+        _benchmarker->start();
         // Use braces to create a new scope for variable declarations
         if (this->objectiveReached())
         {
@@ -214,6 +220,8 @@ void JulesRealJackalPlanner::loop(const ros::TimerEvent &event)
         // LOG_INFO(_ego_robot_ns + output.logOutput());
         publishCmdAndVisualize(cmd, output);
         _data.past_trajectory.replaceTrajectory(output.trajectory);
+
+        _benchmarker->stop();
         break;
     }
     case MPCPlanner::PlannerState::GOAL_REACHED:
@@ -248,6 +256,8 @@ void JulesRealJackalPlanner::loop(const ros::TimerEvent &event)
     }
     }
     // visualize the lab limits and visualize when there is a goal
+    if (CONFIG["recording"]["enable"].as<bool>())
+        _planner->saveData(_state, _data);
     this->visualize();
     LOG_DEBUG("============= End Loop =============");
 }
@@ -293,6 +303,107 @@ void JulesRealJackalPlanner::pathCallback(const nav_msgs::Path::ConstPtr &msg)
 
 void JulesRealJackalPlanner::obstacleCallback(const derived_object_msgs::ObjectArray::ConstPtr &msg)
 {
+    // Update non-communicating obstacles from Vicon data
+    // Robot obstacles are updated via trajectoryCallback, so we skip them here
+
+    // Early return for states where we shouldn't process obstacles yet
+    switch (_current_state)
+    {
+    case MPCPlanner::PlannerState::UNINITIALIZED:
+    case MPCPlanner::PlannerState::TIMER_STARTUP:
+    case MPCPlanner::PlannerState::WAITING_FOR_FIRST_EGO_POSE:
+    case MPCPlanner::PlannerState::INITIALIZING_OBSTACLES:
+    case MPCPlanner::PlannerState::RESETTING:
+    case MPCPlanner::PlannerState::ERROR_STATE:
+        LOG_DEBUG_THROTTLE(5000, _ego_robot_ns + ": Skipping obstacle update in state: " +
+                                     MPCPlanner::stateToString(_current_state));
+        return;
+
+    case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
+    case MPCPlanner::PlannerState::PLANNING_ACTIVE:
+    case MPCPlanner::PlannerState::GOAL_REACHED:
+        // Process obstacles in these states
+        // Process non-communicating obstacles from Vicon
+        for (auto &object : msg->objects)
+        {   
+            // Skip robot obstacles (they're handled by trajectoryCallback)
+            if (object.id < _robot_ns_list.size())
+                continue;
+
+            // Calculate velocity magnitude
+            double velocity = std::sqrt(object.twist.linear.x * object.twist.linear.x +
+                                        object.twist.linear.y * object.twist.linear.y);
+
+            // Align orientation with motion direction (if moving)
+            double object_angle;
+            if (velocity > 0.01)
+            {
+                object_angle = RosTools::quaternionToAngle(object.pose.orientation) +
+                               std::atan2(object.twist.linear.y, object.twist.linear.x) +
+                               M_PI_2;
+            }
+            else
+            {
+                // Use pose orientation if stationary
+                object_angle = RosTools::quaternionToAngle(object.pose.orientation);
+            }
+
+            // Transform velocity from body frame to global frame
+            geometry_msgs::Twist body_twist = object.twist;
+            Eigen::Matrix2d rot_matrix = RosTools::rotationMatrixFromHeading(-RosTools::quaternionToAngle(object.pose.orientation));
+            Eigen::Vector2d global_twist = rot_matrix * Eigen::Vector2d(body_twist.linear.x, body_twist.linear.y);
+
+            // Find the dynamic obstacle with matching index
+            auto it = std::find_if(_data.dynamic_obstacles.begin(),
+                                   _data.dynamic_obstacles.end(),
+                                   [&object](const MPCPlanner::DynamicObstacle &obs)
+                                   {
+                                       return obs.index == object.id;
+                                   });
+
+            if (it != _data.dynamic_obstacles.end())
+            {
+                // Found the obstacle - update it with new Vicon data
+                auto &dynamic_obstacle = *it;
+
+                // Update position and orientation
+                dynamic_obstacle.position = Eigen::Vector2d(object.pose.position.x, object.pose.position.y);
+                dynamic_obstacle.angle = object_angle;
+
+                // Update prediction with new velocity (in global frame)
+                dynamic_obstacle.prediction = MPCPlanner::getConstantVelocityPrediction(
+                    dynamic_obstacle.position,
+                    global_twist,
+                    CONFIG["integrator_step"].as<double>(),
+                    CONFIG["N"].as<int>());
+
+                // Get first prediction point for logging
+                std::string pred_info = "";
+                if (!dynamic_obstacle.prediction.modes.empty() &&
+                    !dynamic_obstacle.prediction.modes[0].empty())
+                {
+                    const auto &first_pred = dynamic_obstacle.prediction.modes[0][0];
+                    pred_info = ", pred[0]: [" + std::to_string(first_pred.position.x()) + ", " +
+                                std::to_string(first_pred.position.y()) + "]";
+                }
+
+                LOG_INFO_THROTTLE(9000, _ego_robot_ns + ": Updated non-comm obstacle ID " + std::to_string(object.id) +
+                         " at [" + std::to_string(dynamic_obstacle.position.x()) + ", " +
+                         std::to_string(dynamic_obstacle.position.y()) + "] " +
+                         "vel: " + std::to_string(velocity) + " m/s" + pred_info);
+            }
+            else
+            {
+                LOG_WARN_THROTTLE(2000, _ego_robot_ns + ": Could not find obstacle with ID " + std::to_string(object.id) +
+                                            " in dynamic_obstacles vector. Expected it to be initialized in initializeOtherRobotsAsObstacles()");
+            }
+        }
+        break;
+    default:
+        LOG_WARN_THROTTLE(5000, _ego_robot_ns + ": Processing obstacles in unexpected state: " +
+                                    std::to_string(static_cast<int>(_current_state)));
+        break;
+    }
 }
 
 void JulesRealJackalPlanner::bluetoothCallback(const sensor_msgs::Joy::ConstPtr &msg)
@@ -611,6 +722,7 @@ bool JulesRealJackalPlanner::initializeOtherRobotsAsObstacles(const std::set<std
                                                               const double radius)
 {
     // Early validation
+    std::vector<int> non_com_indices = MultiRobot::extractIdentifierIndicesNonComObj(_robot_ns_list, _num_non_com_obj);
     if (other_robot_namespaces.empty())
     {
         LOG_WARN(_ego_robot_ns + ": No other robots to initialize as obstacles");
@@ -621,8 +733,9 @@ bool JulesRealJackalPlanner::initializeOtherRobotsAsObstacles(const std::set<std
     const Eigen::Vector2d FAR_AWAY_POSITION(100.0, 100.0);
     const Eigen::Vector2d ZERO_VELOCITY(0.0, 0.0);
 
-    std::string summary = _ego_robot_ns + " created obstacles for: ";
+    std::string summary = _ego_robot_ns + " initialized obstacles: ";
 
+    // Initialize communicating robots
     for (const auto &robot_ns : other_robot_namespaces)
     {
         summary += robot_ns + " ";
@@ -656,7 +769,44 @@ bool JulesRealJackalPlanner::initializeOtherRobotsAsObstacles(const std::set<std
                  " with index " + std::to_string(obstacle.index));
     }
 
+    // Add non-communicating objects info to summary
+    if (!non_com_indices.empty())
+    {
+        summary += " | Non-comm objects: ";
+        for (size_t i = 0; i < non_com_indices.size(); ++i)
+        {
+            summary += "ID" + std::to_string(non_com_indices[i]);
+            if (i < non_com_indices.size() - 1)
+                summary += ", ";
+        }
+    }
+
     LOG_INFO(summary);
+
+    // Initialize non-communicating objects (e.g., humans, dynamic obstacles)
+    // These objects get IDs starting after all robot IDs (based on Vicon bundle_obstacles convention)
+    for (const int index : non_com_indices)
+    {
+        // Create obstacle at far away position with specified radius
+        data.dynamic_obstacles.emplace_back(
+            index,
+            FAR_AWAY_POSITION,
+            0.0,
+            CONFIG["obstacle_radius"].as<double>());
+
+        // Get reference to the newly created obstacle
+        auto &non_com_obs = data.dynamic_obstacles.back();
+
+        // Initialize with stationary constant velocity prediction
+        non_com_obs.prediction = MPCPlanner::getConstantVelocityPrediction(
+            non_com_obs.position,
+            ZERO_VELOCITY,
+            CONFIG["integrator_step"].as<double>(),
+            CONFIG["N"].as<int>());
+
+        LOG_INFO(_ego_robot_ns + ": Created non-communicating obstacle with index " +
+                 std::to_string(non_com_obs.index) + " (ID from Vicon bundle)");
+    }
 
     // Validate that initialization was successful
     const bool initialization_successful =
@@ -1170,8 +1320,10 @@ void JulesRealJackalPlanner::publishCmdAndVisualize(const geometry_msgs::Twist &
                                              std::to_string(output.selected_topology_id) + ")");
     }
 
+    // Record inside data if we have communicated or not
+    _data.communicated_trajectory = should_communicate;
     // Always visualize
-    _planner->visualizeObstaclePredictionsPlanner(_state, _data, false);
+    _planner->visualizeObstaclePredictionsPlanner(_state, _data, true);
     _planner->visualize(_state, _data);
     // visualize();
 }

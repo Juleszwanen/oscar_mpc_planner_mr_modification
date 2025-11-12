@@ -113,4 +113,10 @@ namespace MPCPlanner
     {
         _iteration_at_last_reset = _control_iteration;
     }
+
+    void ExperimentUtil::safeExtraData(const State &state, const RealTimeData &data)
+    {
+        // If true set a double 1.0 and when false set 0.0, the add data is either double or eigen 2d vec
+        _data_saver->AddData("communicated_trajectory", data.communicated_trajectory ? 1.0 : 0.0);
+    }
 }

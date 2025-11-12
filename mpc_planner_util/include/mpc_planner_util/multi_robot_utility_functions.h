@@ -32,6 +32,8 @@ namespace MultiRobot
     // Wrap angle difference to shortest arc [-π, π]
     double wrapAngleDifference(double angle);
 
+    std::vector<int> extractIdentifierIndicesNonComObj(const std::vector<std::string> &all_namespaces, const unsigned int &num_non_com_obj);
+
     void transitionTo(MPCPlanner::PlannerState &_current_state, MPCPlanner::PlannerState &_previous_state, const MPCPlanner::PlannerState &new_state, const std::string &ego_robot_ns);
 
     bool canTransitionTo(const MPCPlanner::PlannerState &_current_state, const MPCPlanner::PlannerState &new_state, const std::string &_ego_robot_ns);

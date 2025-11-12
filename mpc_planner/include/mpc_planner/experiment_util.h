@@ -30,6 +30,8 @@ namespace MPCPlanner
 
         void setStartExperiment();
 
+        void safeExtraData(const State &state, const RealTimeData &data);
+
         RosTools::DataSaver &getDataSaver() const { return *_data_saver; };
 
     private:

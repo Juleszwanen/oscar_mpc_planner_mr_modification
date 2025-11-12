@@ -22,10 +22,53 @@ namespace MultiRobot
     int extractRobotIdFromNamespace(const std::string &ns)
     {
         // Handle both "/jackalX" and "jackalX" formats
+        // Returns 0-based index to match Vicon's 0-based object ID system
+        // jackal1 -> 0, jackal2 -> 1, jackal3 -> 2, etc.
         if (ns.front() == '/')
-            return std::stoi(ns.substr(7)); // skip "/jackal"
+            return std::stoi(ns.substr(7)) - 1; // skip "/jackal" and convert to 0-based
         else
-            return std::stoi(ns.substr(6)); // skip "jackal"
+            return std::stoi(ns.substr(6)) - 1; // skip "jackal" and convert to 0-based
+    }
+
+    /**
+     * @brief Extract indices for non-communicating objects (e.g., humans, dynamic obstacles)
+     *
+     * This function generates ID indices for non-communicating entities based on the Vicon
+     * bundle_obstacles.launch convention where IDs are assigned sequentially:
+     * - Communicating robots: IDs [0, num_robots-1]
+     * - Non-communicating objects: IDs [num_robots, num_robots+num_non_com_obj-1]
+     *
+     * Example 1: 2 robots (jackal1, jackal2), 1 non-communicating object
+     *   - Vicon assigns: jackal1=0, jackal2=1, dynamic_object1=2
+     *   - extractRobotIdFromNamespace returns: jackal1→0, jackal2→1 (0-based)
+     *   - This function returns: [2] for non-comm objects
+     *
+     * Example 2: 3 robots, 2 non-communicating objects
+     *   - Vicon assigns: jackal1=0, jackal2=1, jackal3=2, object1=3, object2=4
+     *   - extractRobotIdFromNamespace returns: jackal1→0, jackal2→1, jackal3→2 (0-based)
+     *   - This function returns: [3, 4] for non-comm objects
+     *
+     * @param all_namespaces Vector of robot namespaces (communicating entities)
+     * @param num_non_com_obj Number of non-communicating objects in the scene
+     * @return Vector of indices for non-communicating objects, empty if num_non_com_obj == 0
+     */
+    std::vector<int> extractIdentifierIndicesNonComObj(const std::vector<std::string> &all_robot_namespaces, const unsigned int &num_non_com_obj)
+    {
+        std::vector<int> identifier_indices_non_com_obj;
+
+        // Non-communicating objects start after all robot IDs
+        const int start_index = all_robot_namespaces.size();
+        const int end_index = start_index + num_non_com_obj;
+
+        identifier_indices_non_com_obj.reserve(num_non_com_obj); // Pre-allocate for efficiency
+
+        // Generate sequential indices: [num_robots, num_robots + num_non_com_obj - 1]
+        for (int i = start_index; i < end_index; ++i)
+        {
+            identifier_indices_non_com_obj.push_back(i);
+        }
+
+        return identifier_indices_non_com_obj; // Returns empty vector if num_non_com_obj == 0
     }
 
     std::string dataToString(const MPCPlanner::RealTimeData &_data, const std::string &_ego_robot_ns)
@@ -249,4 +292,5 @@ namespace MultiRobot
             break;
         }
     }
+
 }
