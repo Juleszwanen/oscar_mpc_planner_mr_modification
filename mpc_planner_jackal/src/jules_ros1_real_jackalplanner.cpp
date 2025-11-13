@@ -52,7 +52,7 @@ JulesRealJackalPlanner::JulesRealJackalPlanner(ros::NodeHandle &nh)
     _reconfigure = std::make_unique<JackalReconfigure>();
 
     _startup_timer = std::make_unique<RosTools::Timer>();
-    _startup_timer->setDuration(15.0);
+    _startup_timer->setDuration(10.0);
     _startup_timer->start();
 
     MultiRobot::transitionTo(_current_state, _previous_state, MPCPlanner::PlannerState::TIMER_STARTUP, _ego_robot_ns);

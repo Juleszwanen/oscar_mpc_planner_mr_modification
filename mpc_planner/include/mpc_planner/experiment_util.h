@@ -20,6 +20,7 @@ namespace MPCPlanner
     {
     public:
         ExperimentUtil();
+        ExperimentUtil(const std::string& robot_ns);
 
     public:
         void update(const State &state, std::shared_ptr<Solver> solver, const RealTimeData &data);

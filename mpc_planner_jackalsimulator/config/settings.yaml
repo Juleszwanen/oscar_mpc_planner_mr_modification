@@ -24,10 +24,10 @@ solver_settings:
   tolstat: 1e-3 # Stationary tolerance
 
 recording:
-  enable: false # Record data if true
-  folder: /workspace/src/mpc_planner/data # Data location
-  file: none # File name for the experiment
-  timestamp: false # Add a timestamp
+  enable: true # Record data if true
+  folder: /workspace/experiment/mpc_planner_sim/data # Data location
+  file: test.txt # File name for the experiment
+  timestamp: true # Add a timestamp
   num_experiments: 5 # Stop after this number of experiments
 
 deceleration_at_infeasible: 3.0 # [m/s^2] Deceleration when MPC is infeasible

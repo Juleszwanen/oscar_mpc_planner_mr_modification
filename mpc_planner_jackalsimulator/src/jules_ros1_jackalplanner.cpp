@@ -55,7 +55,7 @@ JulesJackalPlanner::JulesJackalPlanner(ros::NodeHandle &nh, ros::NodeHandle &pnh
     nh.param("goal_tolerance", this->_goal_tolerance, this->_goal_tolerance);
 
     // Construct Planner after configuration is ready
-    this->_planner = std::make_unique<MPCPlanner::Planner>(_ego_robot_ns);
+    this->_planner = std::make_unique<MPCPlanner::Planner>(_ego_robot_ns, CONFIG["JULES"]["safe_extra_data"]);
     // Set the _ego_robot_ns inside the planner
 
     // Setup ROS I/O
@@ -64,10 +64,10 @@ JulesJackalPlanner::JulesJackalPlanner(ros::NodeHandle &nh, ros::NodeHandle &pnh
     _reconfigure = std::make_unique<JackalsimulatorReconfigure>(); // Initialize RQT reconfigure
 
     _startup_timer = std::make_unique<RosTools::Timer>();
-    _startup_timer->setDuration(15.0);
+    _startup_timer->setDuration(10.0);
     _startup_timer->start();
 
-    MultiRobot::transitionTo(_current_state, MPCPlanner::PlannerState::TIMER_STARTUP, _ego_robot_ns);
+    MultiRobot::transitionTo(_current_state, _previous_state, MPCPlanner::PlannerState::TIMER_STARTUP, _ego_robot_ns);
 
     // Start control loop timer
     _timer = nh.createTimer(
@@ -199,7 +199,7 @@ void JulesJackalPlanner::loopDirectTrajectoryStateMachine(const ros::TimerEvent 
         }
         else
         {
-            MultiRobot::transitionTo(_current_state, MPCPlanner::PlannerState::WAITING_FOR_FIRST_EGO_POSE, _ego_robot_ns);
+            MultiRobot::transitionTo(_current_state, _previous_state, MPCPlanner::PlannerState::WAITING_FOR_FIRST_EGO_POSE, _ego_robot_ns);
         }
 
         break;
@@ -210,7 +210,7 @@ void JulesJackalPlanner::loopDirectTrajectoryStateMachine(const ros::TimerEvent 
     {
         if (_state.validData())
         {
-            MultiRobot::transitionTo(_current_state, MPCPlanner::PlannerState::INITIALIZING_OBSTACLES, _ego_robot_ns);
+            MultiRobot::transitionTo(_current_state, _previous_state, MPCPlanner::PlannerState::INITIALIZING_OBSTACLES, _ego_robot_ns);
         }
         else
         {
@@ -225,7 +225,7 @@ void JulesJackalPlanner::loopDirectTrajectoryStateMachine(const ros::TimerEvent 
     case MPCPlanner::PlannerState::INITIALIZING_OBSTACLES:
     {
         bool initialization_successful = initializeOtherRobotsAsObstacles(_other_robot_nss, _data, CONFIG["robot_radius"].as<double>());
-        MultiRobot::transitionTo(_current_state, MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA, _ego_robot_ns);
+        MultiRobot::transitionTo(_current_state, _previous_state, MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA, _ego_robot_ns);
         break;
     }
     case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
@@ -249,7 +249,7 @@ void JulesJackalPlanner::loopDirectTrajectoryStateMachine(const ros::TimerEvent 
         // Use braces to create a new scope for variable declarations
         if (this->objectiveReached(_state, _data))
         {
-            MultiRobot::transitionTo(_current_state, MPCPlanner::PlannerState::JUST_REACHED_GOAL, _ego_robot_ns);
+            MultiRobot::transitionTo(_current_state, _previous_state, MPCPlanner::PlannerState::JUST_REACHED_GOAL, _ego_robot_ns);
         }
 
         prepareObstacleData();
@@ -266,7 +266,7 @@ void JulesJackalPlanner::loopDirectTrajectoryStateMachine(const ros::TimerEvent 
         auto [cmd, output] = generatePlanningCommand(_current_state);
         _data.past_trajectory.replaceTrajectory(output.trajectory);
         publishCmdAndVisualize(cmd, output);
-        MultiRobot::transitionTo(_current_state, MPCPlanner::PlannerState::GOAL_REACHED, _ego_robot_ns);
+        MultiRobot::transitionTo(_current_state, _previous_state, MPCPlanner::PlannerState::GOAL_REACHED, _ego_robot_ns);
         break;
     }
     case MPCPlanner::PlannerState::GOAL_REACHED:
@@ -294,7 +294,8 @@ void JulesJackalPlanner::loopDirectTrajectoryStateMachine(const ros::TimerEvent 
         break;
     }
     }
-
+    if (CONFIG["recording"]["enable"].as<bool>())
+        _planner->saveData(_state, _data);
     LOG_DEBUG(_ego_robot_ns + ": ============= Loop End =============");
 }
 void JulesJackalPlanner::applyBrakingCommand(geometry_msgs::Twist &cmd)
@@ -699,7 +700,7 @@ void JulesJackalPlanner::trajectoryCallback(const mpc_planner_msgs::ObstacleGMM:
             // State-specific handling
             if (has_meaningful_data && _current_state == MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA)
             {
-                MultiRobot::transitionTo(_current_state, MPCPlanner::PlannerState::PLANNING_ACTIVE, _ego_robot_ns);
+                MultiRobot::transitionTo(_current_state, _previous_state, MPCPlanner::PlannerState::PLANNING_ACTIVE, _ego_robot_ns);
                 LOG_INFO(_ego_robot_ns + ": First meaningful trajectory data received from " + ns +
                          " (" + std::to_string(trajectory_size) + " trajectory points) - transitioning to active planning");
             }
@@ -761,7 +762,7 @@ void JulesJackalPlanner::allRobotsReachedObjectiveCallback(const std_msgs::Bool:
     _startup_timer->setDuration(4.0); // Give time for roadmap to reverse and publish new path
     _startup_timer->start();
 
-    MultiRobot::transitionTo(_current_state, MPCPlanner::PlannerState::TIMER_STARTUP, _ego_robot_ns);
+    MultiRobot::transitionTo(_current_state, _previous_state, MPCPlanner::PlannerState::TIMER_STARTUP, _ego_robot_ns);
     LOG_INFO(_ego_robot_ns + ": Ready to resume planning with new objectives in 2 seconds");
 }
 
@@ -1202,7 +1203,7 @@ void JulesJackalPlanner::interpolateTrajectoryPredictionsByTime()
         {
             mode.erase(mode.begin(), mode.begin() + k);
             // e.g given that we have 8 points and k = 5 we should have a new mode with size = 3
-            ROSTOOLS_ASSERT(mode.size() == (n_measured - k), "The size of mode should be equal to N_original - k");
+            ROSTOOLS_ASSERT(static_cast<int>(mode.size()) == (n_measured - k), "The size of mode should be equal to N_original - k");
             LOG_DEBUG(_ego_robot_ns + ": Removed first " + std::to_string(k) +
                       " points from trajectory for " + ns);
         }
@@ -1211,7 +1212,7 @@ void JulesJackalPlanner::interpolateTrajectoryPredictionsByTime()
         // STEP 3: APPEND EXTRAPOLATED POINTS
         // ============================================================
         mode.insert(mode.end(), extrapolated_points.begin(), extrapolated_points.end());
-        ROSTOOLS_ASSERT(mode.size() == (n_measured + 1), "The size of the mode should be equal to N_original + 1");
+        ROSTOOLS_ASSERT(static_cast<int>(mode.size()) == (n_measured + 1), "The size of the mode should be equal to N_original + 1");
 
         // ============================================================
         // STEP 4: INTERPOLATE ALL POINTS BY alpha
@@ -1442,6 +1443,9 @@ void JulesJackalPlanner::publishCmdAndVisualize(const geometry_msgs::Twist &cmd,
                                              std::to_string(output.selected_topology_id) + ")");
     }
 
+    // Record inside data if we have communicated or not
+    _data.communicated_trajectory = should_communicate;
+    
     // Always visualize
     _planner->visualizeObstaclePredictionsPlanner(_state, _data, false);
     _planner->visualize(_state, _data);
@@ -1456,7 +1460,7 @@ void JulesJackalPlanner::rotatePiRadiansCw(geometry_msgs::Twist &cmd)
     if (_data.reference_path.psi.empty())
     {
         LOG_WARN(_ego_robot_ns + ": No reference path available for rotation");
-        MultiRobot::transitionTo(_current_state, MPCPlanner::PlannerState::ERROR_STATE, _ego_robot_ns);
+        MultiRobot::transitionTo(_current_state, _previous_state, MPCPlanner::PlannerState::ERROR_STATE, _ego_robot_ns);
 
         return;
     }
@@ -1488,7 +1492,7 @@ void JulesJackalPlanner::rotatePiRadiansCw(geometry_msgs::Twist &cmd)
     {
         // We publish that we reached our objective, it does not matter that we do this multiple times
         publishObjectiveReachedEvent();
-        MultiRobot::transitionTo(_current_state, MPCPlanner::PlannerState::RESETTING, _ego_robot_ns);
+        MultiRobot::transitionTo(_current_state, _previous_state, MPCPlanner::PlannerState::RESETTING, _ego_robot_ns);
         LOG_INFO(_ego_robot_ns + " Is waiting for the rest of the robots to reach their objective before starting to follow reverserd path");
     }
 }

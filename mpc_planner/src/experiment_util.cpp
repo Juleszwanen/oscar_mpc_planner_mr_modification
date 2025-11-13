@@ -24,6 +24,30 @@ namespace MPCPlanner
             LOG_VALUE("Planner Save File", _data_saver->getFilePath(_save_folder, _save_file, false));
     }
 
+    ExperimentUtil::ExperimentUtil(const std::string& robot_ns)
+    {
+        _save_folder = CONFIG["recording"]["folder"].as<std::string>();
+        _save_file = CONFIG["recording"]["file"].as<std::string>();
+        
+        // Add robot namespace to filename to distinguish between multiple robots
+        if (!robot_ns.empty())
+        {
+            std::string clean_ns = robot_ns;
+            // Remove leading slash if present (e.g., "/jackal1" -> "jackal1")
+            if (clean_ns[0] == '/')
+                clean_ns = clean_ns.substr(1);
+            
+            // Prepend robot namespace to filename
+            _save_file = clean_ns + "_" + _save_file;
+        }
+
+        _data_saver = std::make_unique<RosTools::DataSaver>();
+        _data_saver->SetAddTimestamp(CONFIG["recording"]["timestamp"].as<bool>());
+
+        if (CONFIG["recording"]["enable"].as<bool>())
+            LOG_VALUE("Planner Save File", _data_saver->getFilePath(_save_folder, _save_file, false));
+    }
+
     void ExperimentUtil::update(const State &state, std::shared_ptr<Solver> solver, const RealTimeData &data)
     {
         // Save data of this control iteration
