@@ -718,6 +718,15 @@ void JulesJackalPlanner::trajectoryCallback(const mpc_planner_msgs::ObstacleGMM:
                       ", but received callback. This should not happen. Ignoring...");
             return;
         }
+
+        if (CONFIG["recording"]["enable"].as<bool>())
+        {
+            RosTools::DataSaver& ds = _planner->getDataSaver();
+            ds.AddData("rx_from_" + ns + "_trajectory", 1.0);
+            
+            ros::Duration message_delay = ros::Time::now() - msg->gaussians.back().mean.header.stamp;
+            ds.AddData("rx_from_" + ns + "_delay_sec", message_delay.toSec());
+        }   
         break;
     }
 
@@ -874,6 +883,13 @@ void JulesJackalPlanner::publishDirectTrajectory(const MPCPlanner::PlannerOutput
 
     // Publish the trajectory directly to other robots
     _direct_trajectory_pub.publish(ego_robot_trajectory_as_obstacle);
+
+    if (CONFIG["recording"]["enable"].as<bool>())
+    {
+        auto& ds = _planner->getDataSaver();
+        ds.AddData("tx_trajectory", 1.0);
+    }
+
 }
 // 6. VISUALIZATION FUNCTIONS
 //    - Functions for RViz/debugging visualization

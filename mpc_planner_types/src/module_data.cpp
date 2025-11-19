@@ -16,5 +16,6 @@ namespace MPCPlanner
                 used_guidance = true;
                 trajectory_cost = 0.0;
                 solver_exit_code = -1;
+                num_of_guidance_found = -1;
         }
 }

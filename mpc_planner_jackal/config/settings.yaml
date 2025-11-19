@@ -17,23 +17,23 @@ solver_settings:
   tolstat: 1e-3
 
 recording:
-  enable: false
+  enable: true
   # folder: "/home/r2c1/Documents/publications/multi-mpc-2023/results/data"
-  folder: "/home/r2c1/JULES/experiments/data"
+  folder: "/workspace/experiment/mpc_planner_real/data"
   # folder: "/home/r2c1/tmpc_revision/experiments/data"
-  file: "mr_test"
+  file: "real_world_test"
   timestamp: true
-  num_experiments: 10
+  num_experiments: 5
 
 debug_limits: false
 debug_output: false
 debug_visuals: false
 
-enable_output: false
+enable_output: true
 control_frequency: 20
 deceleration_at_infeasible: 3.0
 max_obstacles: 5
-robot_radius: 0.325
+robot_radius: 0.45
 robot:
   length: 0.65
   width: 0.65
@@ -94,7 +94,7 @@ JULES:
     assign_meaningful_topology_id_to_non_guided: true
     have_non_guided_standout: true #Enable special markers for non-guided planner
     override_selected_traject_of_topology_non_guided: true # override the chosen global_guidance topology with that of the mapped non_guided topology
-    communicate_on_topology_switch_only: true # This turns on and off if we want to communicate our trajectory only on a topology switch
+    communicate_on_topology_switch_only: false # This turns on and off if we want to communicate our trajectory only on a topology switch
     n_paths: 4 # This is hardcoded now but 
     enable_trajectory_interpolation: true # Enable that we itnerpolate and extrapolate stale trajectories
     # Robot physical limits (for velocity clamping during extrapolation)

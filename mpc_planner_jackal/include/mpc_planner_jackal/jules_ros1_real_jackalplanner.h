@@ -23,7 +23,7 @@
 
 #include <std_srvs/Empty.h>
 #include <robot_localization/SetPose.h>
-
+#include <mpc_planner/experiment_util.h>
 #include <memory>
 
 namespace RosTools
@@ -62,6 +62,7 @@ public:
     void publishCmdAndVisualize(const geometry_msgs::Twist &cmd, const MPCPlanner::PlannerOutput &output);
     void publishDirectTrajectory(const MPCPlanner::PlannerOutput &output);
     void publishObjectiveReachedEvent();
+    
 
 public:
     void loop(const ros::TimerEvent &event);
@@ -70,12 +71,18 @@ public:
     void pathCallback(const nav_msgs::Path::ConstPtr &msg);
     void obstacleCallback(const derived_object_msgs::ObjectArray::ConstPtr &msg);
     void bluetoothCallback(const sensor_msgs::Joy::ConstPtr &msg);
+    
 
 public:
     void poseOtherRobotCallback(const geometry_msgs::PoseStamped::ConstPtr &msg, const std::string ns);
     void trajectoryCallback(const mpc_planner_msgs::ObstacleGMM::ConstPtr &msg, const std::string ns);
     void allRobotsReachedObjectiveCallback(const std_msgs::Bool::ConstPtr &msg);
     void rqtDeadManSwitchCallback(const geometry_msgs::Twist::ConstPtr &msg);
+    void julesControllerCallback(const sensor_msgs::Joy::ConstPtr &msg);
+    bool shouldCommunicateBasedOnElapsedTime(const MPCPlanner::RealTimeData &data);
+    bool shouldCommunicate(const MPCPlanner::PlannerOutput &output, const MPCPlanner::RealTimeData &data);
+    bool topologyTriggersCommunication(const MPCPlanner::PlannerOutput &output, std::string &reason) const;
+    void saveDataStateBased();
 
 private:
     std::unique_ptr<MPCPlanner::Planner> _planner;
@@ -106,6 +113,7 @@ private:
     ros::Subscriber _obstacle_sub;
     ros::Subscriber _bluetooth_sub;
     ros::Subscriber _rqt_dead_man_sub;
+    ros::Subscriber _jules_controller_sub;
 
     ros::Subscriber _all_robots_reached_objective_sub;             // Subscriber for central aggregator signal
     std::vector<ros::Subscriber> _other_robot_pose_sub_list;       // List of otherrobot pose subcribers
@@ -133,6 +141,7 @@ private:
 
     bool _communicate_on_topology_switch_only{false};
     bool _rqt_dead_man_switch{false};
+    bool _jules_controller_deadman_switch{false};
     std::set<std::string> _validated_trajectory_robots;
 
     MPCPlanner::PlannerState _current_state{MPCPlanner::PlannerState::UNINITIALIZED};

@@ -34,7 +34,7 @@ namespace MPCPlanner
         double trajectory_cost{0.0};       // Objective value of selected solution
         int solver_exit_code{-1};          // Exit code (1=success, 0=max_iter, -1=infeasible)
         bool following_new_topology{true}; // Check if we are following a new homology or compared to the previous iteration
-
+        int num_of_guidance_found{-1};      // Check how many guidance trajectories are found.
         PlannerOutput(double dt, int N) : trajectory(dt, N) {}
 
         PlannerOutput() = default;

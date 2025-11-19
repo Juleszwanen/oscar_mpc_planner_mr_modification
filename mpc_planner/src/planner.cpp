@@ -220,6 +220,7 @@ namespace MPCPlanner
             _output.solver_exit_code = exit_flag;
             _output.following_new_topology = (prev_followed_topology == _module_data.selected_topology_id) ? false : true;
             _output.previous_topology_id = prev_followed_topology; // Add this line
+            _output.num_of_guidance_found = _module_data.num_of_guidance_found;
         }
 
         if (_output.success && CONFIG["debug_limits"].as<bool>())
@@ -324,7 +325,7 @@ namespace MPCPlanner
             data_saver.AddData("jules_solver_exit_code", static_cast<double>(_output.solver_exit_code));
             data_saver.AddData("jules_following_new_topology", _output.following_new_topology ? 1.0 : 0.0);
             data_saver.AddData("jules_previous_topology_id", _output.previous_topology_id);
-            data_saver.AddData("jules_communicated_trajectory", data.communicated_trajectory ? 1.0 : 0.0);
+            data_saver.AddData("jules_num_of_guidance_found", static_cast<double>(_output.num_of_guidance_found));
         }
 
         _experiment_util->update(state, _solver, data);

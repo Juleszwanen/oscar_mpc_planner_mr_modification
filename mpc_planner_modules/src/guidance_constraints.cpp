@@ -472,6 +472,7 @@ namespace MPCPlanner
                 module_data.used_guidance = !best_planner.is_original_planner;
                 module_data.trajectory_cost = best_planner.result.objective;
                 module_data.solver_exit_code = best_planner.result.exit_code;
+                module_data.num_of_guidance_found = global_guidance_->NumberOfGuidanceTrajectories();
             }
 
             return best_planner.result.exit_code; // Return its exit code

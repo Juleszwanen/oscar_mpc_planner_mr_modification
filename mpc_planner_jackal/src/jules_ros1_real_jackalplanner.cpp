@@ -22,7 +22,29 @@ JulesRealJackalPlanner::JulesRealJackalPlanner(ros::NodeHandle &nh)
     nh.param("/ego_robot_ns", this->_ego_robot_ns, this->_ego_robot_ns);
     nh.param("/forward_experiment", this->_forward_x_experiment, this->_forward_x_experiment);
     nh.param("/rqt_dead_man_switch", this->_rqt_dead_man_switch, this->_rqt_dead_man_switch);
+    nh.param("/jules_controller_deadman_switch", this->_jules_controller_deadman_switch, this->_jules_controller_deadman_switch);
     nh.param("/num_non_com_obj", this->_num_non_com_obj, this->_num_non_com_obj);
+
+    if (_jules_controller_deadman_switch && _rqt_dead_man_switch)
+    {
+        LOG_ERROR("FATAL: Both RQT and Jules controller deadman switches enabled! "
+                  "Defaulting to Jules controller only.");
+        _rqt_dead_man_switch = false; // Force RQT to be disabled
+        LOG_INFO(_ego_robot_ns + ": Jules controller deadman switch: ENABLED, RQT deadman switch: DISABLED (forced)");
+    }
+    else if (_jules_controller_deadman_switch)
+    {
+        LOG_INFO(_ego_robot_ns + ": Jules controller deadman switch: ENABLED, RQT deadman switch: DISABLED");
+    }
+    else if (_rqt_dead_man_switch)
+    {
+        LOG_INFO(_ego_robot_ns + ": Jules controller deadman switch: DISABLED, RQT deadman switch: ENABLED");
+    }
+    else
+    {
+        LOG_INFO(_ego_robot_ns + ": Jules controller deadman switch: DISABLED, RQT deadman switch: DISABLED (using Bluetooth/PS3 controller)");
+    }
+    
     _ego_robot_id = MultiRobot::extractRobotIdFromNamespace(_ego_robot_ns);
 
     if (!nh.getParam("/robot_ns_list", _robot_ns_list))
@@ -38,6 +60,8 @@ JulesRealJackalPlanner::JulesRealJackalPlanner(ros::NodeHandle &nh)
     _data.robot_area = {MPCPlanner::Disc(0., CONFIG["robot_radius"].as<double>())};
 
     this->_communicate_on_topology_switch_only = CONFIG["JULES"]["communicate_on_topology_switch_only"];
+    LOG_INFO(_ego_robot_ns + ": No robot_ns_list param found");
+
     bool initialization_successful = this->initializeOtherRobotsAsObstacles(_other_robot_nss, _data, CONFIG["robot_radius"].as<double>());
 
     nh.param("frames/global", this->_global_frame, this->_global_frame);
@@ -108,6 +132,8 @@ void JulesRealJackalPlanner::initializeSubscribersAndPublishers(ros::NodeHandle 
         "/all_robots_reached_objective", 1,
         boost::bind(&JulesRealJackalPlanner::allRobotsReachedObjectiveCallback, this, _1));
 
+    _jules_controller_sub = nh.subscribe<sensor_msgs::Joy>("/joy", 1, boost::bind(&JulesRealJackalPlanner::julesControllerCallback, this, _1) );    
+
     this->subscribeToOtherRobotTopics(nh, _other_robot_nss);
 
     _cmd_pub = nh.advertise<geometry_msgs::Twist>(
@@ -118,6 +144,8 @@ void JulesRealJackalPlanner::initializeSubscribersAndPublishers(ros::NodeHandle 
     _direct_trajectory_pub = nh.advertise<mpc_planner_msgs::ObstacleGMM>("/robot_to_robot/output/current_trajectory", 1);
 
     _objective_pub = nh.advertise<std_msgs::Bool>("/events/objective_reached", 1);
+
+    
 
     // Roadmap reverse
     _reverse_roadmap_pub = nh.advertise<std_msgs::Empty>("/roadmap/reverse", 1);
@@ -186,23 +214,23 @@ void JulesRealJackalPlanner::loop(const ros::TimerEvent &event)
                                      std::to_string(_state.get("y")) + ", " +
                                      std::to_string(_state.get("psi")) + "]");
 
-        if (_enable_output)
+        
+        
+        if (this->objectiveReached())
         {
-            if (this->objectiveReached())
-            {
-                MultiRobot::transitionTo(_current_state, _previous_state, MPCPlanner::PlannerState::GOAL_REACHED, _ego_robot_ns);
-            }
-            _benchmarker->start();
-            prepareObstacleData();
-            auto [cmd, output] = generatePlanningCommand(_current_state);
-
-            publishCmdAndVisualize(cmd, output);
-            _data.past_trajectory.replaceTrajectory(output.trajectory);
-            // The state transition is be triggered by a trajectory callback function
-
-            // The state transition is be triggered by a trajectory callback function
-            _benchmarker->stop();
+            MultiRobot::transitionTo(_current_state, _previous_state, MPCPlanner::PlannerState::GOAL_REACHED, _ego_robot_ns);
         }
+        _benchmarker->start();
+        prepareObstacleData();
+        auto [cmd, output] = generatePlanningCommand(_current_state);
+
+        publishCmdAndVisualize(cmd, output);
+        _data.past_trajectory.replaceTrajectory(output.trajectory);
+        // The state transition is be triggered by a trajectory callback function
+
+        // The state transition is be triggered by a trajectory callback function
+        _benchmarker->stop();
+    
 
         break;
     }
@@ -226,10 +254,10 @@ void JulesRealJackalPlanner::loop(const ros::TimerEvent &event)
     }
     case MPCPlanner::PlannerState::GOAL_REACHED:
     {
-        // Use braces to create a new scope for variable declarations
-        prepareObstacleData();
+        
         auto [cmd, output] = generatePlanningCommand(_current_state);
         _data.past_trajectory.replaceTrajectory(output.trajectory);
+    
         publishCmdAndVisualize(cmd, output);
         break;
     }
@@ -256,8 +284,9 @@ void JulesRealJackalPlanner::loop(const ros::TimerEvent &event)
     }
     }
     // visualize the lab limits and visualize when there is a goal
-    if (CONFIG["recording"]["enable"].as<bool>())
-        _planner->saveData(_state, _data);
+    
+    saveDataStateBased();
+
     this->visualize();
     LOG_DEBUG("============= End Loop =============");
 }
@@ -408,7 +437,7 @@ void JulesRealJackalPlanner::obstacleCallback(const derived_object_msgs::ObjectA
 
 void JulesRealJackalPlanner::bluetoothCallback(const sensor_msgs::Joy::ConstPtr &msg)
 {
-    if (!_rqt_dead_man_switch)
+    if (!_rqt_dead_man_switch && !_jules_controller_deadman_switch)
     {
         if (msg->axes[2] < -0.9 && !_enable_output)
             LOG_INFO(_ego_robot_ns + ": Planning enabled (deadman switch pressed)");
@@ -418,6 +447,35 @@ void JulesRealJackalPlanner::bluetoothCallback(const sensor_msgs::Joy::ConstPtr 
         _enable_output = msg->axes[2] < -0.9;
         CONFIG["enable_output"] = _enable_output;
     }
+}
+
+
+void JulesRealJackalPlanner::julesControllerCallback(const sensor_msgs::Joy::ConstPtr &msg){
+    if (_jules_controller_deadman_switch)
+    {
+        if (msg->axes[2] < -0.9 && !_enable_output)
+            LOG_INFO(_ego_robot_ns + ": Planning enabled (deadman switch pressed)");
+        else if (msg->axes[2] > -0.9 && _enable_output)
+            LOG_INFO(_ego_robot_ns + ": Deadmanswitch enabled (deadman switch released)");
+
+        _enable_output = msg->axes[2] < -0.9;
+        CONFIG["enable_output"] = _enable_output;
+    }
+}
+
+void JulesRealJackalPlanner::rqtDeadManSwitchCallback(const geometry_msgs::Twist::ConstPtr &msg)
+{
+    if (_rqt_dead_man_switch)
+    {
+        if (msg->angular.z >= 2.0 && !_enable_output)
+            LOG_INFO(_ego_robot_ns + ": RQT: Planning enabled (deadman switch pressed)");
+        else if (msg->angular.z < 2.0 && _enable_output)
+            LOG_INFO(_ego_robot_ns + ": RQT: Deadmanswitch enabled (deadman switch released)");
+
+        _enable_output = msg->angular.z >= 2.0;
+        CONFIG["enable_output"] = _enable_output;
+    }
+    return;
 }
 
 void JulesRealJackalPlanner::poseOtherRobotCallback(const geometry_msgs::PoseStamped::ConstPtr &msg, const std::string ns)
@@ -557,6 +615,15 @@ void JulesRealJackalPlanner::trajectoryCallback(const mpc_planner_msgs::Obstacle
                       ", but received callback. This should not happen. Ignoring...");
             return;
         }
+
+        if (CONFIG["recording"]["enable"].as<bool>())
+        {
+            RosTools::DataSaver& ds = _planner->getDataSaver();
+            ds.AddData("rx_from_" + ns + "_trajectory", 1.0);
+            
+            ros::Duration message_delay = ros::Time::now() - msg->gaussians.back().mean.header.stamp;
+            ds.AddData("rx_from_" + ns + "_delay_sec", message_delay.toSec());
+        }
         break;
     }
 
@@ -584,20 +651,7 @@ void JulesRealJackalPlanner::allRobotsReachedObjectiveCallback(const std_msgs::B
     this->reset();
 }
 
-void JulesRealJackalPlanner::rqtDeadManSwitchCallback(const geometry_msgs::Twist::ConstPtr &msg)
-{
-    if (_rqt_dead_man_switch)
-    {
-        if (msg->angular.z >= 2.0 && !_enable_output)
-            LOG_INFO(_ego_robot_ns + ": RQT: Planning enabled (deadman switch pressed)");
-        else if (msg->angular.z < 2.0 && _enable_output)
-            LOG_INFO(_ego_robot_ns + ": RQT: Deadmanswitch enabled (deadman switch released)");
 
-        _enable_output = msg->angular.z >= 2.0;
-        CONFIG["enable_output"] = _enable_output;
-    }
-    return;
-}
 
 bool JulesRealJackalPlanner::objectiveReached()
 {
@@ -1255,77 +1309,43 @@ void JulesRealJackalPlanner::buildOutputFromBrakingCommand(MPCPlanner::PlannerOu
 
 void JulesRealJackalPlanner::publishCmdAndVisualize(const geometry_msgs::Twist &cmd, const MPCPlanner::PlannerOutput &output)
 {
-    bool should_communicate = true; // Default: always communicate (safer)
-    if (_communicate_on_topology_switch_only)
-    {
-        const int n_paths = CONFIG["JULES"]["n_paths"].as<int>();
-        const int non_guided_topology_id = 2 * n_paths;
-
-        // Case 1: MPC solver failed
-        if (!output.success)
-        {
-            should_communicate = true;
-            LOG_DEBUG(_ego_robot_ns + ": Communicating - MPC failed");
-        }
-
-        // Case 2a: Switched TO non-guided (special case of topology switch)
-        else if (output.following_new_topology &&
-                 output.selected_topology_id == non_guided_topology_id)
-        {
-            should_communicate = true;
-            LOG_DEBUG(_ego_robot_ns + ": Communicating - Switched to non-guided from topology " +
-                      std::to_string(output.previous_topology_id));
-        }
-
-        // Case 2b: Topology switch (between guided topologies or from non-guided to guided)
-        else if (output.following_new_topology)
-        {
-            should_communicate = true;
-            LOG_DEBUG(_ego_robot_ns + ": Communicating - Topology switch from " +
-                      std::to_string(output.previous_topology_id) + " to " +
-                      std::to_string(output.selected_topology_id));
-        }
-
-        // Case 3: Staying in non-guided topology (continuous communication)
-        else if (output.selected_topology_id == non_guided_topology_id)
-        {
-            should_communicate = true;
-            LOG_DEBUG(_ego_robot_ns + ": Communicating - Staying in non-guided (unidentified topology)");
-        }
-
-        // Case 4: Same guided topology
-        else
-        {
-            should_communicate = false;
-            LOG_DEBUG(_ego_robot_ns + ": NOT communicating - Same guided topology (" +
-                      std::to_string(output.selected_topology_id) + ")");
-        }
-    }
-    // else: _communicate_on_topology_switch_only is false, so should_communicate stays true
-
-    // Always publish velocity command
+    // ========== 1. COMMAND PUBLISHING (always) ==========
     _cmd_pub.publish(cmd);
-
-    // Conditional trajectory communication
-    if (should_communicate)
+    bool should_communicate;
+    
+    if (!_communicate_on_topology_switch_only)
     {
-        this->publishDirectTrajectory(output);
-
-        LOG_VALUE_DEBUG("Communication", "Published trajectory (Topology: " +
-                                             std::to_string(output.selected_topology_id) + ")");
+        LOG_DEBUG(_ego_robot_ns + ": Communicating - Topology filter disabled (config)");
+        should_communicate = true;
     }
     else
     {
-        LOG_VALUE_DEBUG("Communication", "Skipped (Same topology: " +
+        should_communicate = shouldCommunicate(output, _data);
+    }
+
+    
+    
+    if (should_communicate)
+    {
+        this->publishDirectTrajectory(output);
+        // LOG_VALUE("Communication", "Published trajectory (Topology: " +
+        //                                      std::to_string(output.selected_topology_id) + ")");
+                                             
+        LOG_INFO("Communicated - config flag: " << std::boolalpha << _communicate_on_topology_switch_only
+                            << ", decision: " << should_communicate);
+                                             
+    }
+    else
+    {
+        LOG_VALUE_DEBUG("Communication", "Skipped (Topology: " +
                                              std::to_string(output.selected_topology_id) + ")");
     }
 
-    // Record inside data if we have communicated or not
+    // Record communication status
     _data.communicated_trajectory = should_communicate;
-    // Always visualize
+    // ========== 3. VISUALIZATION (always) ==========
     _planner->visualizeObstaclePredictionsPlanner(_state, _data, true);
     _planner->visualize(_state, _data);
-    // visualize();
 }
 
 void JulesRealJackalPlanner::publishDirectTrajectory(const MPCPlanner::PlannerOutput &output)
@@ -1379,13 +1399,137 @@ void JulesRealJackalPlanner::publishDirectTrajectory(const MPCPlanner::PlannerOu
 
     // Publish the trajectory directly to other robots
     _direct_trajectory_pub.publish(ego_robot_trajectory_as_obstacle);
+    _data.last_send_trajectory_time = ros::Time::now();
+    if (CONFIG["recording"]["enable"].as<bool>())
+    {
+        auto& ds = _planner->getDataSaver();
+        ds.AddData("tx_trajectory", 1.0);
+    }
 }
 void JulesRealJackalPlanner::publishObjectiveReachedEvent()
 {
     std_msgs::Bool event;
     event.data = true;
     _objective_pub.publish(event);
-    LOG_INFO_THROTTLE(1000, _ego_robot_ns + ": Objective reached - published event");
+    // We warn here to make it more visible
+    LOG_WARN_THROTTLE(1000, _ego_robot_ns + ": Objective reached - published event");
+}
+
+
+bool JulesRealJackalPlanner::shouldCommunicateBasedOnElapsedTime(const MPCPlanner::RealTimeData &data)
+{
+    // First time: last_send_trajectory_time is uninitialized (0), so we SHOULD communicate
+    if(data.last_send_trajectory_time == ros::Time(0))
+    {
+        return true;  // Must communicate on first iteration
+    }
+
+    // Subsequent times: check if enough time has elapsed
+    const ros::Duration heartbeat_period(1.0);
+    ros::Duration time_elapsed = ros::Time::now() - data.last_send_trajectory_time;
+    return (time_elapsed >= heartbeat_period);
+}
+
+bool JulesRealJackalPlanner::topologyTriggersCommunication(const MPCPlanner::PlannerOutput &output, std::string &reason) const
+{
+    const int n_paths = CONFIG["JULES"]["n_paths"].as<int>();
+    const int non_guided_topology_id = 2 * n_paths;
+
+    if (!output.success)
+    {
+        reason = "Communicating - MPC failed";
+        return true;
+    }
+
+    if (output.following_new_topology && output.selected_topology_id == non_guided_topology_id)
+    {
+        reason = "Communicating - Switched to non-guided from topology " +
+                 std::to_string(output.previous_topology_id);
+        return true;
+    }
+
+    if (output.following_new_topology)
+    {
+        reason = "Communicating - Topology switch from " +
+                 std::to_string(output.previous_topology_id) + " to " +
+                 std::to_string(output.selected_topology_id);
+        return true;
+    }
+
+    if (output.selected_topology_id == non_guided_topology_id)
+    {
+        reason = "Communicating - Staying in non-guided (unidentified topology)";
+        return true;
+    }
+
+    reason = "NOT communicating yet - Same guided topology (" +
+             std::to_string(output.selected_topology_id) + ")";
+    return false;
+}
+
+bool JulesRealJackalPlanner::shouldCommunicate(const MPCPlanner::PlannerOutput &output, const MPCPlanner::RealTimeData &data)
+{
+    // State-based filtering: Don't communicate in these states
+    switch (_current_state)
+    {
+    case MPCPlanner::PlannerState::UNINITIALIZED:
+    case MPCPlanner::PlannerState::TIMER_STARTUP:
+    case MPCPlanner::PlannerState::WAITING_FOR_FIRST_EGO_POSE:
+    case MPCPlanner::PlannerState::INITIALIZING_OBSTACLES:
+    case MPCPlanner::PlannerState::GOAL_REACHED:
+    case MPCPlanner::PlannerState::RESETTING:
+    case MPCPlanner::PlannerState::ERROR_STATE:
+        LOG_DEBUG(_ego_robot_ns + ": No communication in state: " + MPCPlanner::stateToString(_current_state));
+        return false;
+
+    case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
+    case MPCPlanner::PlannerState::PLANNING_ACTIVE:
+        // Continue to communication logic for these states
+        break;
+
+    default:
+        LOG_WARN(_ego_robot_ns + ": Unknown state in shouldCommunicate(): " + std::to_string(static_cast<int>(_current_state)));
+        return false;
+    }
+
+    // If topology-based filtering is disabled, always communicate
+    std::string topology_reason;
+    bool topology_trigger = topologyTriggersCommunication(output, topology_reason);
+    LOG_DEBUG(_ego_robot_ns + ": " + topology_reason);
+    if (topology_trigger)
+    {
+        return true;
+    }
+
+    // Fall back to time-based heartbeat (still only when config enabled)
+    bool time_trigger = shouldCommunicateBasedOnElapsedTime(data);
+    if (time_trigger)
+    {
+        LOG_DEBUG(_ego_robot_ns + ": Communicating - Heartbeat interval reached");
+    }
+    else
+    {
+        LOG_DEBUG(_ego_robot_ns + ": NOT communicating - Waiting for heartbeat interval");
+    }
+    return time_trigger;
+}
+
+void JulesRealJackalPlanner::saveDataStateBased()
+{
+    switch (_current_state)
+    {
+    case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
+    case MPCPlanner::PlannerState::PLANNING_ACTIVE:
+        if (CONFIG["recording"]["enable"].as<bool>())
+            _planner->saveData(_state, _data);
+        break;
+    
+    default:
+        // Don't save data in other states (UNINITIALIZED, TIMER_STARTUP, 
+        // WAITING_FOR_FIRST_EGO_POSE, INITIALIZING_OBSTACLES, GOAL_REACHED, 
+        // RESETTING, ERROR_STATE)
+        break;
+    }
 }
 
 int main(int argc, char *argv[])

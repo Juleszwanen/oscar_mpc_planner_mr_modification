@@ -4,7 +4,7 @@
 #include <mpc_planner_types/data_types.h>
 #include <map>
 #include <chrono>
-
+#include <ros/ros.h>
 namespace costmap_2d
 {
     class Costmap2D;
@@ -18,7 +18,9 @@ namespace MPCPlanner
 
         std::vector<Disc> robot_area;
         FixedSizeTrajectory past_trajectory;
+        
 
+        ros::Time last_send_trajectory_time{ros::Time(0)};
         std::vector<DynamicObstacle> dynamic_obstacles;
         std::map<std::string, DynamicObstacle> trajectory_dynamic_obstacles;
 
