@@ -26,6 +26,11 @@
 #include <mpc_planner/experiment_util.h>
 #include <memory>
 
+// Forward declarations
+namespace JackalPlanner {
+    struct InitializationConfig;
+}
+
 namespace RosTools
 {
     class Benchmarker;
@@ -47,6 +52,17 @@ public:
                        std::vector<Eigen::Vector2d> &positions_out, std::vector<double> &radii_out);
     bool isPathTheSame(const nav_msgs::Path::ConstPtr &path);
     void visualize();
+
+private:
+    // ===== Initialization helper methods =====
+    void loadRealPlatformParameters(ros::NodeHandle& nh, JackalPlanner::InitializationConfig& config);
+    void applyConfiguration(const JackalPlanner::InitializationConfig& config);
+    bool initializeOtherRobotsAsObstaclesWithNonCom(
+        const std::set<std::string>& other_robot_namespaces,
+        MPCPlanner::RealTimeData& data,
+        double robot_radius);
+    void initializeRealHardwareComponents(ros::NodeHandle& nh);
+    void initializeTimersAndStateMachine(ros::NodeHandle& nh, const JackalPlanner::InitializationConfig& config);
 
 public:
     bool initializeOtherRobotsAsObstacles(const std::set<std::string> &other_robot_namespaces,
@@ -83,6 +99,11 @@ public:
     bool shouldCommunicate(const MPCPlanner::PlannerOutput &output, const MPCPlanner::RealTimeData &data);
     bool topologyTriggersCommunication(const MPCPlanner::PlannerOutput &output, std::string &reason) const;
     void saveDataStateBased();
+    
+    // Communication helper functions
+    bool decideCommunication(const MPCPlanner::PlannerOutput &output);
+    void recordCommunicationDecision(bool communicated);
+    void logCommunicationDecision(bool communicated, const MPCPlanner::PlannerOutput &output);
 
 private:
     std::unique_ptr<MPCPlanner::Planner> _planner;

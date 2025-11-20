@@ -32,6 +32,11 @@
 #include <memory>
 #include <ros/console.h>
 
+// Forward declarations
+namespace JackalPlanner {
+    struct InitializationConfig;
+}
+
 namespace MPCPlanner
 {
     class Planner;
@@ -48,6 +53,13 @@ public:
     void initializeSubscribersAndPublishers(ros::NodeHandle &nh, ros::NodeHandle &pnh);
     void subscribeToOtherRobotTopics(ros::NodeHandle &nh, const std::set<std::string> &other_robot_namespaces);
 
+private:
+    // ===== Initialization helper methods =====
+    void applyConfiguration(const JackalPlanner::InitializationConfig& config);
+    void initializeSimulatorComponents(ros::NodeHandle& nh, const JackalPlanner::InitializationConfig& config);
+    void initializeTimersAndStateMachine(ros::NodeHandle& nh, const JackalPlanner::InitializationConfig& config);
+
+public:
     // Planning loop functions
     void loop(const ros::TimerEvent &event);
     void loopDirectTrajectory(const ros::TimerEvent &event);

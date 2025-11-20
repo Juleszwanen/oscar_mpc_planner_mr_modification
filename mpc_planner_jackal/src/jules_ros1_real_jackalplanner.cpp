@@ -1,4 +1,5 @@
 #include <mpc_planner_jackal/jules_ros1_real_jackalplanner.h>
+#include <mpc_planner_jackal/common/jackal_planner_initializer.h>
 #include <mpc_planner/data_preparation.h>
 
 #include <ros_tools/visuals.h>
@@ -18,78 +19,39 @@ JulesRealJackalPlanner::JulesRealJackalPlanner(ros::NodeHandle &nh)
 {
     LOG_HEADER("JULES: Jackal planner " + ros::this_node::getName() + " starting");
 
-    // _ego_robot_ns = ros::this_node::getNamespace();
-    nh.param("/ego_robot_ns", this->_ego_robot_ns, this->_ego_robot_ns);
-    nh.param("/forward_experiment", this->_forward_x_experiment, this->_forward_x_experiment);
-    nh.param("/rqt_dead_man_switch", this->_rqt_dead_man_switch, this->_rqt_dead_man_switch);
-    nh.param("/jules_controller_deadman_switch", this->_jules_controller_deadman_switch, this->_jules_controller_deadman_switch);
-    nh.param("/num_non_com_obj", this->_num_non_com_obj, this->_num_non_com_obj);
-
-    if (_jules_controller_deadman_switch && _rqt_dead_man_switch)
-    {
-        LOG_ERROR("FATAL: Both RQT and Jules controller deadman switches enabled! "
-                  "Defaulting to Jules controller only.");
-        _rqt_dead_man_switch = false; // Force RQT to be disabled
-        LOG_INFO(_ego_robot_ns + ": Jules controller deadman switch: ENABLED, RQT deadman switch: DISABLED (forced)");
-    }
-    else if (_jules_controller_deadman_switch)
-    {
-        LOG_INFO(_ego_robot_ns + ": Jules controller deadman switch: ENABLED, RQT deadman switch: DISABLED");
-    }
-    else if (_rqt_dead_man_switch)
-    {
-        LOG_INFO(_ego_robot_ns + ": Jules controller deadman switch: DISABLED, RQT deadman switch: ENABLED");
-    }
-    else
-    {
-        LOG_INFO(_ego_robot_ns + ": Jules controller deadman switch: DISABLED, RQT deadman switch: DISABLED (using Bluetooth/PS3 controller)");
-    }
+    // Load common configuration using initializer
+    auto config = JackalPlanner::JackalPlannerInitializer::loadCommonConfiguration(
+        nh, SYSTEM_CONFIG_PATH(__FILE__, "settings"));
     
-    _ego_robot_id = MultiRobot::extractRobotIdFromNamespace(_ego_robot_ns);
-
-    if (!nh.getParam("/robot_ns_list", _robot_ns_list))
-    {
-        LOG_ERROR(_ego_robot_ns + ": No robot_ns_list param found");
-    }
-
-    _other_robot_nss = MultiRobot::identifyOtherRobotNamespaces(_robot_ns_list, _ego_robot_ns);
-
-    // Initialize the configuration, her
-    Configuration::getInstance().initialize(SYSTEM_CONFIG_PATH(__FILE__, "settings"));
-
-    _data.robot_area = {MPCPlanner::Disc(0., CONFIG["robot_radius"].as<double>())};
-
-    this->_communicate_on_topology_switch_only = CONFIG["JULES"]["communicate_on_topology_switch_only"];
-    LOG_INFO(_ego_robot_ns + ": No robot_ns_list param found");
-
-    bool initialization_successful = this->initializeOtherRobotsAsObstacles(_other_robot_nss, _data, CONFIG["robot_radius"].as<double>());
-
-    nh.param("frames/global", this->_global_frame, this->_global_frame);
-    nh.param("goal_tolerance", this->_goal_tolerance, this->_goal_tolerance);
-
-    // Initialize the planner
-    _planner = std::make_unique<MPCPlanner::Planner>(_ego_robot_ns, CONFIG["JULES"]["safe_extra_data"].as<bool>());
-
-    // Initialize the ROS interface
+    // Load platform-specific parameters
+    loadRealPlatformParameters(nh, config);
+    
+    // Validate all configuration
+    JackalPlanner::JackalPlannerInitializer::validateConfiguration(config);
+    
+    // Apply configuration to member variables
+    applyConfiguration(config);
+    
+    // Initialize robot footprint (real robot uses single disc)
+    _data.robot_area = {MPCPlanner::Disc(0., config.robot_radius)};
+    
+    // Initialize common components using initializer
+    bool initialization_successful = initializeOtherRobotsAsObstaclesWithNonCom(
+        config.other_robot_nss, _data, config.robot_radius);
+    
+    _planner = std::make_unique<MPCPlanner::Planner>(
+        config.ego_robot_ns,
+        config.save_extra_data);
+    
+    // Initialize platform-specific components
     initializeSubscribersAndPublishers(nh);
-
-    _reconfigure = std::make_unique<JackalReconfigure>();
-
-    _startup_timer = std::make_unique<RosTools::Timer>();
-    _startup_timer->setDuration(10.0);
-    _startup_timer->start();
-
-    MultiRobot::transitionTo(_current_state, _previous_state, MPCPlanner::PlannerState::TIMER_STARTUP, _ego_robot_ns);
-    _benchmarker = std::make_unique<RosTools::Benchmarker>("loop");
-
-    RosTools::Instrumentor::Get().BeginSession("mpc_planner_jackal");
-
-    // Start the control loop
-    _timer = nh.createTimer(
-        ros::Duration(1.0 / CONFIG["control_frequency"].as<double>()),
-        &JulesRealJackalPlanner::loop,
-        this);
-
+    initializeRealHardwareComponents(nh);
+    initializeTimersAndStateMachine(nh, config);
+    
+    // Log summary
+    LOG_INFO(_ego_robot_ns + ": COMMUNICATION CONFIG: communicate_on_topology_switch_only = " + 
+             std::string(_communicate_on_topology_switch_only ? "TRUE (topology-based filtering)" : "FALSE (always communicate)"));
+    JackalPlanner::JackalPlannerInitializer::logInitializationSummary(config, _ego_robot_ns);
     LOG_DIVIDER();
 }
 
@@ -98,6 +60,112 @@ JulesRealJackalPlanner::~JulesRealJackalPlanner()
     LOG_INFO(_ego_robot_ns + ": Stopped Jackal Planner");
     RosTools::Instrumentor::Get().EndSession();
 }
+
+// ===== INITIALIZATION HELPER METHODS =====
+
+void JulesRealJackalPlanner::loadRealPlatformParameters(
+    ros::NodeHandle& nh,
+    JackalPlanner::InitializationConfig& config)
+{
+    nh.param("/forward_experiment", config.forward_x_experiment, false);
+    nh.param("/rqt_dead_man_switch", config.rqt_dead_man_switch, false);
+    nh.param("/jules_controller_deadman_switch", config.jules_controller_deadman_switch, false);
+}
+
+void JulesRealJackalPlanner::applyConfiguration(
+    const JackalPlanner::InitializationConfig& config)
+{
+    _ego_robot_ns = config.ego_robot_ns;
+    _ego_robot_id = config.ego_robot_id;
+    _robot_ns_list = config.robot_ns_list;
+    _other_robot_nss = config.other_robot_nss;
+    _communicate_on_topology_switch_only = config.communicate_on_topology_switch_only;
+    _goal_tolerance = config.goal_tolerance;
+    _global_frame = config.global_frame;
+    _forward_x_experiment = config.forward_x_experiment;
+    _rqt_dead_man_switch = config.rqt_dead_man_switch;
+    _jules_controller_deadman_switch = config.jules_controller_deadman_switch;
+    _num_non_com_obj = config.num_non_com_obj;
+}
+
+bool JulesRealJackalPlanner::initializeOtherRobotsAsObstaclesWithNonCom(
+    const std::set<std::string>& other_robot_namespaces,
+    MPCPlanner::RealTimeData& data,
+    double robot_radius)
+{
+    // First initialize communicating robots using shared initializer
+    bool success = JackalPlanner::JackalPlannerInitializer::initializeOtherRobotsAsObstacles(
+        other_robot_namespaces, data, robot_radius);
+    
+    // Then add non-communicating objects (real hardware only)
+    std::vector<int> non_com_indices = MultiRobot::extractIdentifierIndicesNonComObj(_robot_ns_list, _num_non_com_obj);
+    
+    if (!non_com_indices.empty())
+    {
+        const Eigen::Vector2d FAR_AWAY_POSITION(100.0, 100.0);
+        const Eigen::Vector2d ZERO_VELOCITY(0.0, 0.0);
+        
+        std::string summary = "Non-comm objects: ";
+        for (size_t i = 0; i < non_com_indices.size(); ++i)
+        {
+            summary += "ID" + std::to_string(non_com_indices[i]);
+            if (i < non_com_indices.size() - 1)
+                summary += ", ";
+        }
+        LOG_INFO(_ego_robot_ns + ": " + summary);
+        
+        for (const int index : non_com_indices)
+        {
+            // Create obstacle at far away position with specified radius
+            data.dynamic_obstacles.emplace_back(
+                index,
+                FAR_AWAY_POSITION,
+                0.0,
+                CONFIG["obstacle_radius"].as<double>());
+            
+            // Get reference to the newly created obstacle
+            auto& non_com_obs = data.dynamic_obstacles.back();
+            
+            // Initialize with stationary constant velocity prediction
+            non_com_obs.prediction = MPCPlanner::getConstantVelocityPrediction(
+                non_com_obs.position,
+                ZERO_VELOCITY,
+                CONFIG["integrator_step"].as<double>(),
+                CONFIG["N"].as<int>());
+            
+            LOG_INFO(_ego_robot_ns + ": Created non-communicating obstacle with index " +
+                     std::to_string(non_com_obs.index) + " (ID from Vicon bundle)");
+        }
+    }
+    
+    return success;
+}
+
+void JulesRealJackalPlanner::initializeRealHardwareComponents(ros::NodeHandle& nh)
+{
+    _reconfigure = std::make_unique<JackalReconfigure>();
+    _benchmarker = std::make_unique<RosTools::Benchmarker>("loop");
+    RosTools::Instrumentor::Get().BeginSession("mpc_planner_jackal");
+}
+
+void JulesRealJackalPlanner::initializeTimersAndStateMachine(
+    ros::NodeHandle& nh,
+    const JackalPlanner::InitializationConfig& config)
+{
+    _startup_timer = std::make_unique<RosTools::Timer>();
+    _startup_timer->setDuration(10.0);
+    _startup_timer->start();
+    
+    MultiRobot::transitionTo(_current_state, _previous_state, 
+        MPCPlanner::PlannerState::TIMER_STARTUP, _ego_robot_ns);
+    
+    _timer = nh.createTimer(
+        ros::Duration(1.0 / config.control_frequency),
+        &JulesRealJackalPlanner::loop,
+        this);
+}
+
+// ===== END INITIALIZATION HELPER METHODS =====
 
 void JulesRealJackalPlanner::initializeSubscribersAndPublishers(ros::NodeHandle &nh)
 {
@@ -449,7 +517,6 @@ void JulesRealJackalPlanner::bluetoothCallback(const sensor_msgs::Joy::ConstPtr 
     }
 }
 
-
 void JulesRealJackalPlanner::julesControllerCallback(const sensor_msgs::Joy::ConstPtr &msg){
     if (_jules_controller_deadman_switch)
     {
@@ -650,8 +717,6 @@ void JulesRealJackalPlanner::allRobotsReachedObjectiveCallback(const std_msgs::B
     // In the simulation one, we do the roadmap reverse here but that is not neccessary
     this->reset();
 }
-
-
 
 bool JulesRealJackalPlanner::objectiveReached()
 {
@@ -1309,43 +1374,71 @@ void JulesRealJackalPlanner::buildOutputFromBrakingCommand(MPCPlanner::PlannerOu
 
 void JulesRealJackalPlanner::publishCmdAndVisualize(const geometry_msgs::Twist &cmd, const MPCPlanner::PlannerOutput &output)
 {
-    // ========== 1. COMMAND PUBLISHING (always) ==========
+    // 1. ALWAYS publish command to robot
     _cmd_pub.publish(cmd);
-    bool should_communicate;
     
-    if (!_communicate_on_topology_switch_only)
-    {
-        LOG_DEBUG(_ego_robot_ns + ": Communicating - Topology filter disabled (config)");
-        should_communicate = true;
-    }
-    else
-    {
-        should_communicate = shouldCommunicate(output, _data);
-    }
-
+    // 2. Decide whether to communicate with other robots
+    const bool should_communicate = decideCommunication(output);
     
-    
+    // 3. Conditionally publish trajectory to network
     if (should_communicate)
     {
-        this->publishDirectTrajectory(output);
-        // LOG_VALUE("Communication", "Published trajectory (Topology: " +
-        //                                      std::to_string(output.selected_topology_id) + ")");
-                                             
-        LOG_INFO("Communicated - config flag: " << std::boolalpha << _communicate_on_topology_switch_only
-                            << ", decision: " << should_communicate);
-                                             
+        publishDirectTrajectory(output);
     }
-    else
-    {
-        LOG_VALUE_DEBUG("Communication", "Skipped (Topology: " +
-                                             std::to_string(output.selected_topology_id) + ")");
-    }
-
-    // Record communication status
-    _data.communicated_trajectory = should_communicate;
-    // ========== 3. VISUALIZATION (always) ==========
+    
+    // 4. Record decision for data analysis
+    recordCommunicationDecision(should_communicate);
+    
+    // 5. Log decision (throttled to avoid spam)
+    logCommunicationDecision(should_communicate, output);
+    
+    // 6. ALWAYS visualize current state
     _planner->visualizeObstaclePredictionsPlanner(_state, _data, true);
     _planner->visualize(_state, _data);
+}
+
+// Helper: Extract communication decision logic
+bool JulesRealJackalPlanner::decideCommunication(const MPCPlanner::PlannerOutput &output)
+{
+    // If topology filtering is disabled, ALWAYS communicate in active states
+    if (!_communicate_on_topology_switch_only)
+    {
+        LOG_DEBUG(_ego_robot_ns + ": Communication ENABLED (topology filter OFF, state=" + 
+                  MPCPlanner::stateToString(_current_state) + ")");
+        return true;
+    }
+    
+    // Otherwise, use topology-based filtering
+    const bool result = shouldCommunicate(output, _data);
+    LOG_DEBUG(_ego_robot_ns + ": Communication " + std::string(result ? "ENABLED" : "DISABLED") + 
+              " (topology filter ON, state=" + MPCPlanner::stateToString(_current_state) + ")");
+    return result;
+}
+
+// Helper: Record decision to data saver
+void JulesRealJackalPlanner::recordCommunicationDecision(bool communicated)
+{
+    if (!CONFIG["recording"]["enable"].as<bool>())
+        return;
+    
+    auto& ds = _planner->getDataSaver();
+    ds.AddData("publish_cmd_called", 1.0);              // Track function calls
+    ds.AddData("communicated", communicated ? 1.0 : 0.0);  // Track actual communication
+    
+    // Store in RealTimeData for downstream use
+    _data.communicated_trajectory = communicated;
+}
+
+// Helper: Log the decision (throttled)
+void JulesRealJackalPlanner::logCommunicationDecision(bool communicated, const MPCPlanner::PlannerOutput &output)
+{
+    const std::string config_mode = _communicate_on_topology_switch_only ? "topology-based" : "always";
+    const std::string action = communicated ? "SENT" : "SKIPPED";
+    
+    LOG_INFO_THROTTLE(5000, _ego_robot_ns + ": " + action + " trajectory | " +
+                      "mode=" + config_mode + " | " +
+                      "state=" + MPCPlanner::stateToString(_current_state) + " | " +
+                      "topology=" + std::to_string(output.selected_topology_id));
 }
 
 void JulesRealJackalPlanner::publishDirectTrajectory(const MPCPlanner::PlannerOutput &output)
@@ -1400,12 +1493,16 @@ void JulesRealJackalPlanner::publishDirectTrajectory(const MPCPlanner::PlannerOu
     // Publish the trajectory directly to other robots
     _direct_trajectory_pub.publish(ego_robot_trajectory_as_obstacle);
     _data.last_send_trajectory_time = ros::Time::now();
+    
+    // ALWAYS record trajectory transmission for analysis
     if (CONFIG["recording"]["enable"].as<bool>())
     {
         auto& ds = _planner->getDataSaver();
-        ds.AddData("tx_trajectory", 1.0);
+        ds.AddData("tx_trajectory", 1.0);  // Records when trajectory was published
+        ds.AddData("tx_num_poses", static_cast<double>(gaussian.mean.poses.size()));  // Track trajectory length
     }
 }
+
 void JulesRealJackalPlanner::publishObjectiveReachedEvent()
 {
     std_msgs::Bool event;
@@ -1414,7 +1511,6 @@ void JulesRealJackalPlanner::publishObjectiveReachedEvent()
     // We warn here to make it more visible
     LOG_WARN_THROTTLE(1000, _ego_robot_ns + ": Objective reached - published event");
 }
-
 
 bool JulesRealJackalPlanner::shouldCommunicateBasedOnElapsedTime(const MPCPlanner::RealTimeData &data)
 {
@@ -1516,6 +1612,21 @@ bool JulesRealJackalPlanner::shouldCommunicate(const MPCPlanner::PlannerOutput &
 
 void JulesRealJackalPlanner::saveDataStateBased()
 {
+    // Save state distribution for debugging communication issues
+    if (CONFIG["recording"]["enable"].as<bool>())
+    {
+        auto& ds = _planner->getDataSaver();
+        
+        // Track which state we're in (for debugging)
+        ds.AddData("current_state", static_cast<double>(_current_state));
+        
+        // Track if publishCmdAndVisualize was called (will be set in those states)
+        bool is_publishing_state = (_current_state == MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA ||
+                                    _current_state == MPCPlanner::PlannerState::PLANNING_ACTIVE ||
+                                    _current_state == MPCPlanner::PlannerState::GOAL_REACHED);
+        ds.AddData("is_publishing_state", is_publishing_state ? 1.0 : 0.0);
+    }
+    
     switch (_current_state)
     {
     case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:

@@ -1,4 +1,5 @@
 #include <mpc_planner_jackalsimulator/jules_ros1_jackalplanner.h>
+#include <mpc_planner_jackalsimulator/common/jackal_planner_initializer.h>
 
 #include <mpc_planner/planner.h>
 #include <mpc_planner/data_preparation.h>
@@ -25,72 +26,88 @@
 JulesJackalPlanner::JulesJackalPlanner(ros::NodeHandle &nh, ros::NodeHandle &pnh)
 {
     LOG_HEADER("JULES: Jackal planner " + ros::this_node::getName() + " starting");
-    _ego_robot_ns = ros::this_node::getNamespace();
-    _ego_robot_id = MultiRobot::extractRobotIdFromNamespace(_ego_robot_ns);
 
-    if (!nh.getParam("/robot_ns_list", _robot_ns_list))
-    {
-        LOG_ERROR(_ego_robot_ns + ": No robot_ns_list param found");
-    }
-
-    _other_robot_nss = MultiRobot::identifyOtherRobotNamespaces(_robot_ns_list, _ego_robot_ns);
-
-    // Load configuration before constructing Planner
-    Configuration::getInstance().initialize(SYSTEM_CONFIG_PATH(__FILE__, "settings"));
-
-    // Define robot footprint from CONFIG
-    this->_data.robot_area = MPCPlanner::defineRobotArea(
-        CONFIG["robot"]["length"].as<double>(),
-        CONFIG["robot"]["width"].as<double>(),
-        CONFIG["n_discs"].as<int>());
-
-    this->_control_frequency = CONFIG["control_frequency"].as<double>();
-    this->_enable_output = CONFIG["enable_output"].as<bool>();
-    this->_infeasible_deceleration = CONFIG["deceleration_at_infeasible"].as<double>();
-    this->_communicate_on_topology_switch_only = CONFIG["JULES"]["communicate_on_topology_switch_only"];
-    bool initialization_successful = this->initializeOtherRobotsAsObstacles(_other_robot_nss, _data, CONFIG["robot_radius"].as<double>());
-
-    // Read parameters
-    nh.param("frames/global", this->_global_frame, this->_global_frame);
-    nh.param("goal_tolerance", this->_goal_tolerance, this->_goal_tolerance);
-
-    // Construct Planner after configuration is ready
-    this->_planner = std::make_unique<MPCPlanner::Planner>(_ego_robot_ns, CONFIG["JULES"]["safe_extra_data"]);
-    // Set the _ego_robot_ns inside the planner
-
-    // Setup ROS I/O
-    this->initializeSubscribersAndPublishers(nh, pnh);
-
-    _reconfigure = std::make_unique<JackalsimulatorReconfigure>(); // Initialize RQT reconfigure
-
-    _startup_timer = std::make_unique<RosTools::Timer>();
-    _startup_timer->setDuration(10.0);
-    _startup_timer->start();
-
-    MultiRobot::transitionTo(_current_state, _previous_state, MPCPlanner::PlannerState::TIMER_STARTUP, _ego_robot_ns);
-
-    // Start control loop timer
-    _timer = nh.createTimer(
-        ros::Duration(1.0 / CONFIG["control_frequency"].as<double>()),
-        &JulesJackalPlanner::loopDirectTrajectoryStateMachine,
-        this);
-
+    // Load common configuration using initializer
+    auto config = JackalPlanner::JackalPlannerInitializer::loadCommonConfiguration(
+        nh, SYSTEM_CONFIG_PATH(__FILE__, "settings"));
+    
+    // Validate configuration
+    JackalPlanner::JackalPlannerInitializer::validateConfiguration(config);
+    
+    // Apply configuration to member variables
+    applyConfiguration(config);
+    
+    // Define robot footprint from CONFIG (simulator uses detailed footprint)
+    _data.robot_area = MPCPlanner::defineRobotArea(
+        config.robot_length,
+        config.robot_width,
+        config.n_discs);
+    
+    // Initialize common components using shared initializer
+    bool initialization_successful = JackalPlanner::JackalPlannerInitializer::initializeOtherRobotsAsObstacles(
+        config.other_robot_nss, _data, config.robot_radius);
+    
+    _planner = std::make_unique<MPCPlanner::Planner>(
+        config.ego_robot_ns,
+        config.save_extra_data);
+    
+    // Initialize platform-specific components
+    initializeSubscribersAndPublishers(nh, pnh);
+    initializeSimulatorComponents(nh, config);
+    initializeTimersAndStateMachine(nh, config);
+    
+    // Log summary
+    JackalPlanner::JackalPlannerInitializer::logInitializationSummary(config, _ego_robot_ns);
     LOG_DIVIDER();
-
-    // // Change logger level:
-    // if (_ego_robot_ns != "/jackal1")
-    // {
-    //     if (ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Warn))
-    //     {
-    //         ros::console::notifyLoggerLevelsChanged();
-    //     }
-    // }
 }
 
 JulesJackalPlanner::~JulesJackalPlanner()
 {
     LOG_INFO(_ego_robot_ns + ": Stopped JulesJackalPlanner");
 }
+
+// ===== INITIALIZATION HELPER METHODS =====
+
+void JulesJackalPlanner::applyConfiguration(
+    const JackalPlanner::InitializationConfig& config)
+{
+    _ego_robot_ns = config.ego_robot_ns;
+    _ego_robot_id = config.ego_robot_id;
+    _robot_ns_list = config.robot_ns_list;
+    _other_robot_nss = config.other_robot_nss;
+    _control_frequency = config.control_frequency;
+    _enable_output = config.enable_output;
+    _infeasible_deceleration = config.infeasible_deceleration;
+    _communicate_on_topology_switch_only = config.communicate_on_topology_switch_only;
+    _goal_tolerance = config.goal_tolerance;
+    _global_frame = config.global_frame;
+}
+
+void JulesJackalPlanner::initializeSimulatorComponents(
+    ros::NodeHandle& nh,
+    const JackalPlanner::InitializationConfig& config)
+{
+    _reconfigure = std::make_unique<JackalsimulatorReconfigure>();
+}
+
+void JulesJackalPlanner::initializeTimersAndStateMachine(
+    ros::NodeHandle& nh,
+    const JackalPlanner::InitializationConfig& config)
+{
+    _startup_timer = std::make_unique<RosTools::Timer>();
+    _startup_timer->setDuration(10.0);
+    _startup_timer->start();
+    
+    MultiRobot::transitionTo(_current_state, _previous_state, 
+        MPCPlanner::PlannerState::TIMER_STARTUP, _ego_robot_ns);
+    
+    _timer = nh.createTimer(
+        ros::Duration(1.0 / config.control_frequency),
+        &JulesJackalPlanner::loopDirectTrajectoryStateMachine,
+        this);
+}
+
+// ===== END INITIALIZATION HELPER METHODS =====
 
 // 2. ROS COMMUNICATION SETUP
 //    - Functions that initialize publishers, subscribers, services

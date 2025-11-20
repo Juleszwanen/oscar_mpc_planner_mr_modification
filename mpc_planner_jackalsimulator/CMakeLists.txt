@@ -46,7 +46,10 @@ target_link_libraries(${robot_name}_planner ${catkin_LIBRARIES})
 
 
 # New executable (devel only, not installed)
-add_executable(jules_ros1_jackalplanner src/jules_ros1_jackalplanner.cpp)
+add_executable(jules_ros1_jackalplanner 
+  src/jules_ros1_jackalplanner.cpp
+  src/common/jackal_planner_initializer.cpp
+)
 add_dependencies(jules_ros1_jackalplanner ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(jules_ros1_jackalplanner ${catkin_LIBRARIES})
 
