@@ -16,8 +16,12 @@ namespace MPCPlanner
     struct RealTimeData
     {
 
-        std::vector<Disc> robot_area;
+        std::vector<Disc>   robot_area;
         FixedSizeTrajectory past_trajectory;
+        
+        // Ego robot's last communicated trajectory (what other robots believe we're following)
+        // Updated completely on communication, otherwise interpolated forward by elapsed time
+        Trajectory last_communicated_trajectory;
         
 
         ros::Time last_send_trajectory_time{ros::Time(0)};
@@ -55,23 +59,6 @@ namespace MPCPlanner
         }
     };
 
-    // struct JulesRealTimeData : RealTimeData
-    // {
-    //     std::map<std::string, DynamicObstacle> trajectory_dynamic_obstacles;
-
-    //     JulesRealTimeData() = default;
-
-    //     void reset() override
-    //     {
-    //         // Copy data that should remain at reset
-    //         std::vector<Disc> robot_area_copy = robot_area;
-
-    //         *this = JulesRealTimeData();
-
-    //         robot_area = robot_area_copy;
-    //         goal_received = false;
-    //     }
-
-    // };
+    
 }
 #endif

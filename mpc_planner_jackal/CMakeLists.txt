@@ -9,6 +9,7 @@ set(DEPENDENCIES
   mpc_planner_solver
   mpc_planner_util
   mpc_planner_types
+  mpc_planner_communication
   mpc_planner_msgs
   ros_tools
   nav_msgs

@@ -6,7 +6,7 @@
 
 #include <mpc_planner_util/parameters.h>
 #include <mpc_planner_util/load_yaml.hpp>
-#include <mpc_planner_util/multi_robot_utility_functions.h>
+#include <mpc_planner_types/multi_robot_utility_functions.h>
 
 #include <ros_tools/logging.h>
 #include <ros_tools/profiling.h>  // For RosTools::Timer and other types used in Planner

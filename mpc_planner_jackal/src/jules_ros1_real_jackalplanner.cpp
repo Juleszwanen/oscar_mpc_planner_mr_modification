@@ -7,7 +7,7 @@
 
 #include <mpc_planner_util/parameters.h>
 #include <mpc_planner_util/load_yaml.hpp>
-#include <mpc_planner_util/multi_robot_utility_functions.h>
+#include <mpc_planner_types/multi_robot_utility_functions.h>
 
 #include <ros_tools/profiling.h>
 #include <ros_tools/convertions.h>
@@ -291,7 +291,7 @@ void JulesRealJackalPlanner::loop(const ros::TimerEvent &event)
         _benchmarker->start();
         prepareObstacleData();
         auto [cmd, output] = generatePlanningCommand(_current_state);
-
+        
         publishCmdAndVisualize(cmd, output);
         _data.past_trajectory.replaceTrajectory(output.trajectory);
         // The state transition is be triggered by a trajectory callback function
@@ -977,7 +977,21 @@ void JulesRealJackalPlanner::prepareObstacleData()
         LOG_ERROR(_ego_robot_ns << "Received " << _data.dynamic_obstacles.size() << "That is too much removing most distant obstacles......");
     }
 
-    interpolateTrajectoryPredictionsByTime(); // NEW: Interpolate stale trajectories
+    // Interpolate ego's last communicated trajectory forward in time
+    // This maintains what other robots believe we're doing between communications
+    if (!_data.last_communicated_trajectory.positions.empty())
+    {
+        _data.last_communicated_trajectory.interpolateTrajectoryByElapsedTime(
+            ros::Time::now(),
+            CONFIG["N"].as<int>(),
+            CONFIG["control_frequency"].as<double>(),
+            CONFIG["JULES"]["robot_max_velocity"].as<double>(),
+            CONFIG["JULES"]["robot_max_angular_velocity"].as<double>());
+    }
+
+    // Interpolate other robots' trajectories
+    interpolateTrajectoryPredictionsByTime();
+    
     MPCPlanner::MultiRobot::updateRobotObstaclesFromTrajectories(_data, _validated_trajectory_robots, _ego_robot_ns);
 
     // LOG_ERROR(_ego_robot_ns + " Received " << _data.dynamic_obstacles.size() << " < " << max_obstacles << " obstacles. Adding dummies.");
@@ -1071,7 +1085,7 @@ void JulesRealJackalPlanner::interpolateTrajectoryPredictionsByTime()
                   " (dt_interp=" + std::to_string(dt_interp) + "s, k=" + std::to_string(k) +
                   ", tau=" + std::to_string(tau) + "s, alpha=" + std::to_string(alpha) + ")");
 
-        // This vector will filled with pionts we extrapolate from the back of the original prediction vector
+        // This vector will be filled with pionts we extrapolate from the back of the original prediction vector
         std::vector<MPCPlanner::PredictionStep> extrapolated_points;
         int num_extrap_points = k + 1; // Need k + 1 for properinterpolation, the new trajectory will still contain N points but we will interpolate between N + 1 points to get N points back again
         if (n_measured >= 2)
@@ -1100,7 +1114,7 @@ void JulesRealJackalPlanner::interpolateTrajectoryPredictionsByTime()
             }
 
             // Generate k + 1 extrapolated points
-
+            // based on the forward euler model of last point
             for (int i = 1; i <= num_extrap_points; ++i)
             {
                 double t_extrap = i * dt;
@@ -1383,8 +1397,13 @@ void JulesRealJackalPlanner::publishCmdAndVisualize(const geometry_msgs::Twist &
     // 3. Conditionally publish trajectory to network
     if (should_communicate)
     {
+        
         publishDirectTrajectory(output);
+        // Update our own beliefs of what the other robots think we are currently doing
+        _data.last_communicated_trajectory = output.trajectory;
+
     }
+    
     
     // 4. Record decision for data analysis
     recordCommunicationDecision(should_communicate);
@@ -1395,24 +1414,6 @@ void JulesRealJackalPlanner::publishCmdAndVisualize(const geometry_msgs::Twist &
     // 6. ALWAYS visualize current state
     _planner->visualizeObstaclePredictionsPlanner(_state, _data, true);
     _planner->visualize(_state, _data);
-}
-
-// Helper: Extract communication decision logic
-bool JulesRealJackalPlanner::decideCommunication(const MPCPlanner::PlannerOutput &output)
-{
-    // If topology filtering is disabled, ALWAYS communicate in active states
-    if (!_communicate_on_topology_switch_only)
-    {
-        LOG_DEBUG(_ego_robot_ns + ": Communication ENABLED (topology filter OFF, state=" + 
-                  MPCPlanner::stateToString(_current_state) + ")");
-        return true;
-    }
-    
-    // Otherwise, use topology-based filtering
-    const bool result = shouldCommunicate(output, _data);
-    LOG_DEBUG(_ego_robot_ns + ": Communication " + std::string(result ? "ENABLED" : "DISABLED") + 
-              " (topology filter ON, state=" + MPCPlanner::stateToString(_current_state) + ")");
-    return result;
 }
 
 // Helper: Record decision to data saver
@@ -1493,7 +1494,8 @@ void JulesRealJackalPlanner::publishDirectTrajectory(const MPCPlanner::PlannerOu
     // Publish the trajectory directly to other robots
     _direct_trajectory_pub.publish(ego_robot_trajectory_as_obstacle);
     _data.last_send_trajectory_time = ros::Time::now();
-    
+    // Update the belief other robots have of our trajectory
+    _data.last_communicated_trajectory = output.trajectory;
     // ALWAYS record trajectory transmission for analysis
     if (CONFIG["recording"]["enable"].as<bool>())
     {
@@ -1510,57 +1512,6 @@ void JulesRealJackalPlanner::publishObjectiveReachedEvent()
     _objective_pub.publish(event);
     // We warn here to make it more visible
     LOG_WARN_THROTTLE(1000, _ego_robot_ns + ": Objective reached - published event");
-}
-
-bool JulesRealJackalPlanner::shouldCommunicateBasedOnElapsedTime(const MPCPlanner::RealTimeData &data)
-{
-    // First time: last_send_trajectory_time is uninitialized (0), so we SHOULD communicate
-    if(data.last_send_trajectory_time == ros::Time(0))
-    {
-        return true;  // Must communicate on first iteration
-    }
-
-    // Subsequent times: check if enough time has elapsed
-    const ros::Duration heartbeat_period(1.0);
-    ros::Duration time_elapsed = ros::Time::now() - data.last_send_trajectory_time;
-    return (time_elapsed >= heartbeat_period);
-}
-
-bool JulesRealJackalPlanner::topologyTriggersCommunication(const MPCPlanner::PlannerOutput &output, std::string &reason) const
-{
-    const int n_paths = CONFIG["JULES"]["n_paths"].as<int>();
-    const int non_guided_topology_id = 2 * n_paths;
-
-    if (!output.success)
-    {
-        reason = "Communicating - MPC failed";
-        return true;
-    }
-
-    if (output.following_new_topology && output.selected_topology_id == non_guided_topology_id)
-    {
-        reason = "Communicating - Switched to non-guided from topology " +
-                 std::to_string(output.previous_topology_id);
-        return true;
-    }
-
-    if (output.following_new_topology)
-    {
-        reason = "Communicating - Topology switch from " +
-                 std::to_string(output.previous_topology_id) + " to " +
-                 std::to_string(output.selected_topology_id);
-        return true;
-    }
-
-    if (output.selected_topology_id == non_guided_topology_id)
-    {
-        reason = "Communicating - Staying in non-guided (unidentified topology)";
-        return true;
-    }
-
-    reason = "NOT communicating yet - Same guided topology (" +
-             std::to_string(output.selected_topology_id) + ")";
-    return false;
 }
 
 bool JulesRealJackalPlanner::shouldCommunicate(const MPCPlanner::PlannerOutput &output, const MPCPlanner::RealTimeData &data)
@@ -1580,35 +1531,73 @@ bool JulesRealJackalPlanner::shouldCommunicate(const MPCPlanner::PlannerOutput &
 
     case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
     case MPCPlanner::PlannerState::PLANNING_ACTIVE:
+    {
         // Continue to communication logic for these states
-        break;
+        // Delegate to static utility functions for testability and reusability
+        
+        // Check topology-based triggers
+        std::string topology_reason;
+        const int n_paths = CONFIG["JULES"]["n_paths"].as<int>();
+        bool topology_trigger = MPCPlanner::CommunicationTriggers::topologyTrigger(
+            output, n_paths, topology_reason);
+        LOG_DEBUG(_ego_robot_ns + ": " + topology_reason);
+        if (topology_trigger)
+        {
+            return true;
+        }
+
+        // Check geometric deviation triggers
+        std::string geometric_reason;
+        const double max_deviation = CONFIG["JULES"]["max_geometric_deviation"].as<double>();
+        bool geometric_deviation_trigger = MPCPlanner::CommunicationTriggers::geometricDeviationTrigger(
+            output.trajectory, _data.last_communicated_trajectory, max_deviation, geometric_reason);
+        LOG_DEBUG(_ego_robot_ns + ": " + geometric_reason);
+        if (geometric_deviation_trigger)
+        {
+            return true;
+        }
+
+        // Fall back to time-based heartbeat
+        bool time_trigger = MPCPlanner::CommunicationTriggers::elapsedTimeTrigger(
+            data.last_send_trajectory_time, ros::Time::now(), 1.0);
+        if (time_trigger)
+        {
+            LOG_DEBUG(_ego_robot_ns + ": Communicating - Heartbeat interval reached");
+        }
+        else
+        {
+            LOG_DEBUG(_ego_robot_ns + ": NOT communicating - Waiting for heartbeat interval");
+        }
+        return time_trigger;
+    }
 
     default:
         LOG_WARN(_ego_robot_ns + ": Unknown state in shouldCommunicate(): " + std::to_string(static_cast<int>(_current_state)));
-        return false;
+        return true;
+        
     }
 
-    // If topology-based filtering is disabled, always communicate
-    std::string topology_reason;
-    bool topology_trigger = topologyTriggersCommunication(output, topology_reason);
-    LOG_DEBUG(_ego_robot_ns + ": " + topology_reason);
-    if (topology_trigger)
+}
+
+// Helper: Extract communication decision logic
+bool JulesRealJackalPlanner::decideCommunication(const MPCPlanner::PlannerOutput &output)
+{
+    // If topology filtering is disabled, ALWAYS communicate in active states
+    if (!_communicate_on_topology_switch_only)
     {
+        LOG_DEBUG(_ego_robot_ns + ": Communication ENABLED (topology filter OFF, state=" + 
+                  MPCPlanner::stateToString(_current_state) + ")");
         return true;
     }
-
-    // Fall back to time-based heartbeat (still only when config enabled)
-    bool time_trigger = shouldCommunicateBasedOnElapsedTime(data);
-    if (time_trigger)
-    {
-        LOG_DEBUG(_ego_robot_ns + ": Communicating - Heartbeat interval reached");
-    }
-    else
-    {
-        LOG_DEBUG(_ego_robot_ns + ": NOT communicating - Waiting for heartbeat interval");
-    }
-    return time_trigger;
+    
+    // Otherwise, use topology-based filtering
+    const bool result = shouldCommunicate(output, _data);
+    LOG_DEBUG(_ego_robot_ns + ": Communication " + std::string(result ? "ENABLED" : "DISABLED") + 
+              " (topology filter ON, state=" + MPCPlanner::stateToString(_current_state) + ")");
+    return result;
 }
+
+
 
 void JulesRealJackalPlanner::saveDataStateBased()
 {

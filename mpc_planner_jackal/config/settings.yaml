@@ -101,3 +101,4 @@ JULES:
     robot_max_velocity: 2.0        # m/s
     robot_max_angular_velocity: 2.0  # rad/s
     safe_extra_data: true
+    max_geometric_deviation: 0.7 # Should somehow be related to the radius of the robot, I think

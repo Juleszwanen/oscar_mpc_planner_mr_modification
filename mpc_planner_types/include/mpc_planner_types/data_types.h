@@ -3,6 +3,7 @@
 
 #include <Eigen/Dense>
 #include <ros/time.h>
+
 #include <vector>
 
 /** Basic high-level data types for motion planning */
@@ -138,7 +139,8 @@ namespace MPCPlanner
     {
         double dt;
         std::vector<Eigen::Vector2d> positions;
-        std::vector<double> orientations; // JULES deze heb jij zelf toegevoegd om de orientatie van een positie in een traject te weten
+        std::vector<double> orientations;                  // JULES deze heb jij zelf toegevoegd om de orientatie van een positie in een traject te weten
+        ros::Time           last_trajectory_update_time;  // Timestamp tracking for trajectory interpolation
 
         Trajectory(double dt = 0., int length = 10);
 
@@ -146,6 +148,13 @@ namespace MPCPlanner
         void add(const double x, const double y);
         void add_orientation(const double psi);                                   // JULES deze heb jij zelf toegevoegd om de orientatie van een positie in een traject te weten
         double calcCollisionMaskGK(const Trajectory &otherTraject, double sigma); // Calculate how much two trajectories overlap in space time
+        bool geomtricDeviationTrigger(const Trajectory &broadcasted_traject, double max_deviation) const; 
+        void interpolateTrajectoryByElapsedTime(
+            const ros::Time current_time,
+            size_t N,
+            double control_frequency,
+            double robot_max_velocity,
+            double robot_max_angular_velocity);
     };
 
     struct FixedSizeTrajectory

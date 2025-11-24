@@ -3,6 +3,7 @@
 #include <mpc_planner_jackal/jackal_reconfigure.h>
 
 #include <mpc_planner/planner.h>
+#include <mpc_planner_communication/communication_triggers.h>
 
 #include <mpc_planner_solver/solver_interface.h>
 
@@ -95,15 +96,16 @@ public:
     void allRobotsReachedObjectiveCallback(const std_msgs::Bool::ConstPtr &msg);
     void rqtDeadManSwitchCallback(const geometry_msgs::Twist::ConstPtr &msg);
     void julesControllerCallback(const sensor_msgs::Joy::ConstPtr &msg);
-    bool shouldCommunicateBasedOnElapsedTime(const MPCPlanner::RealTimeData &data);
-    bool shouldCommunicate(const MPCPlanner::PlannerOutput &output, const MPCPlanner::RealTimeData &data);
-    bool topologyTriggersCommunication(const MPCPlanner::PlannerOutput &output, std::string &reason) const;
+    
     void saveDataStateBased();
     
     // Communication helper functions
     bool decideCommunication(const MPCPlanner::PlannerOutput &output);
     void recordCommunicationDecision(bool communicated);
     void logCommunicationDecision(bool communicated, const MPCPlanner::PlannerOutput &output);
+
+    // Communication triggers (orchestration - delegates to CommunicationTriggers utility)
+    bool shouldCommunicate(const MPCPlanner::PlannerOutput &output, const MPCPlanner::RealTimeData &data);
 
 private:
     std::unique_ptr<MPCPlanner::Planner> _planner;
