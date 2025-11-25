@@ -20,8 +20,9 @@ JulesRealJackalPlanner::JulesRealJackalPlanner(ros::NodeHandle &nh)
     LOG_HEADER("JULES: Jackal planner " + ros::this_node::getName() + " starting");
 
     // Load common configuration using initializer
+    std::string config_path = SYSTEM_CONFIG_PATH(__FILE__, "settings");
     auto config = JackalPlanner::JackalPlannerInitializer::loadCommonConfiguration(
-        nh, SYSTEM_CONFIG_PATH(__FILE__, "settings"));
+        nh, config_path);
     
     // Load platform-specific parameters
     loadRealPlatformParameters(nh, config);
@@ -63,9 +64,7 @@ JulesRealJackalPlanner::~JulesRealJackalPlanner()
 
 // ===== INITIALIZATION HELPER METHODS =====
 
-void JulesRealJackalPlanner::loadRealPlatformParameters(
-    ros::NodeHandle& nh,
-    JackalPlanner::InitializationConfig& config)
+void JulesRealJackalPlanner::loadRealPlatformParameters(ros::NodeHandle& nh, JackalPlanner::InitializationConfig& config)
 {
     nh.param("/forward_experiment", config.forward_x_experiment, false);
     nh.param("/rqt_dead_man_switch", config.rqt_dead_man_switch, false);
@@ -88,14 +87,10 @@ void JulesRealJackalPlanner::applyConfiguration(
     _num_non_com_obj = config.num_non_com_obj;
 }
 
-bool JulesRealJackalPlanner::initializeOtherRobotsAsObstaclesWithNonCom(
-    const std::set<std::string>& other_robot_namespaces,
-    MPCPlanner::RealTimeData& data,
-    double robot_radius)
+bool JulesRealJackalPlanner::initializeOtherRobotsAsObstaclesWithNonCom(const std::set<std::string>& other_robot_namespaces, MPCPlanner::RealTimeData& data, double robot_radius)
 {
     // First initialize communicating robots using shared initializer
-    bool success = JackalPlanner::JackalPlannerInitializer::initializeOtherRobotsAsObstacles(
-        other_robot_namespaces, data, robot_radius);
+    bool success = JackalPlanner::JackalPlannerInitializer::initializeOtherRobotsAsObstacles(other_robot_namespaces, data, robot_radius);
     
     // Then add non-communicating objects (real hardware only)
     std::vector<int> non_com_indices = MultiRobot::extractIdentifierIndicesNonComObj(_robot_ns_list, _num_non_com_obj);
@@ -141,6 +136,112 @@ bool JulesRealJackalPlanner::initializeOtherRobotsAsObstaclesWithNonCom(
     return success;
 }
 
+bool JulesRealJackalPlanner::initializeOtherRobotsAsObstacles(const std::set<std::string> &other_robot_namespaces,
+                                                              MPCPlanner::RealTimeData &data,
+                                                              const double radius)
+{
+    // Early validation
+    std::vector<int> non_com_indices = MultiRobot::extractIdentifierIndicesNonComObj(_robot_ns_list, _num_non_com_obj);
+    if (other_robot_namespaces.empty())
+    {
+        LOG_WARN(_ego_robot_ns + ": No other robots to initialize as obstacles");
+        return false;
+    }
+
+    // Constants for readability
+    const Eigen::Vector2d FAR_AWAY_POSITION(100.0, 100.0);
+    const Eigen::Vector2d ZERO_VELOCITY(0.0, 0.0);
+
+    std::string summary = _ego_robot_ns + " initialized obstacles: ";
+
+    // Initialize communicating robots
+    for (const auto &robot_ns : other_robot_namespaces)
+    {
+        summary += robot_ns + " ";
+
+        // Create trajectory obstacle for this robot
+        data.trajectory_dynamic_obstacles.emplace(
+            robot_ns,
+            MPCPlanner::DynamicObstacle(
+                MultiRobot::extractRobotIdFromNamespace(robot_ns),
+                FAR_AWAY_POSITION,
+                0.0,
+                radius));
+
+        auto &traj_obs = data.trajectory_dynamic_obstacles.at((robot_ns));
+        traj_obs.last_trajectory_update_time = ros::Time::now();
+        traj_obs.trajectory_needs_interpolation = false;
+
+        // Create corresponding dynamic obstacle
+        MPCPlanner::DynamicObstacle dummy_obstacle = data.trajectory_dynamic_obstacles.at(robot_ns);
+        data.dynamic_obstacles.push_back(dummy_obstacle);
+
+        // Initialize with zero velocity prediction (stationary dummy obstacle)
+        auto &obstacle = data.dynamic_obstacles.back();
+        obstacle.prediction = MPCPlanner::getConstantVelocityPrediction(
+            obstacle.position,
+            ZERO_VELOCITY,
+            CONFIG["integrator_step"].as<double>(),
+            CONFIG["N"].as<int>());
+
+        LOG_INFO(_ego_robot_ns + ": Created obstacle for robot " + robot_ns +
+                 " with index " + std::to_string(obstacle.index));
+    }
+
+    // Add non-communicating objects info to summary
+    if (!non_com_indices.empty())
+    {
+        summary += " | Non-comm objects: ";
+        for (size_t i = 0; i < non_com_indices.size(); ++i)
+        {
+            summary += "ID" + std::to_string(non_com_indices[i]);
+            if (i < non_com_indices.size() - 1)
+                summary += ", ";
+        }
+    }
+
+    LOG_INFO(summary);
+
+    // Initialize non-communicating objects (e.g., humans, dynamic obstacles)
+    // These objects get IDs starting after all robot IDs (based on Vicon bundle_obstacles convention)
+    for (const int index : non_com_indices)
+    {
+        // Create obstacle at far away position with specified radius
+        data.dynamic_obstacles.emplace_back(
+            index,
+            FAR_AWAY_POSITION,
+            0.0,
+            CONFIG["obstacle_radius"].as<double>());
+
+        // Get reference to the newly created obstacle
+        auto &non_com_obs = data.dynamic_obstacles.back();
+
+        // Initialize with stationary constant velocity prediction
+        non_com_obs.prediction = MPCPlanner::getConstantVelocityPrediction(
+            non_com_obs.position,
+            ZERO_VELOCITY,
+            CONFIG["integrator_step"].as<double>(),
+            CONFIG["N"].as<int>());
+
+        LOG_INFO(_ego_robot_ns + ": Created non-communicating obstacle with index " +
+                 std::to_string(non_com_obs.index) + " (ID from Vicon bundle)");
+    }
+
+    // Validate that initialization was successful
+    const bool initialization_successful =
+        !data.trajectory_dynamic_obstacles.empty() &&
+        !data.dynamic_obstacles.empty() &&
+        data.trajectory_dynamic_obstacles.size() == other_robot_namespaces.size();
+
+    if (!initialization_successful)
+    {
+        LOG_ERROR(_ego_robot_ns + ": Failed to initialize robot obstacles properly");
+    }
+
+    return initialization_successful;
+}
+
+
 void JulesRealJackalPlanner::initializeRealHardwareComponents(ros::NodeHandle& nh)
 {
     _reconfigure = std::make_unique<JackalReconfigure>();
@@ -153,7 +254,7 @@ void JulesRealJackalPlanner::initializeTimersAndStateMachine(
     const JackalPlanner::InitializationConfig& config)
 {
     _startup_timer = std::make_unique<RosTools::Timer>();
-    _startup_timer->setDuration(10.0);
+    _startup_timer->setDuration(5.0);
     _startup_timer->start();
     
     MultiRobot::transitionTo(_current_state, _previous_state, 
@@ -213,10 +314,37 @@ void JulesRealJackalPlanner::initializeSubscribersAndPublishers(ros::NodeHandle 
 
     _objective_pub = nh.advertise<std_msgs::Bool>("/events/objective_reached", 1);
 
-    
-
     // Roadmap reverse
     _reverse_roadmap_pub = nh.advertise<std_msgs::Empty>("/roadmap/reverse", 1);
+}
+
+void JulesRealJackalPlanner::subscribeToOtherRobotTopics(ros::NodeHandle &nh, const std::set<std::string> &other_robot_namespaces)
+{
+    // Clear existing subscribers for safety
+    this->_other_robot_pose_sub_list.clear();
+    this->_other_robot_trajectory_sub_list.clear();
+
+    // Reserve space for efficiency
+    this->_other_robot_pose_sub_list.reserve(other_robot_namespaces.size());
+    this->_other_robot_trajectory_sub_list.reserve(other_robot_namespaces.size());
+
+    // Create subscribers for each robot's pose and trajectory topics
+    for (const auto &ns : other_robot_namespaces)
+    {
+        // Subscribe to robot pose updates
+        const std::string topic_pose = ns + "/robot_to_robot/output/pose";
+        LOG_INFO(_ego_robot_ns + " is subscribing to: " + topic_pose);
+        auto sub_pose_i = nh.subscribe<geometry_msgs::PoseStamped>(topic_pose, 1,
+                                                                   boost::bind(&JulesRealJackalPlanner::poseOtherRobotCallback, this, _1, ns));
+        this->_other_robot_pose_sub_list.push_back(sub_pose_i);
+
+        // Subscribe to robot trajectory predictions
+        const std::string topic_trajectory = ns + "/robot_to_robot/output/current_trajectory";
+        LOG_INFO(_ego_robot_ns + " is subscribing to: " + topic_trajectory);
+        auto sub_traject_i = nh.subscribe<mpc_planner_msgs::ObstacleGMM>(topic_trajectory, 1,
+                                                                         boost::bind(&JulesRealJackalPlanner::trajectoryCallback, this, _1, ns));
+        this->_other_robot_trajectory_sub_list.push_back(sub_traject_i);
+    }
 }
 
 void JulesRealJackalPlanner::loop(const ros::TimerEvent &event)
@@ -834,140 +962,6 @@ bool JulesRealJackalPlanner::isPathTheSame(const nav_msgs::Path::ConstPtr &msg)
             return false;
     }
     return true;
-}
-
-bool JulesRealJackalPlanner::initializeOtherRobotsAsObstacles(const std::set<std::string> &other_robot_namespaces,
-                                                              MPCPlanner::RealTimeData &data,
-                                                              const double radius)
-{
-    // Early validation
-    std::vector<int> non_com_indices = MultiRobot::extractIdentifierIndicesNonComObj(_robot_ns_list, _num_non_com_obj);
-    if (other_robot_namespaces.empty())
-    {
-        LOG_WARN(_ego_robot_ns + ": No other robots to initialize as obstacles");
-        return false;
-    }
-
-    // Constants for readability
-    const Eigen::Vector2d FAR_AWAY_POSITION(100.0, 100.0);
-    const Eigen::Vector2d ZERO_VELOCITY(0.0, 0.0);
-
-    std::string summary = _ego_robot_ns + " initialized obstacles: ";
-
-    // Initialize communicating robots
-    for (const auto &robot_ns : other_robot_namespaces)
-    {
-        summary += robot_ns + " ";
-
-        // Create trajectory obstacle for this robot
-        data.trajectory_dynamic_obstacles.emplace(
-            robot_ns,
-            MPCPlanner::DynamicObstacle(
-                MultiRobot::extractRobotIdFromNamespace(robot_ns),
-                FAR_AWAY_POSITION,
-                0.0,
-                radius));
-
-        auto &traj_obs = data.trajectory_dynamic_obstacles.at((robot_ns));
-        traj_obs.last_trajectory_update_time = ros::Time::now();
-        traj_obs.trajectory_needs_interpolation = false;
-
-        // Create corresponding dynamic obstacle
-        MPCPlanner::DynamicObstacle dummy_obstacle = data.trajectory_dynamic_obstacles.at(robot_ns);
-        data.dynamic_obstacles.push_back(dummy_obstacle);
-
-        // Initialize with zero velocity prediction (stationary dummy obstacle)
-        auto &obstacle = data.dynamic_obstacles.back();
-        obstacle.prediction = MPCPlanner::getConstantVelocityPrediction(
-            obstacle.position,
-            ZERO_VELOCITY,
-            CONFIG["integrator_step"].as<double>(),
-            CONFIG["N"].as<int>());
-
-        LOG_INFO(_ego_robot_ns + ": Created obstacle for robot " + robot_ns +
-                 " with index " + std::to_string(obstacle.index));
-    }
-
-    // Add non-communicating objects info to summary
-    if (!non_com_indices.empty())
-    {
-        summary += " | Non-comm objects: ";
-        for (size_t i = 0; i < non_com_indices.size(); ++i)
-        {
-            summary += "ID" + std::to_string(non_com_indices[i]);
-            if (i < non_com_indices.size() - 1)
-                summary += ", ";
-        }
-    }
-
-    LOG_INFO(summary);
-
-    // Initialize non-communicating objects (e.g., humans, dynamic obstacles)
-    // These objects get IDs starting after all robot IDs (based on Vicon bundle_obstacles convention)
-    for (const int index : non_com_indices)
-    {
-        // Create obstacle at far away position with specified radius
-        data.dynamic_obstacles.emplace_back(
-            index,
-            FAR_AWAY_POSITION,
-            0.0,
-            CONFIG["obstacle_radius"].as<double>());
-
-        // Get reference to the newly created obstacle
-        auto &non_com_obs = data.dynamic_obstacles.back();
-
-        // Initialize with stationary constant velocity prediction
-        non_com_obs.prediction = MPCPlanner::getConstantVelocityPrediction(
-            non_com_obs.position,
-            ZERO_VELOCITY,
-            CONFIG["integrator_step"].as<double>(),
-            CONFIG["N"].as<int>());
-
-        LOG_INFO(_ego_robot_ns + ": Created non-communicating obstacle with index " +
-                 std::to_string(non_com_obs.index) + " (ID from Vicon bundle)");
-    }
-
-    // Validate that initialization was successful
-    const bool initialization_successful =
-        !data.trajectory_dynamic_obstacles.empty() &&
-        !data.dynamic_obstacles.empty() &&
-        data.trajectory_dynamic_obstacles.size() == other_robot_namespaces.size();
-
-    if (!initialization_successful)
-    {
-        LOG_ERROR(_ego_robot_ns + ": Failed to initialize robot obstacles properly");
-    }
-
-    return initialization_successful;
-}
-
-void JulesRealJackalPlanner::subscribeToOtherRobotTopics(ros::NodeHandle &nh, const std::set<std::string> &other_robot_namespaces)
-{
-    // Clear existing subscribers for safety
-    this->_other_robot_pose_sub_list.clear();
-    this->_other_robot_trajectory_sub_list.clear();
-
-    // Reserve space for efficiency
-    this->_other_robot_pose_sub_list.reserve(other_robot_namespaces.size());
-    this->_other_robot_trajectory_sub_list.reserve(other_robot_namespaces.size());
-
-    // Create subscribers for each robot's pose and trajectory topics
-    for (const auto &ns : other_robot_namespaces)
-    {
-        // Subscribe to robot pose updates
-        const std::string topic_pose = ns + "/robot_to_robot/output/pose";
-        LOG_INFO(_ego_robot_ns + " is subscribing to: " + topic_pose);
-        auto sub_pose_i = nh.subscribe<geometry_msgs::PoseStamped>(topic_pose, 1,
-                                                                   boost::bind(&JulesRealJackalPlanner::poseOtherRobotCallback, this, _1, ns));
-        this->_other_robot_pose_sub_list.push_back(sub_pose_i);
-
-        // Subscribe to robot trajectory predictions
-        const std::string topic_trajectory = ns + "/robot_to_robot/output/current_trajectory";
-        LOG_INFO(_ego_robot_ns + " is subscribing to: " + topic_trajectory);
-        auto sub_traject_i = nh.subscribe<mpc_planner_msgs::ObstacleGMM>(topic_trajectory, 1,
-                                                                         boost::bind(&JulesRealJackalPlanner::trajectoryCallback, this, _1, ns));
-        this->_other_robot_trajectory_sub_list.push_back(sub_traject_i);
-    }
 }
 
 void JulesRealJackalPlanner::prepareObstacleData()
@@ -1596,7 +1590,6 @@ bool JulesRealJackalPlanner::decideCommunication(const MPCPlanner::PlannerOutput
               " (topology filter ON, state=" + MPCPlanner::stateToString(_current_state) + ")");
     return result;
 }
-
 
 
 void JulesRealJackalPlanner::saveDataStateBased()

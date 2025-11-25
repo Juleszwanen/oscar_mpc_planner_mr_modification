@@ -245,7 +245,7 @@ void JackalPlannerInitializer::validateDeadmanSwitchConfig(InitializationConfig&
     else
     {
         LOG_INFO(config.ego_robot_ns + ": Jules controller deadman switch: DISABLED, "
-                 "RQT deadman switch: DISABLED (using Bluetooth/PS3 controller)");
+                 "RQT deadman switch: DISABLED (using no deadmenswitch)");
     }
 }
 

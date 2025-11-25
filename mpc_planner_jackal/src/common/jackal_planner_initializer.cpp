@@ -22,10 +22,10 @@ InitializationConfig JackalPlannerInitializer::loadCommonConfiguration(
     // Initialize YAML configuration
     Configuration::getInstance().initialize(config_path);
     
-    // ===== Robot Identity =====
+    // ===== Robot Identity ===== // For the real robot this is empty
     config.ego_robot_ns = ros::this_node::getNamespace();
     
-    // Allow override from parameter server
+    // Allow override from parameter server // for the real robot this will be thus overwritten by the parameter set in the launch file
     nh.param("/ego_robot_ns", config.ego_robot_ns, config.ego_robot_ns);
     
     config.ego_robot_id = MultiRobot::extractRobotIdFromNamespace(config.ego_robot_ns);

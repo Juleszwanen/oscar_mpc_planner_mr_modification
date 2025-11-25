@@ -41,16 +41,17 @@ class JulesRealJackalPlanner
 {
 
 public:
-    JulesRealJackalPlanner(ros::NodeHandle &nh);
+    explicit JulesRealJackalPlanner(ros::NodeHandle &nh);
     ~JulesRealJackalPlanner();
 
     void initializeSubscribersAndPublishers(ros::NodeHandle &nh);
+    void subscribeToOtherRobotTopics(ros::NodeHandle &nh, const std::set<std::string> &other_robot_namespaces);
+
     bool objectiveReached();
     void rotateToGoal(geometry_msgs::Twist &cmd);
     void reset();
 
-    void parseObstacle(const derived_object_msgs::Object &object, double object_angle,
-                       std::vector<Eigen::Vector2d> &positions_out, std::vector<double> &radii_out);
+    
     bool isPathTheSame(const nav_msgs::Path::ConstPtr &path);
     void visualize();
 
@@ -58,10 +59,7 @@ private:
     // ===== Initialization helper methods =====
     void loadRealPlatformParameters(ros::NodeHandle& nh, JackalPlanner::InitializationConfig& config);
     void applyConfiguration(const JackalPlanner::InitializationConfig& config);
-    bool initializeOtherRobotsAsObstaclesWithNonCom(
-        const std::set<std::string>& other_robot_namespaces,
-        MPCPlanner::RealTimeData& data,
-        double robot_radius);
+    bool initializeOtherRobotsAsObstaclesWithNonCom(const std::set<std::string>& other_robot_namespaces, MPCPlanner::RealTimeData& data, double robot_radius);
     void initializeRealHardwareComponents(ros::NodeHandle& nh);
     void initializeTimersAndStateMachine(ros::NodeHandle& nh, const JackalPlanner::InitializationConfig& config);
 
@@ -70,7 +68,7 @@ public:
                                           MPCPlanner::RealTimeData &data,
                                           const double radius);
 
-    void subscribeToOtherRobotTopics(ros::NodeHandle &nh, const std::set<std::string> &other_robot_namespaces);
+    
     void prepareObstacleData();
     void interpolateTrajectoryPredictionsByTime();
     std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> generatePlanningCommand(const MPCPlanner::PlannerState &current_state);

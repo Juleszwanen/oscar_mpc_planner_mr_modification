@@ -95,9 +95,11 @@ JULES:
     assign_meaningful_topology_id_to_non_guided: true
     have_non_guided_standout: true #Enable special markers for non-guided planner
     override_selected_traject_of_topology_non_guided: true # override the chosen global_guidance topology with that of the mapped non_guided topology
-    communicate_on_topology_switch_only: false # This turns on and off if we want to communicate our trajectory only on a topology switch
+    communicate_on_topology_switch_only: true # This turns on and off if we want to communicate our trajectory only on a topology switch
     n_paths: 4 # This is hardcoded now but 
     enable_trajectory_interpolation: true # Enable that we itnerpolate and extrapolate stale trajectories
     # Robot physical limits (for velocity clamping during extrapolation)
     robot_max_velocity: 2.0        # m/s
     robot_max_angular_velocity: 2.0  # rad/s
+    safe_extra_data: true
+    max_geometric_deviation: 0.7 # Should somehow be related to the radius of the robot, I think
