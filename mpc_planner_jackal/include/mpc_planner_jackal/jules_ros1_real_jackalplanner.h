@@ -167,4 +167,7 @@ private:
 
     MPCPlanner::PlannerState _current_state{MPCPlanner::PlannerState::UNINITIALIZED};
     MPCPlanner::PlannerState _previous_state{MPCPlanner::PlannerState::UNINITIALIZED};
+
+     // Communication trigger tracking
+    MPCPlanner::CommunicationTriggerReason _communication_trigger_reason{MPCPlanner::CommunicationTriggerReason::NO_COMMUNICATION};
 };

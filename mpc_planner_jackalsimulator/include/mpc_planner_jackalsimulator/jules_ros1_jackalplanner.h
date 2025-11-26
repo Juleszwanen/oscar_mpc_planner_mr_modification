@@ -7,7 +7,7 @@
 #include <mpc_planner_msgs/ObstacleArray.h>
 #include <mpc_planner_msgs/GetOtherTrajectories.h>
 #include <ros_tools/profiling.h>
-
+#include <mpc_planner_communication/communication_triggers.h>
 
 #include <ros/ros.h>
 
@@ -175,6 +175,9 @@ private:
 
     MPCPlanner::PlannerState _current_state{MPCPlanner::PlannerState::UNINITIALIZED};
     MPCPlanner::PlannerState _previous_state{MPCPlanner::PlannerState::UNINITIALIZED};
+    
+    // Communication trigger tracking
+    MPCPlanner::CommunicationTriggerReason _communication_trigger_reason{MPCPlanner::CommunicationTriggerReason::NO_COMMUNICATION};
 };
 
     

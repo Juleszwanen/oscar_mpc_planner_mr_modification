@@ -173,7 +173,7 @@ namespace MPCPlanner
       return false;
 
     // Check if we reached the end of the spline
-    return RosTools::distance(state.getPos(), _spline->getPoint(_spline->parameterLength())) < 1.0;
+    return RosTools::distance(state.getPos(), _spline->getPoint(_spline->parameterLength())) < 1.5;
 
     // int index = _closest_segment + _n_segments - 1;
     // return index >= _spline->numSegments();

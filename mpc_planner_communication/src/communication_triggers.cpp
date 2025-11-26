@@ -3,95 +3,83 @@
 
 namespace MPCPlanner {
 
-bool CommunicationTriggers::elapsedTimeTrigger(
-    const ros::Time& last_send_time,
-    const ros::Time& current_time,
-    double heartbeat_period_sec)
-{
-    // First time: last_send_time is uninitialized (0), so we SHOULD communicate
-    if (last_send_time == ros::Time(0))
+    std::string toString(CommunicationTriggerReason reason)
     {
-        return true;  // Must communicate on first iteration
+        switch (reason)
+        {
+            case CommunicationTriggerReason::NO_COMMUNICATION: return "NO_COMMUNICATION";
+            case CommunicationTriggerReason::INFEASIBLE: return "INFEASIBLE";
+            case CommunicationTriggerReason::INFEASIBLE_TO_FEASIBLE: return "INFEASIBLE_TO_FEASIBLE";
+            case CommunicationTriggerReason::TOPOLOGY_CHANGE: return "TOPOLOGY_CHANGE";
+            case CommunicationTriggerReason::GEOMETRIC: return "GEOMETRIC";
+            case CommunicationTriggerReason::TIME: return "TIME";
+            case CommunicationTriggerReason::NON_GUIDED_HOMOLOGY_FAIL: return "NON_GUIDED_HOMOLOGY_FAIL";
+            default: return "UNKNOWN";
+        }
     }
 
-    // Subsequent times: check if enough time has elapsed
-    const ros::Duration heartbeat_period(heartbeat_period_sec);
-    ros::Duration time_elapsed = current_time - last_send_time;
-    return (time_elapsed >= heartbeat_period);
-}
-
-bool CommunicationTriggers::topologyTrigger(
-    const PlannerOutput& output,
-    int n_paths,
-    std::string& reason)
-{
-    const int non_guided_topology_id = 2 * n_paths;
-
-    // Always communicate on solver failure
-    if (!output.success)
+    // 1. Infeasible Trigger
+    bool CommunicationTriggers::checkInfeasible(const PlannerOutput& output)
     {
-        reason = "Communicating - MPC failed";
-        return true;
+        return !output.success;
     }
 
-    // Communicate when switching to non-guided mode (indicates obstacle avoidance)
-    if (output.following_new_topology && output.selected_topology_id == non_guided_topology_id)
+    // 3. Real Topology Change Trigger
+    bool CommunicationTriggers::checkTopologyChange(const PlannerOutput& output, int n_paths)
     {
-        reason = "Communicating - Switched to non-guided from topology " +
-                 std::to_string(output.previous_topology_id);
-        return true;
+        if (!output.success) 
+            return false;
+
+        const int non_guided_topology_id = 2 * n_paths;
+
+        // It is a topology change if:
+        // 1. The flag is set
+        // 2. We are NOT switching TO non-guided (that is Enum 6)
+        // 3. We are NOT switching FROM non-guided (that is also effectively a recovery or change handled elsewhere, 
+        //    but strictly speaking, switching Guided A -> Guided B is the core of this trigger)
+        
+        // Note: If we want "Real topological change" to include Non-Guided -> Guided, we can allow it here.
+        // But Guided -> Non-Guided is definitely Enum 6.
+        
+        bool is_to_guided = (output.selected_topology_id != non_guided_topology_id);
+        
+        return output.following_new_topology && is_to_guided;
     }
 
-    // Communicate on any topology switch (path change)
-    if (output.following_new_topology)
+    // 4. Geometric Trigger
+    bool CommunicationTriggers::checkGeometricDeviation(const Trajectory& current_trajectory, const Trajectory& last_communicated_trajectory, double max_deviation_threshold)
     {
-        reason = "Communicating - Topology switch from " +
-                 std::to_string(output.previous_topology_id) + " to " +
-                 std::to_string(output.selected_topology_id);
-        return true;
+        if (current_trajectory.positions.empty() || last_communicated_trajectory.positions.empty())
+        {
+            return false;
+        }
+
+        return current_trajectory.geomtricDeviationTrigger(last_communicated_trajectory, max_deviation_threshold);
     }
 
-    // Communicate every iteration while in non-guided mode (dynamic obstacle avoidance)
-    if (output.selected_topology_id == non_guided_topology_id)
+    // 5. Time Trigger
+    bool CommunicationTriggers::checkTime(const ros::Time& last_send_time, const ros::Time& current_time, double heartbeat_period_sec)
     {
-        reason = "Communicating - Staying in non-guided (unidentified topology)";
-        return true;
+        if (last_send_time == ros::Time(0))
+        {
+            return true;
+        }
+
+        const ros::Duration heartbeat_period(heartbeat_period_sec);
+        ros::Duration time_elapsed = current_time - last_send_time;
+        return (time_elapsed >= heartbeat_period);
     }
 
-    // No communication needed - staying on same guided path
-    reason = "NOT communicating yet - Same guided topology (" +
-             std::to_string(output.selected_topology_id) + ")";
-    return false;
-}
+    // 6. Non-Guided / Homology Fail Trigger
+    bool CommunicationTriggers::checkNonGuidedHomologyFail(const PlannerOutput& output, int n_paths)
+    {
+        if (!output.success) 
+            return false;
 
-bool CommunicationTriggers::geometricDeviationTrigger(
-    const Trajectory& current_trajectory,
-    const Trajectory& last_communicated_trajectory,
-    double max_deviation_threshold,
-    std::string& reason)
-{
-    // Early return if either trajectory lacks data - nothing to compare yet
-    if (current_trajectory.positions.empty() || last_communicated_trajectory.positions.empty())
-    {
-        reason = "No comparison - trajectories not yet initialized";
-        return false;  // Don't trigger communication
-    }
+        const int non_guided_topology_id = 2 * n_paths;
 
-    // Use trajectory's built-in deviation check
-    const bool geometric_trigger = current_trajectory.geomtricDeviationTrigger(
-        last_communicated_trajectory, 
-        max_deviation_threshold);
-    
-    if (geometric_trigger)
-    {
-        reason = "Geometric deviation exceeded threshold";
+        // Trigger if we are currently using the non-guided topology and we could not map it to an homology
+        return (output.selected_topology_id == non_guided_topology_id);
     }
-    else
-    {
-        reason = "No geometric deviation";
-    }
-    
-    return geometric_trigger;
-}
 
 } // namespace MPCPlanner

@@ -1521,57 +1521,76 @@ bool JulesRealJackalPlanner::shouldCommunicate(const MPCPlanner::PlannerOutput &
     case MPCPlanner::PlannerState::RESETTING:
     case MPCPlanner::PlannerState::ERROR_STATE:
         LOG_DEBUG(_ego_robot_ns + ": No communication in state: " + MPCPlanner::stateToString(_current_state));
+        _communication_trigger_reason = MPCPlanner::CommunicationTriggerReason::NO_COMMUNICATION;
         return false;
 
     case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
     case MPCPlanner::PlannerState::PLANNING_ACTIVE:
     {
-        // Continue to communication logic for these states
-        // Delegate to static utility functions for testability and reusability
-        
-        // Check topology-based triggers
-        std::string topology_reason;
+        // Check triggers in priority order (highest priority first)
         const int n_paths = CONFIG["JULES"]["n_paths"].as<int>();
-        bool topology_trigger = MPCPlanner::CommunicationTriggers::topologyTrigger(
-            output, n_paths, topology_reason);
-        LOG_DEBUG(_ego_robot_ns + ": " + topology_reason);
-        if (topology_trigger)
-        {
-            return true;
-        }
-
-        // Check geometric deviation triggers
-        std::string geometric_reason;
         const double max_deviation = CONFIG["JULES"]["max_geometric_deviation"].as<double>();
-        bool geometric_deviation_trigger = MPCPlanner::CommunicationTriggers::geometricDeviationTrigger(
-            output.trajectory, _data.last_communicated_trajectory, max_deviation, geometric_reason);
-        LOG_DEBUG(_ego_robot_ns + ": " + geometric_reason);
-        if (geometric_deviation_trigger)
+        
+        // Priority 1: Infeasible solver (Enum 1)
+        if (MPCPlanner::CommunicationTriggers::checkInfeasible(output))
         {
+            _communication_trigger_reason = MPCPlanner::CommunicationTriggerReason::INFEASIBLE;
+            LOG_DEBUG(_ego_robot_ns + ": Communication trigger: INFEASIBLE");
             return true;
         }
-
-        // Fall back to time-based heartbeat
-        bool time_trigger = MPCPlanner::CommunicationTriggers::elapsedTimeTrigger(
-            data.last_send_trajectory_time, ros::Time::now(), 1.0);
-        if (time_trigger)
+        
+        // Priority 2: Non-guided / Homology fail (Enum 6)
+        // This happens when solver chose non-guided topology (no matching homology found)
+        if (MPCPlanner::CommunicationTriggers::checkNonGuidedHomologyFail(output, n_paths))
         {
-            LOG_DEBUG(_ego_robot_ns + ": Communicating - Heartbeat interval reached");
+            _communication_trigger_reason = MPCPlanner::CommunicationTriggerReason::NON_GUIDED_HOMOLOGY_FAIL;
+            LOG_DEBUG(_ego_robot_ns + ": Communication trigger: NON_GUIDED_HOMOLOGY_FAIL");
+            return true;
         }
-        else
+        
+        // Priority 3: Real topology change (Enum 3)
+        // Switch between guided topologies (excludes switches to/from non-guided)
+        if (MPCPlanner::CommunicationTriggers::checkTopologyChange(output, n_paths))
         {
-            LOG_DEBUG(_ego_robot_ns + ": NOT communicating - Waiting for heartbeat interval");
+            _communication_trigger_reason = MPCPlanner::CommunicationTriggerReason::TOPOLOGY_CHANGE;
+            LOG_DEBUG(_ego_robot_ns + ": Communication trigger: TOPOLOGY_CHANGE (from " + 
+                      std::to_string(output.previous_topology_id) + " to " + 
+                      std::to_string(output.selected_topology_id) + ")");
+            return true;
         }
-        return time_trigger;
+        
+        // Priority 4: Geometric deviation (Enum 4)
+        if (MPCPlanner::CommunicationTriggers::checkGeometricDeviation(
+            output.trajectory, _data.last_communicated_trajectory, max_deviation))
+        {
+            _communication_trigger_reason = MPCPlanner::CommunicationTriggerReason::GEOMETRIC;
+            LOG_DEBUG(_ego_robot_ns + ": Communication trigger: GEOMETRIC (deviation > " + 
+                      std::to_string(max_deviation) + "m)");
+            return true;
+        }
+        
+        // Priority 5: Time-based heartbeat (Enum 5)
+        if (MPCPlanner::CommunicationTriggers::checkTime(
+            data.last_send_trajectory_time, ros::Time::now(), 2.0))
+        {
+            _communication_trigger_reason = MPCPlanner::CommunicationTriggerReason::TIME;
+            LOG_DEBUG(_ego_robot_ns + ": Communication trigger: TIME (heartbeat interval reached)");
+            return true;
+        }
+        
+        // No trigger activated
+        _communication_trigger_reason = MPCPlanner::CommunicationTriggerReason::NO_COMMUNICATION;
+        LOG_DEBUG(_ego_robot_ns + ": NO communication trigger activated - staying on same guided topology");
+        return false;
     }
 
     default:
         LOG_WARN(_ego_robot_ns + ": Unknown state in shouldCommunicate(): " + std::to_string(static_cast<int>(_current_state)));
+        _communication_trigger_reason = MPCPlanner::CommunicationTriggerReason::NO_COMMUNICATION;
         return true;
-        
     }
-
 }
+
 
 // Helper: Extract communication decision logic
 bool JulesRealJackalPlanner::decideCommunication(const MPCPlanner::PlannerOutput &output)

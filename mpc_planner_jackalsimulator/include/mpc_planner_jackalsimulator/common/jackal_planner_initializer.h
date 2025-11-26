@@ -43,10 +43,10 @@ struct InitializationConfig
     double infeasible_deceleration;
     
     // ===== Multi-Robot =====
-    int num_non_com_obj;
+    int num_non_com_obj{-1};
     
     // ===== Frame IDs =====
-    std::string global_frame;
+    std::string global_frame{"/map"};
     
     // ===== Platform-Specific (Real Hardware) =====
     bool forward_x_experiment = false;
