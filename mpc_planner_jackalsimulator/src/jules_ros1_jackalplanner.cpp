@@ -1060,6 +1060,14 @@ std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> JulesJackalPlanner::g
     // Captures: cmd & output by reference (to modify), this for class members
     auto solveMPCAndExtractCommand = [&cmd, &output, this]()
     {
+
+        if (!_enable_output)
+        {
+            cmd.linear.x = 0.0;
+            cmd.angular.z = 0.0;
+            return;
+        }
+
         output = _planner->solveMPC(_state, _data);
 
         if (_enable_output && output.success)
@@ -1329,6 +1337,10 @@ void JulesJackalPlanner::publishObjectiveReachedEvent()
 // Helper: Extract communication decision logic
 bool JulesJackalPlanner::decideCommunication(const MPCPlanner::PlannerOutput &output)
 {
+    if (!_enable_output)
+    {
+        return false;
+    }
     // If topology filtering is disabled, ALWAYS communicate in active states
     if (!_communicate_on_topology_switch_only)
     {
@@ -1405,7 +1417,7 @@ bool JulesJackalPlanner::shouldCommunicate(const MPCPlanner::PlannerOutput &outp
         
         // Priority 5: Time-based heartbeat (Enum 5)
         if (MPCPlanner::CommunicationTriggers::checkTime(
-            data.last_send_trajectory_time, ros::Time::now(), 2.0))
+            data.last_send_trajectory_time, ros::Time::now(), CONFIG["JULES"]["heartbeat_time"].as<double>(1.0)))
         {
             _communication_trigger_reason = MPCPlanner::CommunicationTriggerReason::TIME;
             LOG_DEBUG(_ego_robot_ns + ": Communication trigger: TIME (heartbeat interval reached)");

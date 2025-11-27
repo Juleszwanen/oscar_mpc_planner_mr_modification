@@ -1,3 +1,4 @@
+#jackalsimulator
 name: "jackal"
 N: 30 # [#] Time Horizon
 integrator_step: 0.2 # [s] Integration step
@@ -29,6 +30,8 @@ recording:
   file: topology_switch_refactoring.txt # File name for the experiment
   timestamp: true # Add a timestamp
   num_experiments: 4 # Stop after this number of experiments
+  save_obstacle_data: false
+  save_ego_trajectory_plans: false
 
 deceleration_at_infeasible: 3.0 # [m/s^2] Deceleration when MPC is infeasible
 max_obstacles: 4 # Max. number of dynamic obstacles, normally 12
@@ -103,3 +106,4 @@ JULES:
     robot_max_angular_velocity: 2.5  # rad/s
     safe_extra_data: true
     max_geometric_deviation: 1.0 # Should somehow be related to the radius of the robot, I think
+    heartbeat_time: 4.0 # time in between which we should send a new trajectory of we did not broadcast

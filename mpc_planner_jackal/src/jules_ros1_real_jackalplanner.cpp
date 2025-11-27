@@ -51,7 +51,9 @@ JulesRealJackalPlanner::JulesRealJackalPlanner(ros::NodeHandle &nh)
     
     // Log summary
     LOG_INFO(_ego_robot_ns + ": COMMUNICATION CONFIG: communicate_on_topology_switch_only = " + 
-             std::string(_communicate_on_topology_switch_only ? "TRUE (topology-based filtering)" : "FALSE (always communicate)"));
+             std::string(_communicate_on_topology_switch_only ? "TRUE (topology-based filtering)" : "FALSE (always communicate)") + 
+            " Enable output: " + std::string(_enable_output ? "TRUE" : "FALSE")
+            );
     JackalPlanner::JackalPlannerInitializer::logInitializationSummary(config, _ego_robot_ns);
     LOG_DIVIDER();
 }
@@ -77,6 +79,7 @@ void JulesRealJackalPlanner::applyConfiguration(
     _ego_robot_ns = config.ego_robot_ns;
     _ego_robot_id = config.ego_robot_id;
     _robot_ns_list = config.robot_ns_list;
+    _enable_output = config.enable_output;
     _other_robot_nss = config.other_robot_nss;
     _communicate_on_topology_switch_only = config.communicate_on_topology_switch_only;
     _goal_tolerance = config.goal_tolerance;
@@ -1241,6 +1244,14 @@ std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> JulesRealJackalPlanne
     // Captures: cmd & output by reference (to modify), this for class members
     auto solveMPCAndExtractCommand = [&cmd, &output, this]()
     {
+        if (!_enable_output)
+        {
+            _state.set("v", _measured_velocity);
+            cmd.linear.x = 0.0;
+            cmd.angular.z = 0.0;
+            return;
+        }
+
         output = _planner->solveMPC(_state, _data);
 
         if (_enable_output && output.success)
@@ -1251,14 +1262,6 @@ std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> JulesRealJackalPlanne
             LOG_VALUE_DEBUG("Commanded", "v=" + std::to_string(cmd.linear.x) + ", w=" + std::to_string(cmd.angular.z));
             CONFIG["enable_output"] = true;
         }
-
-        else if ((!_enable_output))
-        {
-            _state.set("v", _measured_velocity);
-            cmd.linear.x = 0.0;
-            cmd.angular.z = 0.0;
-        }
-
         else
         {
             applyBrakingCommand(cmd);
@@ -1571,7 +1574,7 @@ bool JulesRealJackalPlanner::shouldCommunicate(const MPCPlanner::PlannerOutput &
         
         // Priority 5: Time-based heartbeat (Enum 5)
         if (MPCPlanner::CommunicationTriggers::checkTime(
-            data.last_send_trajectory_time, ros::Time::now(), 2.0))
+            data.last_send_trajectory_time, ros::Time::now(), CONFIG["JULES"]["heartbeat_time"].as<double>(1.0)))
         {
             _communication_trigger_reason = MPCPlanner::CommunicationTriggerReason::TIME;
             LOG_DEBUG(_ego_robot_ns + ": Communication trigger: TIME (heartbeat interval reached)");
@@ -1595,6 +1598,11 @@ bool JulesRealJackalPlanner::shouldCommunicate(const MPCPlanner::PlannerOutput &
 // Helper: Extract communication decision logic
 bool JulesRealJackalPlanner::decideCommunication(const MPCPlanner::PlannerOutput &output)
 {
+    if (!_enable_output)
+    {
+        return false;
+    }
+
     // If topology filtering is disabled, ALWAYS communicate in active states
     if (!_communicate_on_topology_switch_only)
     {

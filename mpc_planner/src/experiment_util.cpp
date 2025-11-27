@@ -16,9 +16,11 @@ namespace MPCPlanner
     {
         _save_folder = CONFIG["recording"]["folder"].as<std::string>();
         _save_file = CONFIG["recording"]["file"].as<std::string>();
-
+        _save_obstacle_data  = CONFIG["recording"]["save_obstacle_data"].as<bool>(true);
+        _save_ego_trajectory_plans = CONFIG["recording"]["save_ego_trajectory_plans"].as<bool>(true);
         _data_saver = std::make_unique<RosTools::DataSaver>();
         _data_saver->SetAddTimestamp(CONFIG["recording"]["timestamp"].as<bool>());
+
 
         if (CONFIG["recording"]["enable"].as<bool>())
             LOG_VALUE("Planner Save File", _data_saver->getFilePath(_save_folder, _save_file, false));
@@ -69,22 +71,25 @@ namespace MPCPlanner
             _data_saver->AddData("vehicle_plan_" + std::to_string(k), solver->getEgoPredictionPosition(k));
 
         // SAVE OBSTACLE DATA
-        for (size_t v = 0; v < data.dynamic_obstacles.size(); v++)
+        if(_save_obstacle_data)
         {
-            auto &obstacle = data.dynamic_obstacles[v];
+            for (size_t v = 0; v < data.dynamic_obstacles.size(); v++)
+                {
+                    auto &obstacle = data.dynamic_obstacles[v];
 
-            // CARLA / Real Jackal
-            if (obstacle.index != -1)
-            {
-                _data_saver->AddData("obstacle_map_" + std::to_string(v), obstacle.index);
-                _data_saver->AddData("obstacle_" + std::to_string(v) + "_pose", obstacle.position);
-                _data_saver->AddData("obstacle_" + std::to_string(v) + "_orientation", obstacle.angle);
-            }
+                    // CARLA / Real Jackal
+                    if (obstacle.index != -1)
+                    {
+                        _data_saver->AddData("obstacle_map_" + std::to_string(v), obstacle.index);
+                        _data_saver->AddData("obstacle_" + std::to_string(v) + "_pose", obstacle.position);
+                        _data_saver->AddData("obstacle_" + std::to_string(v) + "_orientation", obstacle.angle);
+                    }
 
-            // DISCS (assume only one disc)
-            _data_saver->AddData("disc_" + std::to_string(0) + "_pose", obstacle.position);
-            _data_saver->AddData("disc_" + std::to_string(0) + "_radius", obstacle.radius);
-            _data_saver->AddData("disc_" + std::to_string(0) + "_obstacle", v);
+                    // DISCS (assume only one disc)
+                    _data_saver->AddData("disc_" + std::to_string(0) + "_pose", obstacle.position);
+                    _data_saver->AddData("disc_" + std::to_string(0) + "_radius", obstacle.radius);
+                    _data_saver->AddData("disc_" + std::to_string(0) + "_obstacle", v);
+                }
         }
         _data_saver->AddData("max_intrusion", data.intrusion);
         _data_saver->AddData("metric_collisions", int(data.intrusion > 0.));

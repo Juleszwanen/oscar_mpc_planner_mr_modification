@@ -209,6 +209,7 @@ void JackalPlannerInitializer::logInitializationSummary(
                  }
                  return list.empty() ? "none" : list;
              }());
+    LOG_INFO("Enable output: " + std::to_string(config.enable_output) ? "TRUE" : "FALSE");
     LOG_INFO("Control frequency: " + std::to_string(config.control_frequency) + " Hz");
     LOG_INFO("Robot radius: " + std::to_string(config.robot_radius) + " m");
     LOG_INFO("Goal tolerance: " + std::to_string(config.goal_tolerance) + " m");

@@ -44,6 +44,8 @@ namespace MPCPlanner
         int _experiment_counter = 0;
         int _control_iteration = 0;
         int _iteration_at_last_reset = 0;
+        bool _save_obstacle_data = true;
+        bool _save_ego_trajectory_plans=true;
     };
 } // namespace MPCPlanner
 #endif // EXPERIMENT_UTIL_H
