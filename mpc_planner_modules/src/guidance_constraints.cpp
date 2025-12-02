@@ -64,7 +64,7 @@ namespace MPCPlanner
 
         if (_use_tmpcpp) // ADD IT AS FIRST PLAN
         {
-            LOG_INFO("Using T-MPC++ (Adding the non-guided planner in parallel)");
+            LOG_INFO("Using T-MPC++ (Adding the non-guided planner in parallel) with ID: " + std::to_string(n_solvers));
             planners_.emplace_back(n_solvers, true);
         }
 
@@ -408,8 +408,8 @@ namespace MPCPlanner
                             // Try to assign matching color
                             best_planner.result.color = -1;
 
-                            LOG_INFO_THROTTLE(5000, _ego_robot_ns + " NON-GUIDED PLANNER SELECTED AS BEST PLANNER| Topology match SUCCESS | ID: " << meaningful_topology_id
-                                                                                                                                                  << " | Visualization: Dark red elevated | Color assignment disabled for verification");
+                            LOG_DEBUG_THROTTLE(5000, _ego_robot_ns + " NON-GUIDED PLANNER SELECTED AS BEST PLANNER| Topology match SUCCESS | ID: " << meaningful_topology_id
+                                                                                                                                                    << " | Visualization: Dark red elevated | Color assignment disabled for verification");
                             // for (int i = 0; i < global_guidance_->NumberOfGuidanceTrajectories(); i++)
                             // {
                             //     auto &guidance_traj = global_guidance_->GetGuidanceTrajectory(i);
@@ -425,7 +425,7 @@ namespace MPCPlanner
                         }
                         else
                         {
-                            LOG_WARN_THROTTLE(5000, "NON-GUIDED PLANNER SELECTED AS BEST PLANNER| Topology match FAILED - TOPOLOGY SWITCH detected | Fallback ID: "
+                            LOG_DEBUG_THROTTLE(5000, "NON-GUIDED PLANNER SELECTED AS BEST PLANNER| Topology match FAILED - TOPOLOGY SWITCH detected | Fallback ID: "
                                                         << best_planner.result.guidance_ID << " | Visualization: Dark red elevated");
                             // Keep the default ID that was already assigned above
                         }

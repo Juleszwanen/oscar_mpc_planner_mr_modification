@@ -117,10 +117,10 @@ namespace MPCPlanner
         std::unordered_map<int, int> _map_homotopy_class_to_planner;
 
         // Configuration parameters
-        bool _use_tmpcpp{true}, _enable_constraints{true};
-        double _control_frequency{20.};
-        double _planning_time;
-        bool _assign_meaningful_topology{false};
+        bool    _use_tmpcpp{true}, _enable_constraints{true};
+        double  _control_frequency{20.};
+        double  _planning_time;
+        bool    _assign_meaningful_topology{false};
 
         int TOPOLOGY_NO_MATCH{8}; // Indicates top
         RealTimeData empty_data_;
