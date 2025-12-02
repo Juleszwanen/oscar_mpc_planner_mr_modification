@@ -863,10 +863,10 @@ bool JulesRealJackalPlanner::objectiveReached()
 
 void JulesRealJackalPlanner::rotateToGoal(geometry_msgs::Twist &cmd)
 {
-    LOG_INFO_THROTTLE(1500, _ego_robot_ns + ": Rotating to the goal");
+    LOG_DEBUG_THROTTLE(1500, _ego_robot_ns + ": Rotating to the goal");
     if (!_data.goal_received)
     {
-        LOG_INFO(_ego_robot_ns + ": Waiting for the goal, just stopping for now");
+        LOG_DEBUG(_ego_robot_ns + ": Waiting for the goal, just stopping for now");
         return;
     }
 
@@ -1098,7 +1098,7 @@ void JulesRealJackalPlanner::interpolateTrajectoryPredictionsByTime()
             double v_max = CONFIG["JULES"]["robot_max_velocity"].as<double>(2.0);
             if (v_mag > v_max)
             {
-                LOG_WARN_THROTTLE(2000, _ego_robot_ns + ": Clamping extrapolated velocity for " + ns +
+                LOG_DEBUG_THROTTLE(9000, _ego_robot_ns + ": Clamping extrapolated velocity for " + ns +
                                             " from " + std::to_string(v_mag) + " to " + std::to_string(v_max) + " m/s");
                 v = v.normalized() * v_max;
             }
@@ -1106,7 +1106,7 @@ void JulesRealJackalPlanner::interpolateTrajectoryPredictionsByTime()
             double psi_dot_max = CONFIG["JULES"]["robot_max_angular_velocity"].as<double>(2.0);
             if (std::abs(psi_dot) > psi_dot_max)
             {
-                LOG_WARN_THROTTLE(2000, _ego_robot_ns + ": Clamping angular velocity for " + ns);
+                LOG_DEBUG_THROTTLE(2000, _ego_robot_ns + ": Clamping angular velocity for " + ns);
                 psi_dot = std::clamp(psi_dot, -psi_dot_max, psi_dot_max);
             }
 
@@ -1266,6 +1266,33 @@ std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> JulesRealJackalPlanne
         {
             applyBrakingCommand(cmd);
             buildOutputFromBrakingCommand(output, cmd);
+            LOG_DEBUG_THROTTLE(2000, _ego_robot_ns + ": Applying braking command - solver failed or output disabled");
+        }
+    };
+
+
+    //lambda to handle calculating mpc while the robots stand still
+    auto solveMPCAndExtractCommandStandStill = [&cmd, &output, this]()
+    {
+        output = _planner->solveMPC(_state, _data);
+        if (_enable_output && output.success)
+        {
+            cmd.linear.x = _planner->getSolution(1, "v");
+            cmd.angular.z = _planner->getSolution(0, "w");
+            _state.set("v", cmd.linear.x);
+            LOG_VALUE_DEBUG("Commanded", "v=" + std::to_string(cmd.linear.x) + ", w=" + std::to_string(cmd.angular.z));
+            CONFIG["enable_output"] = true;
+        }
+        else if (!_enable_output)
+        {
+            _state.set("v", _measured_velocity);
+            cmd.linear.x = 0.0;
+            cmd.angular.z = 0.0;
+        }
+        else
+        {
+            applyBrakingCommand(cmd);
+            buildOutputFromBrakingCommand(output, cmd);
             LOG_WARN_THROTTLE(2000, _ego_robot_ns + ": Applying braking command - solver failed or output disabled");
         }
     };
@@ -1282,14 +1309,16 @@ std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> JulesRealJackalPlanne
     {
     case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
     {
-        LOG_WARN_THROTTLE(8000, _ego_robot_ns + ": Waiting for first real trajectory data, planning with Dummy Obstacles");
-        solveMPCAndExtractCommand();
+        LOG_DEBUG_THROTTLE(20000, _ego_robot_ns + ": Waiting for first real trajectory data, planning with Dummy Obstacles");
+        // solveMPCAndExtractCommand();
+        solveMPCAndExtractCommandStandStill();
         break;
     }
     case MPCPlanner::PlannerState::PLANNING_ACTIVE:
     {
         LOG_DEBUG(_ego_robot_ns + ": Calling MPC solver with " + std::to_string(_data.dynamic_obstacles.size()) + " obstacles");
-        solveMPCAndExtractCommand();
+        // solveMPCAndExtractCommand();
+        solveMPCAndExtractCommandStandStill();
         break;
     }
     case MPCPlanner::PlannerState::GOAL_REACHED:
@@ -1380,7 +1409,7 @@ void JulesRealJackalPlanner::buildOutputFromBrakingCommand(MPCPlanner::PlannerOu
         output.trajectory.orientations.push_back(orientation);
     }
 
-    LOG_WARN_THROTTLE(2000, _ego_robot_ns << " Creating a braking command trajectory");
+    LOG_DEBUG_THROTTLE(2000, _ego_robot_ns << " Creating a braking command trajectory");
 }
 
 void JulesRealJackalPlanner::publishCmdAndVisualize(const geometry_msgs::Twist &cmd, const MPCPlanner::PlannerOutput &output)
@@ -1433,7 +1462,7 @@ void JulesRealJackalPlanner::logCommunicationDecision(bool communicated, const M
     const std::string config_mode = _communicate_on_topology_switch_only ? "topology-based" : "always";
     const std::string action = communicated ? "SENT" : "SKIPPED";
     
-    LOG_INFO_THROTTLE(5000, _ego_robot_ns + ": " + action + " trajectory | " +
+    LOG_DEBUG_THROTTLE(5000, _ego_robot_ns + ": " + action + " trajectory | " +
                       "mode=" + config_mode + " | " +
                       "state=" + MPCPlanner::stateToString(_current_state) + " | " +
                       "topology=" + std::to_string(output.selected_topology_id));
@@ -1598,10 +1627,10 @@ bool JulesRealJackalPlanner::shouldCommunicate(const MPCPlanner::PlannerOutput &
 // Helper: Extract communication decision logic
 bool JulesRealJackalPlanner::decideCommunication(const MPCPlanner::PlannerOutput &output)
 {
-    if (!_enable_output)
-    {
-        return false;
-    }
+    // if (!_enable_output)
+    // {
+    //     return false;
+    // }
 
     // If topology filtering is disabled, ALWAYS communicate in active states
     if (!_communicate_on_topology_switch_only)
@@ -1622,25 +1651,26 @@ bool JulesRealJackalPlanner::decideCommunication(const MPCPlanner::PlannerOutput
 void JulesRealJackalPlanner::saveDataStateBased()
 {
     // Save state distribution for debugging communication issues
-    if (CONFIG["recording"]["enable"].as<bool>())
-    {
-        auto& ds = _planner->getDataSaver();
+    // if (CONFIG["recording"]["enable"].as<bool>())
+    // {
+    //     auto& ds = _planner->getDataSaver();
         
-        // Track which state we're in (for debugging)
-        ds.AddData("current_state", static_cast<double>(_current_state));
+    //     // Track which state we're in (for debugging)
+    //     ds.AddData("current_state", static_cast<double>(_current_state));
         
-        // Track if publishCmdAndVisualize was called (will be set in those states)
-        bool is_publishing_state = (_current_state == MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA ||
-                                    _current_state == MPCPlanner::PlannerState::PLANNING_ACTIVE ||
-                                    _current_state == MPCPlanner::PlannerState::GOAL_REACHED);
-        ds.AddData("is_publishing_state", is_publishing_state ? 1.0 : 0.0);
-    }
+    //     // Track if publishCmdAndVisualize was called (will be set in those states)
+    //     bool is_publishing_state = (_current_state == MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA ||
+    //                                 _current_state == MPCPlanner::PlannerState::PLANNING_ACTIVE ||
+    //                                 _current_state == MPCPlanner::PlannerState::GOAL_REACHED);
+    //     ds.AddData("is_publishing_state", is_publishing_state ? 1.0 : 0.0);
+    // }
     
     switch (_current_state)
     {
     case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
     case MPCPlanner::PlannerState::PLANNING_ACTIVE:
-        if (CONFIG["recording"]["enable"].as<bool>())
+        // Only record when in the correct state, recording enabled and we are allowed to plan/drive
+        if (CONFIG["recording"]["enable"].as<bool>() && _enable_output)
             _planner->saveData(_state, _data);
         break;
     

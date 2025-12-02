@@ -1440,26 +1440,26 @@ bool JulesJackalPlanner::shouldCommunicate(const MPCPlanner::PlannerOutput &outp
 
 void JulesJackalPlanner::saveDataStateBased()
 {
-    // Save state distribution for debugging communication issues
-    if (CONFIG["recording"]["enable"].as<bool>())
-    {
-        auto& ds = _planner->getDataSaver();
+    // // Save state distribution for debugging communication issues
+    // if (CONFIG["recording"]["enable"].as<bool>())
+    // {
+    //     auto& ds = _planner->getDataSaver();
         
-        // Track which state we're in (for debugging)
-        ds.AddData("current_state", static_cast<double>(_current_state));
+    //     // Track which state we're in (for debugging)
+    //     ds.AddData("current_state", static_cast<double>(_current_state));
         
-        // Track if publishCmdAndVisualize was called (will be set in those states)
-        bool is_publishing_state = (_current_state == MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA ||
-                                    _current_state == MPCPlanner::PlannerState::PLANNING_ACTIVE ||
-                                    _current_state == MPCPlanner::PlannerState::GOAL_REACHED);
-        ds.AddData("is_publishing_state", is_publishing_state ? 1.0 : 0.0);
-    }
+    //     // Track if publishCmdAndVisualize was called (will be set in those states)
+    //     bool is_publishing_state = (_current_state == MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA ||
+    //                                 _current_state == MPCPlanner::PlannerState::PLANNING_ACTIVE ||
+    //                                 _current_state == MPCPlanner::PlannerState::GOAL_REACHED);
+    //     ds.AddData("is_publishing_state", is_publishing_state ? 1.0 : 0.0);
+    // }
     
     switch (_current_state)
     {
     case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
     case MPCPlanner::PlannerState::PLANNING_ACTIVE:
-        if (CONFIG["recording"]["enable"].as<bool>())
+        if (CONFIG["recording"]["enable"].as<bool>() && _enable_output)
             _planner->saveData(_state, _data);
         break;
     
