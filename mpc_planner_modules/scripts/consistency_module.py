@@ -16,8 +16,7 @@ class ConsistencyObjective(Objective):
 
     def define_parameters(self, params):
         # Weight for the consistency cost
-        params.add("consistency_weight", add_to_rqt_reconfigure=True, 
-                   rqt_config_name=lambda p: f'["weights"]["consistency_weight"]')
+        params.add("consistency_weight", add_to_rqt_reconfigure=True, rqt_config_name=lambda p: f'["weights"]["consistency"]')
         
         # Previous trajectory positions (one for each stage)
         # These will be set in C++ from the previous solution
