@@ -89,7 +89,7 @@ weights: # Weights of the MPC, need to correspond to declared weights in the sol
   slack: 10000.
   terminal_angle: 100.0 # 0.0
   terminal_contouring: 10.0 # 0.0
-  consistency: 1.
+  consistency: 0.1
 
 visualization:
   draw_every: 5 # Visualize every x stages

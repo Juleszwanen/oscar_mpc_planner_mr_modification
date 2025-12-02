@@ -239,6 +239,18 @@ namespace MPCPlanner
          * @param selected_solver The solver from the selected planner
          */
         void storePreviousTrajectoryFromSolver(std::shared_ptr<Solver> selected_solver);
+
+        /**
+         * @brief Visualize the previous trajectory used for consistency tracking
+         * 
+         * Displays the trajectory from the previous planning cycle as an orange line
+         * with small spheres at each waypoint. This shows "what we're trying to stay
+         * consistent with" during the current optimization.
+         * 
+         * Called at the start of optimize() before the parallel optimization loop.
+         * If no previous trajectory exists, clears any existing visualization.
+         */
+        void visualizePreviousTrajectory();
         // =========================================================================================
     };
 } // namespace MPCPlanner

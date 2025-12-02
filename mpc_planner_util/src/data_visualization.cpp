@@ -137,6 +137,31 @@ namespace MPCPlanner
         return publisher;
     }
 
+    RosTools::ROSMarkerPublisher &visualizeObstaclePredictionsAsLines(const std::vector<DynamicObstacle> &obstacles, const std::string &topic_name,
+                                                                      bool publish, double alpha, double line_thickness)
+    {
+        RosTools::ROSMarkerPublisher &publisher = VISUALS.getPublisher(topic_name);
+        auto &line = publisher.getNewLine();
+        line.setScale(line_thickness);
+
+        for (auto &obstacle : obstacles)
+        {
+            line.setColorInt(obstacle.index, alpha, RosTools::Colormap::BRUNO);
+            
+            for (size_t k = 1; k < obstacle.prediction.modes[0].size(); k++)
+            {
+                line.addLine(obstacle.prediction.modes[0][k - 1].position, 
+                             obstacle.prediction.modes[0][k].position, 
+                             0.0);
+            }
+        }
+
+        if (publish)
+            publisher.publish();
+
+        return publisher;
+    }
+
     RosTools::ROSMarkerPublisher &visualizeObstaclePredictionsWithTime(const std::vector<DynamicObstacle> &obstacles, const std::string &topic_name,
                                                                        bool publish, double alpha, const double dt)
     {

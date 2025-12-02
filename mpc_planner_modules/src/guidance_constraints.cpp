@@ -289,6 +289,10 @@ namespace MPCPlanner
         if (!_use_tmpcpp && !global_guidance_->Succeeded())
             return 0;
 
+        // ========== JULES: Visualize previous trajectory (consistency reference) ==========
+        visualizePreviousTrajectory();
+        // ==================================================================================
+
         bool shift_forward = CONFIG["shift_previous_solution_forward"].as<bool>() &&
                              CONFIG["enable_output"].as<bool>();
 
@@ -1029,7 +1033,51 @@ namespace MPCPlanner
         
         _has_previous_trajectory = true;
     }
+
+    void GuidanceConstraints::visualizePreviousTrajectory()
+    {
+        auto &marker_pub = VISUALS.getPublisher(_name + "/consistency_reference");
+        
+        // If no previous trajectory or consistency is disabled, clear the visualization
+        if (!_consistency_module_available || !_has_previous_trajectory)
+        {
+            // Publish empty to clear any previous markers
+            marker_pub.publish();
+            return;
+        }
+        
+        // Visualize the previous trajectory as orange line with small spheres
+        // This shows "what we're trying to stay consistent with"
+        
+        // Create line connecting all trajectory points
+        auto &line = marker_pub.getNewLine();
+        line.setColor(1.0, 0.5, 0.0, 0.8);  // Orange color
+        line.setScale(0.15);  // Line thickness
+        
+        for (size_t k = 1; k < _prev_trajectory.size(); k++)
+        {
+            Eigen::Vector3d p1(_prev_trajectory[k - 1](0), _prev_trajectory[k - 1](1), 0.05);
+            Eigen::Vector3d p2(_prev_trajectory[k](0), _prev_trajectory[k](1), 0.05);
+            line.addLine(p1, p2);
+        }
+        
+        // Add small spheres at each trajectory point
+        auto &spheres = marker_pub.getNewPointMarker("SPHERE");
+        spheres.setColor(1.0, 0.5, 0.0, 1.0);  // Orange color, fully opaque
+        spheres.setScale(0.1, 0.1, 0.1);  // Small spheres
+        
+        for (size_t k = 0; k < _prev_trajectory.size(); k++)
+        {
+            Eigen::Vector3d point(_prev_trajectory[k](0), _prev_trajectory[k](1), 0.05);
+            spheres.addPointMarker(point);
+        }
+        
+        marker_pub.publish();
+        
+        LOG_MARK("Visualized consistency reference trajectory (" << _prev_trajectory.size() << " points)");
+    }
     // ==================== END: Consistency Module Integration Functions ====================
+
 }
 
 // namespace MPCPlanner

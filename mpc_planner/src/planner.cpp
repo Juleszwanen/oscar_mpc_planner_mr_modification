@@ -256,7 +256,6 @@ namespace MPCPlanner
         (void)state;
 
         for (auto &module : _modules)
-
             module->visualize(data, _module_data);
 
         visualizeTrajectory(_output.trajectory, "planned_trajectory", true, 0.2);
@@ -268,6 +267,7 @@ namespace MPCPlanner
         // visualizeObstaclePredictions(data.dynamic_obstacles, "obstacle_predictions", true); //JULES: YOU COMMENTED THIS OUT, on sep 11, because you publish the obstacle predictions a step ealier to see what the ego robto actually optimizes against. before generating a new path
         visualizeRobotArea(state.getPos(), state.get("psi"), data.robot_area, "robot_area", true);
 
+        visualizeObstaclePredictionsAsLines(data.dynamic_obstacles, "obstacle_prediction_lines", true, 0.3, 0.15);
         std::vector<double> angles;
         for (int k = 1; k < _solver->N; k++)
             angles.emplace_back(_solver->getOutput(k, "psi"));
@@ -293,6 +293,7 @@ namespace MPCPlanner
             visualizeObstaclePredictionsWithTime(data.dynamic_obstacles, "obstacle_predictions", true, 0.8, _solver->dt);
         }
     }
+    
     void Planner::saveData(State &state, RealTimeData &data)
     {
         if (!_is_data_ready)
