@@ -242,6 +242,14 @@ namespace MPCPlanner
         return _experiment_util->getDataSaver();
     }
 
+    const int&  Planner::getControlIteration() const
+    {
+        return _experiment_util->getControlIteration();
+    }
+    const int& Planner::getExperimentCounter() const 
+    {
+        return _experiment_util->getExperimentCounter();
+    }
     void Planner::onDataReceived(RealTimeData &data, std::string &&data_name)
     {
         for (auto &module : _modules)

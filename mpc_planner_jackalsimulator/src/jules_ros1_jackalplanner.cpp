@@ -220,6 +220,7 @@ void JulesJackalPlanner::initializeSubscribersAndPublishers(ros::NodeHandle &nh)
     _direct_trajectory_pub = nh.advertise<mpc_planner_msgs::ObstacleGMM>("robot_to_robot/output/current_trajectory", 1);
     _objective_pub = nh.advertise<std_msgs::Bool>("events/objective_reached", 1);
 
+    _metrics_pub = nh.advertise<mpc_planner_msgs::MPCMetrics>("mpc_metrics", 1);
     // Roadmap reverse
     _reverse_roadmap_pub = nh.advertise<std_msgs::Empty>("roadmap/reverse", 1);
 }
@@ -328,6 +329,7 @@ void JulesJackalPlanner::loop(const ros::TimerEvent &event)
         auto [cmd, output] = generatePlanningCommand(_current_state);
         
         publishCmdAndVisualize(cmd, output);
+        publishMetrics(output, cmd);
         _data.past_trajectory.replaceTrajectory(output.trajectory);
         // The state transition is be triggered by a trajectory callback function
 
@@ -350,6 +352,7 @@ void JulesJackalPlanner::loop(const ros::TimerEvent &event)
         auto [cmd, output] = generatePlanningCommand(_current_state);
         // LOG_INFO(_ego_robot_ns + output.logOutput());
         publishCmdAndVisualize(cmd, output);
+        publishMetrics(output, cmd);
         _data.past_trajectory.replaceTrajectory(output.trajectory);
 
         _benchmarker->stop();
@@ -362,6 +365,7 @@ void JulesJackalPlanner::loop(const ros::TimerEvent &event)
         _data.past_trajectory.replaceTrajectory(output.trajectory);
     
         publishCmdAndVisualize(cmd, output);
+        publishMetrics(output, cmd);
         break;
     }
     case MPCPlanner::PlannerState::RESETTING:
@@ -389,11 +393,10 @@ void JulesJackalPlanner::loop(const ros::TimerEvent &event)
     // visualize the lab limits and visualize when there is a goal
     
     saveDataStateBased();
-
+    
     this->visualize();
     LOG_DEBUG("============= End Loop =============");
 }
-
 
 
 void JulesJackalPlanner::statePoseCallback(const geometry_msgs::PoseStamped::ConstPtr &msg)
@@ -1334,6 +1337,69 @@ void JulesJackalPlanner::publishObjectiveReachedEvent()
     LOG_INFO_THROTTLE(1000, _ego_robot_ns + ": Objective reached - published event");
 }
 
+void JulesJackalPlanner::publishMetrics(const MPCPlanner::PlannerOutput &output, const geometry_msgs::Twist &cmd)
+{
+    // Only publish metrics in states where we have valid planning data
+    switch (_current_state)
+    {
+    case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
+    case MPCPlanner::PlannerState::PLANNING_ACTIVE:
+    case MPCPlanner::PlannerState::GOAL_REACHED:
+    {
+        mpc_planner_msgs::MPCMetrics metrics;
+        
+        // Header
+        metrics.header.stamp = ros::Time::now();
+        metrics.header.frame_id = _global_frame;
+        metrics.robot_name = _ego_robot_ns;
+        
+        // Solver metrics
+        metrics.solve_time_ms = _benchmarker->getLast() * 1000.0;  // Convert seconds to milliseconds
+        metrics.success_rate = -1.0;  // Not tracking rolling window yet
+        metrics.iterations = _planner->getControlIteration();
+        metrics.exit_code = output.solver_exit_code;
+        metrics.objective_value = output.trajectory_cost;
+        // objective_values_all_planners - leave empty for now
+        
+        // Topology metrics
+        metrics.current_topology_id = output.selected_topology_id;
+        metrics.previous_topology_id = output.previous_topology_id;
+        metrics.topology_switch = output.following_new_topology;
+        metrics.used_guidance = output.used_guidance;
+        metrics.selected_planner_index = output.selected_planner_index;
+        metrics.num_of_guidance_found = output.num_of_guidance_found;
+        
+        // State information
+        metrics.current_state = MPCPlanner::stateToString(_current_state);
+        metrics.previous_state = MPCPlanner::stateToString(_previous_state);
+        metrics.current_position.push_back(_state.get("x"));
+        metrics.current_position.push_back(_state.get("y"));
+        metrics.current_linear_x = cmd.linear.x;
+        metrics.current_angular_vel = cmd.angular.z;
+        
+        // Communication metrics
+        metrics.last_communication_trigger = MPCPlanner::toString(_communication_trigger_reason);
+        metrics.messages_sent_total = 0;  // Track later
+        metrics.messages_saved_total = 0;  // Track later
+        metrics.communication_savings_percent = 0.0;  // Track later
+        
+        // Distribution arrays - implement later
+        // topology_selection_counts, topology_labels
+        // communication_trigger_counts, communication_trigger_labels
+        
+        _metrics_pub.publish(metrics);
+        break;
+    }
+    
+    default:
+        // Don't publish metrics in other states (UNINITIALIZED, TIMER_STARTUP,
+        // WAITING_FOR_FIRST_EGO_POSE, INITIALIZING_OBSTACLES, RESETTING, ERROR_STATE)
+        break;
+    }
+}
+
+
+
 // Helper: Extract communication decision logic
 bool JulesJackalPlanner::decideCommunication(const MPCPlanner::PlannerOutput &output)
 {
@@ -1436,7 +1502,6 @@ bool JulesJackalPlanner::shouldCommunicate(const MPCPlanner::PlannerOutput &outp
         return true;
     }
 }
-
 
 void JulesJackalPlanner::saveDataStateBased()
 {

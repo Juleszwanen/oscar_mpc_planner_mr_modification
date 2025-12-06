@@ -1,0 +1,177 @@
+{
+  "keys": {},
+  "groups": {
+    "mainwindow": {
+      "keys": {
+        "geometry": {
+          "repr(QByteArray.hex)": "QtCore.QByteArray(b'01d9d0cb0003000000000000000000000000077f0000043700000000000000250000077f000004370000000100000000078000000000000000250000077f00000437')",
+          "type": "repr(QByteArray.hex)",
+          "pretty-print": "           7   %   7        %   7"
+        },
+        "state": {
+          "repr(QByteArray.hex)": "QtCore.QByteArray(b'000000ff00000000fd000000010000000300000780000003e9fc0100000005fb00000066007200710074005f006c006f0067006700650072005f006c006500760065006c005f005f004c006f0067006700650072004c006500760065006c005f005f0031005f005f004c006f0067006700650072004c006500760065006c0057006900640067006500740100000000000002580000000000000000fb00000030005f005f0044006f0063006b0057006900640067006500740043006f006e007400610069006e00650072005f005f003103000000000000003900000780000003e9fb00000050007200710074005f006400650070005f005f0052006f0073005000610063006b00470072006100700068005f005f0031005f005f0052006f0073005000610063006b004700720061007000680055006903000002fa00000133000002bf00000198fb0000008c006d00700063005f0070006c0061006e006e00650072005f00640061007300680062006f006100720064005f005f004d0050004300200050006c0061006e006e00650072002000440061007300680062006f006100720064005f005f0031005f005f004d005000430050006c0061006e006e0065007200440061007300680062006f006100720064005500690100000000000002910000019500fffffffb00000026007200710074005f007200760069007a005f005f005200560069007a005f005f0031005f005f0100000297000004e90000030700ffffff000007800000000000000004000000040000000800000008fc00000001000000030000000100000036004d0069006e0069006d0069007a006500640044006f0063006b00570069006400670065007400730054006f006f006c0062006100720000000000ffffffff0000000000000000')",
+          "type": "repr(QByteArray.hex)",
+          "pretty-print": "                 frqt_logger_level__LoggerLevel__1__LoggerLevelWidget          0__DockWidgetContainer__1          Prqt_dep__RosPackGraph__1__RosPackGraphUi           mpc_planner_dashboard__MPC Planner Dashboard__1__MPCPlannerDashboardUi          &rqt_rviz__RViz__1__                            6MinimizedDockWidgetsToolbar        "
+        }
+      },
+      "groups": {
+        "toolbar_areas": {
+          "keys": {
+            "MinimizedDockWidgetsToolbar": {
+              "repr": "8",
+              "type": "repr"
+            }
+          },
+          "groups": {}
+        }
+      }
+    },
+    "pluginmanager": {
+      "keys": {
+        "running-plugins": {
+          "repr": "{'mpc_planner_dashboard/MPC Planner Dashboard': [1], 'rqt_rviz/RViz': [1]}",
+          "type": "repr"
+        }
+      },
+      "groups": {
+        "plugin__mpc_planner_dashboard__MPC Planner Dashboard__1": {
+          "keys": {},
+          "groups": {
+            "dock_widget__MPCPlannerDashboardUi": {
+              "keys": {
+                "dock_widget_title": {
+                  "repr": "'MPC Planner Dashboard'",
+                  "type": "repr"
+                },
+                "dockable": {
+                  "repr": "True",
+                  "type": "repr"
+                },
+                "parent": {
+                  "repr": "None",
+                  "type": "repr"
+                }
+              },
+              "groups": {}
+            },
+            "plugin": {
+              "keys": {
+                "current_robot": {
+                  "repr": "'jackal1'",
+                  "type": "repr"
+                }
+              },
+              "groups": {}
+            }
+          }
+        },
+        "plugin__rqt_dep__RosPackGraph__1": {
+          "keys": {},
+          "groups": {
+            "dock_widget__RosPackGraphUi": {
+              "keys": {
+                "dock_widget_title": {
+                  "repr": "'Package Graph'",
+                  "type": "repr"
+                },
+                "dockable": {
+                  "repr": "'true'",
+                  "type": "repr"
+                },
+                "parent": {
+                  "repr": "None",
+                  "type": "repr"
+                }
+              },
+              "groups": {}
+            },
+            "plugin": {
+              "keys": {
+                "auto_fit_graph_check_box_state": {
+                  "repr": "'true'",
+                  "type": "repr"
+                },
+                "colorize_state": {
+                  "repr": "'false'",
+                  "type": "repr"
+                },
+                "depth_combo_box_index": {
+                  "repr": "'0'",
+                  "type": "repr"
+                },
+                "directions_combo_box_index": {
+                  "repr": "'0'",
+                  "type": "repr"
+                },
+                "filter_line_edit_text": {
+                  "repr": "'(Separate pkgs by comma)'",
+                  "type": "repr"
+                },
+                "hide_transitives_state": {
+                  "repr": "'false'",
+                  "type": "repr"
+                },
+                "highlight_connections_check_box_state": {
+                  "repr": "'true'",
+                  "type": "repr"
+                },
+                "mark_state": {
+                  "repr": "'true'",
+                  "type": "repr"
+                },
+                "package_type_combo_box": {
+                  "repr": "'0'",
+                  "type": "repr"
+                },
+                "show_system_state": {
+                  "repr": "'false'",
+                  "type": "repr"
+                },
+                "with_stacks_state": {
+                  "repr": "'true'",
+                  "type": "repr"
+                }
+              },
+              "groups": {}
+            }
+          }
+        },
+        "plugin__rqt_rviz__RViz__1": {
+          "keys": {},
+          "groups": {
+            "dock_widget__": {
+              "keys": {
+                "dock_widget_title": {
+                  "repr": "'ros1_multi_robot.rviz[*] - RViz'",
+                  "type": "repr"
+                },
+                "dockable": {
+                  "repr": "True",
+                  "type": "repr"
+                },
+                "parent": {
+                  "repr": "None",
+                  "type": "repr"
+                }
+              },
+              "groups": {}
+            },
+            "plugin": {
+              "keys": {
+                "hide_menu": {
+                  "repr": "False",
+                  "type": "repr"
+                },
+                "rviz_config_file": {
+                  "repr": "'/workspace/src/bring_up_multi_robot_scenarios/rviz/ros1_multi_robot.rviz'",
+                  "type": "repr"
+                }
+              },
+              "groups": {}
+            }
+          }
+        }
+      }
+    }
+  }
+}

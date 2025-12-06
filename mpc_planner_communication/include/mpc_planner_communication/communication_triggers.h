@@ -24,6 +24,7 @@ namespace MPCPlanner {
      * @brief Convert trigger reason to string for logging
      */
     std::string toString(CommunicationTriggerReason reason);
+    
 
 /**
  * @brief Pure strategy functions for evaluating multi-robot communication triggers

@@ -15,6 +15,7 @@ add_message_files(
   Gaussian.msg 
   ObstacleGMM.msg 
   ObstacleArray.msg
+  MPCMetrics.msg
 )
 
 ## Declare services

@@ -34,6 +34,8 @@ namespace MPCPlanner
         void safeExtraData(const State &state, const RealTimeData &data);
 
         RosTools::DataSaver &getDataSaver() const { return *_data_saver; };
+        const int                 &getControlIteration() const  {return _control_iteration;};
+        const int                 &getExperimentCounter() const  {return _experiment_counter;}
 
     private:
         // Data is saved in this object

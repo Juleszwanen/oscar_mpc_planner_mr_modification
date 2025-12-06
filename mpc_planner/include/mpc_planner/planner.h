@@ -64,6 +64,9 @@ namespace MPCPlanner
         bool isObjectiveReached(const State &state, const RealTimeData &data) const;
 
         RosTools::DataSaver &getDataSaver() const;
+        
+        const int&  getControlIteration() const;
+        const int& getExperimentCounter() const;
 
         bool setEgoNameSpaceGuidanceModule(const std::string &ego_robot_ns);
 

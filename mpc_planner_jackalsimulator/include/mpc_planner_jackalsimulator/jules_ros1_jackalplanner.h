@@ -6,6 +6,7 @@
 
 #include <mpc_planner_msgs/ObstacleArray.h>
 #include <mpc_planner_msgs/GetOtherTrajectories.h>
+#include <mpc_planner_msgs/MPCMetrics.h>
 #include <ros_tools/profiling.h>
 #include <mpc_planner_communication/communication_triggers.h>
 
@@ -79,8 +80,11 @@ public:
     void applyBrakingCommand(geometry_msgs::Twist &cmd);
     void buildOutputFromBrakingCommand(MPCPlanner::PlannerOutput &output, const geometry_msgs::Twist &cmd);
     void publishCmdAndVisualize(const geometry_msgs::Twist &cmd, const MPCPlanner::PlannerOutput &output);
+    void publishMetrics(const MPCPlanner::PlannerOutput &output, const geometry_msgs::Twist &cmd);  // State-based metrics publishing
     void publishDirectTrajectory(const MPCPlanner::PlannerOutput &output);
     void publishObjectiveReachedEvent();
+    
+    
 
 public:
     void loop(const ros::TimerEvent &event);
@@ -152,7 +156,8 @@ private:
     ros::Publisher _pose_pub;              // Publish your own pose in the system
     ros::Publisher _direct_trajectory_pub; // this publishes to a robot immediately so no central aggregator in between
     ros::Publisher _objective_pub;         // events/objective_reached
-    
+    ros::Publisher _metrics_pub;
+
     std::unique_ptr<RosTools::Timer> _startup_timer;
 
    

@@ -106,7 +106,7 @@ JULES:
     robot_max_velocity: 2.5        # m/s
     robot_max_angular_velocity: 2.5  # rad/s
     safe_extra_data: true
-    max_geometric_deviation: 0.7 # Should somehow be related to the radius of the robot, I think
+    max_geometric_deviation: 2.0 # Should somehow be related to the radius of the robot, I think
     heartbeat_time: 4.0 # time in between which we should send a new trajectory of we did not broadcast
     consistency_enabled: true
     consistency_on_non_guided_planner: true

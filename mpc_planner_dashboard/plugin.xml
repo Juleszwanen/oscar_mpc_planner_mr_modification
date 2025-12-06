@@ -1,0 +1,14 @@
+<library path="src">
+  <class name="MPC Planner Dashboard"
+         type="mpc_planner_dashboard.mpc_planner_dashboard.MPCPlannerDashboard"
+         base_class_type="rqt_gui_py::Plugin">
+    <description>
+      MPC Planner Dashboard visualizes MPC metrics and communication stats.
+    </description>
+    <qtgui>
+      <label>MPC Planner Dashboard</label>
+      <icon type="theme">applications-system</icon>
+      <statustip>MPC Planner Dashboard</statustip>
+    </qtgui>
+  </class>
+</library>
