@@ -38,6 +38,9 @@ namespace MPCPlanner
 
         // Variable which resembles if the ego_robot communicated its trajectory
         bool communicated_trajectory{false};
+        // Variable which resembles the communication decision of the ego robot
+        int  communication_trigger_reason{0};
+        
 
         // Feedback data
         double intrusion;

@@ -360,11 +360,15 @@ void JulesJackalPlanner::loop(const ros::TimerEvent &event)
     }
     case MPCPlanner::PlannerState::GOAL_REACHED:
     {
-        
+        _planner->visualizeObstaclePredictionsPlanner(_state, _data, true);
         auto [cmd, output] = generatePlanningCommand(_current_state);
         _data.past_trajectory.replaceTrajectory(output.trajectory);
     
-        publishCmdAndVisualize(cmd, output);
+        // publishCmdAndVisualize(cmd, output); // 
+
+        _cmd_pub.publish(cmd);
+        
+        _planner->visualize(_state, _data);
         publishMetrics(output, cmd);
         break;
     }
@@ -651,10 +655,17 @@ void JulesJackalPlanner::trajectoryCallback(const mpc_planner_msgs::ObstacleGMM:
         if (CONFIG["recording"]["enable"].as<bool>())
         {
             RosTools::DataSaver& ds = _planner->getDataSaver();
-            ds.AddData("rx_from_" + ns + "_trajectory", 1.0);
+            const int control_iteration = _planner->getControlIteration();
             
+            // Record received trajectory with control iteration for alignment
+            // Format: (1.0 = received, control_iteration) allows mapping to specific iteration
+            Eigen::Vector2d rx_data(1.0, static_cast<double>(control_iteration));
+            ds.AddData("rx_from_" + ns + "_trajectory", rx_data);
+            
+            // Record message delay with control iteration for alignment
             ros::Duration message_delay = ros::Time::now() - msg->gaussians.back().mean.header.stamp;
-            ds.AddData("rx_from_" + ns + "_delay_sec", message_delay.toSec());
+            Eigen::Vector2d delay_data(message_delay.toSec(), static_cast<double>(control_iteration));
+            ds.AddData("rx_from_" + ns + "_delay_sec", delay_data);
         }
         break;
     }
@@ -1235,22 +1246,7 @@ void JulesJackalPlanner::publishCmdAndVisualize(const geometry_msgs::Twist &cmd,
     _planner->visualize(_state, _data);
 }
 
-// Helper: Record decision to data saver
-void JulesJackalPlanner::recordCommunicationDecision(bool communicated)
-{
-    if (!CONFIG["recording"]["enable"].as<bool>())
-        return;
-    
-    auto& ds = _planner->getDataSaver();
-    ds.AddData("publish_cmd_called", 1.0);                  // Track function calls
-    ds.AddData("communicated", communicated ? 1.0 : 0.0);  // Track actual communication
-    
-    // Record the specific trigger reason (as integer enum value)
-    ds.AddData("communication_trigger_reason", static_cast<double>(_communication_trigger_reason));
-    
-    // Store in RealTimeData for downstream use
-    _data.communicated_trajectory = communicated;
-}
+
 
 // Helper: Log the decision (throttled)
 void JulesJackalPlanner::logCommunicationDecision(bool communicated, const MPCPlanner::PlannerOutput &output)
@@ -1324,8 +1320,10 @@ void JulesJackalPlanner::publishDirectTrajectory(const MPCPlanner::PlannerOutput
     if (CONFIG["recording"]["enable"].as<bool>())
     {
         auto& ds = _planner->getDataSaver();
-        ds.AddData("tx_trajectory", 1.0);  // Records when trajectory was published
-        ds.AddData("tx_num_poses", static_cast<double>(gaussian.mean.poses.size()));  // Track trajectory length
+        Eigen::Vector2d tx_trajector(1.0, _planner->getControlIteration());
+        ds.AddData("tx_trajectory", tx_trajector);  // Records when trajectory was published
+        
+        // ds.AddData("tx_num_poses", static_cast<double>(gaussian.mean.poses.size()));  // Track trajectory length
     }
 }
 
@@ -1344,7 +1342,6 @@ void JulesJackalPlanner::publishMetrics(const MPCPlanner::PlannerOutput &output,
     {
     case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
     case MPCPlanner::PlannerState::PLANNING_ACTIVE:
-    case MPCPlanner::PlannerState::GOAL_REACHED:
     {
         mpc_planner_msgs::MPCMetrics metrics;
         
@@ -1505,28 +1502,29 @@ bool JulesJackalPlanner::shouldCommunicate(const MPCPlanner::PlannerOutput &outp
 
 void JulesJackalPlanner::saveDataStateBased()
 {
-    // // Save state distribution for debugging communication issues
-    // if (CONFIG["recording"]["enable"].as<bool>())
-    // {
-    //     auto& ds = _planner->getDataSaver();
-        
-    //     // Track which state we're in (for debugging)
-    //     ds.AddData("current_state", static_cast<double>(_current_state));
-        
-    //     // Track if publishCmdAndVisualize was called (will be set in those states)
-    //     bool is_publishing_state = (_current_state == MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA ||
-    //                                 _current_state == MPCPlanner::PlannerState::PLANNING_ACTIVE ||
-    //                                 _current_state == MPCPlanner::PlannerState::GOAL_REACHED);
-    //     ds.AddData("is_publishing_state", is_publishing_state ? 1.0 : 0.0);
-    // }
+    if (!CONFIG["recording"]["enable"].as<bool>() || !_enable_output)
+        return;
     
+    const bool save_only_on_planning_active = CONFIG["JULES"]["save_only_on_planning_active"].as<bool>(false);
+    auto& ds = _planner->getDataSaver();
     switch (_current_state)
     {
+
     case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
-    case MPCPlanner::PlannerState::PLANNING_ACTIVE:
-        if (CONFIG["recording"]["enable"].as<bool>() && _enable_output)
-            _planner->saveData(_state, _data);
+        // Only save if not restricted to PLANNING_ACTIVE only
+        if (!save_only_on_planning_active)
+        {
+            _planner->saveData(_state, _data, static_cast<double>(_current_state),  static_cast<double>(_previous_state));
+            
+        }
         break;
+
+    case MPCPlanner::PlannerState::PLANNING_ACTIVE:
+        // Always save in PLANNING_ACTIVE when recording is enabled
+        _planner->saveData(_state, _data, static_cast<double>(_current_state),  static_cast<double>(_previous_state));
+        break;
+    
+    
     
     default:
         // Don't save data in other states (UNINITIALIZED, TIMER_STARTUP, 
@@ -1535,6 +1533,51 @@ void JulesJackalPlanner::saveDataStateBased()
         break;
     }
 }
+
+// Helper: Record decision to data saver
+void JulesJackalPlanner::recordCommunicationDecision(bool communicated)
+{
+    if (!CONFIG["recording"]["enable"].as<bool>() || !_enable_output)
+        return;
+    
+    const bool save_only_on_planning_active = CONFIG["JULES"]["save_only_on_planning_active"].as<bool>(false);
+    
+    // auto& ds = _planner->getDataSaver();
+    
+    switch (_current_state)
+    {
+    case MPCPlanner::PlannerState::PLANNING_ACTIVE:
+        // Always record in PLANNING_ACTIVE when recording is enabled
+        // ds.AddData("publish_cmd_called", 1.0);
+        // ds.AddData("communicated", communicated ? 1.0 : 0.0);
+        // ds.AddData("communication_trigger_reason", static_cast<double>(_communication_trigger_reason));
+
+        _data.communicated_trajectory = communicated ? 1.0 : 0.0;
+        _data.communication_trigger_reason = static_cast<int>(_communication_trigger_reason);
+        break;
+    
+    case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
+        // Only record if not restricted to PLANNING_ACTIVE only
+        if (!save_only_on_planning_active)
+        {
+            // ds.AddData("publish_cmd_called", 1.0);
+            // ds.AddData("communicated", communicated ? 1.0 : 0.0);
+            // ds.AddData("communication_trigger_reason", static_cast<double>(_communication_trigger_reason));
+            _data.communicated_trajectory = communicated ? 1.0 : 0.0;
+            _data.communication_trigger_reason = static_cast<int>(_communication_trigger_reason);
+        }
+        break;
+    
+    default:
+        // Don't record in other states
+        break;
+    }
+    
+    // Store in RealTimeData for downstream use (always, regardless of recording state)
+    
+
+}
+
 
 int main(int argc, char **argv)
 {

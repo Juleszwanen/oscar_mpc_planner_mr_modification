@@ -2,11 +2,22 @@ import rospy
 from rqt_gui_py.plugin import Plugin
 from python_qt_binding import loadUi
 from python_qt_binding.QtWidgets import QWidget
-from python_qt_binding.QtCore import Qt
+from python_qt_binding.QtCore import Qt, Signal, QObject
 from python_qt_binding.QtWidgets import QTableWidgetItem
  # Resolve path to the .ui file in the package
 from rospkg import RosPack
 from mpc_planner_msgs.msg import MPCMetrics
+
+
+class MetricsSignalBridge(QObject):
+    """
+    Bridge class to safely pass ROS messages to the Qt main thread.
+    
+    ROS callbacks run in a separate spinner thread, but Qt widgets can only
+    be safely updated from the main GUI thread. This bridge uses Qt's signal-slot
+    mechanism with QueuedConnection to marshal data between threads.
+    """
+    metrics_received = Signal(object)  # Signal that carries the MPCMetrics message
 
 
 class MPCPlannerDashboard(Plugin):
@@ -55,6 +66,16 @@ class MPCPlannerDashboard(Plugin):
 
         # Initialize ROS subscriber (will subscribe to /<robot>/mpc_metrics)
         self._sub = None
+        
+        # Create signal bridge for thread-safe GUI updates
+        # ROS callbacks run in a separate spinner thread, but Qt widgets can only
+        # be safely modified from the main GUI thread. This bridge marshals data.
+        self._signal_bridge = MetricsSignalBridge()
+        self._signal_bridge.metrics_received.connect(
+            self._handle_metrics_in_main_thread, 
+            Qt.QueuedConnection  # Ensures slot runs in receiver's thread (main thread)
+        )
+        
         self.subscribeToRobot(self.current_robot)
         
         # Cache for distribution data to avoid unnecessary table updates
@@ -81,16 +102,36 @@ class MPCPlannerDashboard(Plugin):
         topic = f"/{robot_name}/mpc_metrics"
         rospy.loginfo(f"MPCPlannerDashboard subscribing to {topic}")
         # Create new subscriber that calls metricsCallback when messages arrive
+        # queue_size=1 prevents message buildup if GUI updates are slow
         self._sub = rospy.Subscriber(topic, MPCMetrics,
                                      self.metricsCallback,
-                                     queue_size=10)
+                                     queue_size=1)
 
     # ---------------------------------------------------------------------
-    # Callback: update GUI
+    # Callback: update GUI (thread-safe via signal bridge)
     # ---------------------------------------------------------------------
     def metricsCallback(self, msg):
-        """Called whenever a new MPCMetrics message is received from the selected robot"""
+        """
+        Called in ROS spinner thread when a new MPCMetrics message arrives.
         
+        IMPORTANT: This callback runs in a background thread (ROS spinner),
+        NOT the Qt main thread. Directly updating Qt widgets here causes
+        "QWidget::repaint: Recursive repaint detected" crashes.
+        
+        Instead, we emit a signal that will be delivered to _handle_metrics_in_main_thread
+        via QueuedConnection, ensuring the GUI update runs in the main thread.
+        """
+        # Emit signal to transfer message to main thread for safe GUI updates
+        self._signal_bridge.metrics_received.emit(msg)
+    
+    def _handle_metrics_in_main_thread(self, msg):
+        """
+        Slot that handles MPCMetrics in the Qt main thread.
+        
+        This method is connected to MetricsSignalBridge.metrics_received with
+        Qt.QueuedConnection, ensuring it runs in the main GUI thread even though
+        the signal was emitted from the ROS spinner thread.
+        """
         try:
             # Update status indicator to show robot is running
             self._widget.statusLabel.setText('● RUNNING')
@@ -179,7 +220,7 @@ class MPCPlannerDashboard(Plugin):
                     )
             
         except Exception as e:
-            rospy.logerr(f"Error in metricsCallback: {e}")
+            rospy.logerr(f"Error in _handle_metrics_in_main_thread: {e}")
             import traceback
             traceback.print_exc()
 

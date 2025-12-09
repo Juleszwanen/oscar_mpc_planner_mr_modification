@@ -335,6 +335,50 @@ namespace MPCPlanner
             data_saver.AddData("jules_following_new_topology", _output.following_new_topology ? 1.0 : 0.0);
             data_saver.AddData("jules_previous_topology_id", _output.previous_topology_id);
             data_saver.AddData("jules_num_of_guidance_found", static_cast<double>(_output.num_of_guidance_found));
+            data_saver.AddData("jules_communicated_trajectory", data.communicated_trajectory ? 1.0: 0.0);
+            data_saver.AddData("jules_communication_trigger_reason", static_cast<double>(data.communication_trigger_reason));
+        }
+
+        _experiment_util->update(state, _solver, data);
+    }
+
+    void Planner::saveData(State &state, RealTimeData &data, const double &current_state, const double &previous_state)
+    {
+        if (!_is_data_ready)
+            return;
+
+        auto &data_saver = _experiment_util->getDataSaver();
+
+        // Save planning data
+        double planning_time = BENCHMARKERS.getBenchmarker("planning").getLast();
+        data_saver.AddData("runtime_control_loop", planning_time);
+        if (planning_time > 1. / CONFIG["control_frequency"].as<double>())
+            LOG_WARN("Planning took too long: " << planning_time << " ms");
+        data_saver.AddData("runtime_optimization", BENCHMARKERS.getBenchmarker("optimization").getLast());
+
+        if (!_output.success)
+            data_saver.AddData("status", 3.); // 3 and 2 for backward compatilibity
+        else
+            data_saver.AddData("status", 2.);
+
+        for (auto &module : _modules)
+            module->saveData(data_saver);
+
+        // JULES: Save topology/homology metadata from PlannerOutput
+        if (CONFIG["JULES"]["use_extra_params_module_data"].as<bool>())
+        {
+            data_saver.AddData("jules_selected_topology_id", _output.selected_topology_id);
+            data_saver.AddData("jules_selected_planner_index", _output.selected_planner_index);
+            data_saver.AddData("jules_used_guidance", _output.used_guidance ? 1.0 : 0.0);
+            data_saver.AddData("jules_trajectory_cost", _output.trajectory_cost);
+            data_saver.AddData("jules_solver_exit_code", static_cast<double>(_output.solver_exit_code));
+            data_saver.AddData("jules_following_new_topology", _output.following_new_topology ? 1.0 : 0.0);
+            data_saver.AddData("jules_previous_topology_id", _output.previous_topology_id);
+            data_saver.AddData("jules_num_of_guidance_found", static_cast<double>(_output.num_of_guidance_found));
+            data_saver.AddData("jules_communicated_trajectory", data.communicated_trajectory ? 1.0: 0.0);
+            data_saver.AddData("jules_communication_trigger_reason", static_cast<double>(data.communication_trigger_reason));
+            data_saver.AddData("jules_current_state", current_state);
+            data_saver.AddData("jules_previous_state", previous_state);
         }
 
         _experiment_util->update(state, _solver, data);

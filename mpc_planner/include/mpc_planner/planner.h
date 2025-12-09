@@ -55,6 +55,7 @@ namespace MPCPlanner
         void onDataReceived(RealTimeData &data, std::string &&data_name);
 
         void saveData(State &state, RealTimeData &data);
+        void saveData(State &state, RealTimeData &data, const double &current_state, const double &previous_state);
         void visualize(const State &state, const RealTimeData &data);
 
         void visualizeObstaclePredictionsPlanner(const State &state, const RealTimeData &data, bool include_time = false);

@@ -289,6 +289,11 @@ namespace MPCPlanner
         if (!_use_tmpcpp && !global_guidance_->Succeeded())
             return 0;
 
+        // ========== JULES: Interpolate previous trajectory by elapsed time ==========
+        // This must be done BEFORE the parallel loop so all planners use the same reference
+        interpolatePrevTrajectoryByElapsedTime();
+        // =============================================================================
+
         // ========== JULES: Visualize previous trajectory (consistency reference) ==========
         visualizePreviousTrajectory();
         // ==================================================================================
@@ -348,6 +353,7 @@ namespace MPCPlanner
                 planner.safety_constraints->setParameters(data, module_data, k);
 
                 // ========== JULES: Set consistency parameters for fair cost comparison if consistency is enabled in config file ==========
+                // ==========        Be aware for which stages you do this; perhaps skip stage k=0, beceause this should be equal to the current position ======
                 setConsistencyParametersForPlanner(planner, k);
                 // ===============================================================================
             }
@@ -405,6 +411,7 @@ namespace MPCPlanner
                               << " | raw=" << solver->_info.pobj
                               << " | consistency=" << consistency_cost
                               << " | fair=" << planner.result.objective);
+                    
                 }
                 // ==============================================================================
 
@@ -422,6 +429,15 @@ namespace MPCPlanner
             if (best_planner_index_ == -1)
             {
                 LOG_MARK("Failed to find a feasible trajectory in any of the " << std::to_string(planners_.size()) << " optimizations.");
+                
+                // ========== JULES: Reset consistency tracking when all solvers fail ==========
+                // We have no valid trajectory or topology to track
+                _has_previous_trajectory = false;
+                _prev_selected_topology_id = -1;
+                _prev_was_original_planner = false;
+                LOG_DEBUG(_ego_robot_ns + ": All solvers infeasible - resetting consistency tracking");
+                // =============================================================================
+                
                 return planners_[0].result.exit_code;
             }
 
@@ -769,6 +785,8 @@ namespace MPCPlanner
         _prev_was_original_planner = false;      // Was non-guided planner selected last time?
         _has_previous_trajectory = false;        // Do we have valid previous trajectory data?
         for (auto& el : _prev_trajectory) { el.setZero(); }
+        for (auto& el : _interpolated_prev_trajectory) { el.setZero(); }
+        _prev_trajectory_timestamp = ros::Time::now();
         
         LOG_DEBUG(_ego_robot_ns + ": Reset consistency parameters");
     }
@@ -785,10 +803,16 @@ namespace MPCPlanner
             {
                 data_saver.AddData("lmpcc_objective", objective);
                 data_saver.AddData("original_planner_id", planner.id); // To identify which one is the original planner
+
+                // save if the non-guided planner used the consistency cost
+                data_saver.AddData("jules_non_gd_planner_used_consistency", ((planner.has_consistency_enabled)? 1.0 : 0));
+                
+                
             }
             else
             {
 
+                data_saver.AddData("jules_planner_" + std::to_string(i) + "_used_consistency", ((planner.has_consistency_enabled)? 1.0 : 0));
                 // for (int k = 1; k < _solver->N; k++)
                 // {
                 //     data_saver.AddData(
@@ -803,13 +827,12 @@ namespace MPCPlanner
         double best_objective = best_planner_index_ != -1 ? planners_[best_planner_index_].local_solver->_info.pobj : -1.;
 
         data_saver.AddData("gmpcc_objective", best_objective);
-
+        // Save the isolated consistency cost
+        data_saver.AddData("jules_consistency_cost", _consistency_cost);
         global_guidance_->saveData(data_saver); // Save data from the guidance planner
     }
 
-    GuidancePlanner::GeometricPath GuidanceConstraints::convertMPCTrajectoryToGeometricPath(
-        std::shared_ptr<Solver> solver,
-        GuidancePlanner::NodeType node_type)
+    GuidancePlanner::GeometricPath GuidanceConstraints::convertMPCTrajectoryToGeometricPath(std::shared_ptr<Solver> solver, GuidancePlanner::NodeType node_type)
     {
         // Clear any previous temporary nodes to avoid memory issues
         mpc_trajectory_nodes_.clear();
@@ -892,14 +915,20 @@ namespace MPCPlanner
         {
             LOG_INFO(_ego_robot_ns + ": Consistency module detected - enabling fair cost comparison");
             
-            // Initialize storage for previous trajectory
+            // Initialize storage for previous trajectory (raw, unshifted)
             _prev_trajectory.resize(_solver->N);
             for (auto& pos : _prev_trajectory)
+                pos = Eigen::Vector2d::Zero();
+            
+            // Initialize storage for interpolated trajectory (used during optimization)
+            _interpolated_prev_trajectory.resize(_solver->N);
+            for (auto& pos : _interpolated_prev_trajectory)
                 pos = Eigen::Vector2d::Zero();
             
             _has_previous_trajectory = false;
             _prev_selected_topology_id = -1;
             _prev_was_original_planner = false;
+            _prev_trajectory_timestamp = ros::Time::now();
             
             // Load configuration for non-guided planner consistency
             try 
@@ -972,11 +1001,18 @@ namespace MPCPlanner
         double prev_x = 0.0;
         double prev_y = 0.0;
         
-        if (planner.has_consistency_enabled)
+        // Only apply consistency cost to stages [1, N-2]:
+        // - k=0: Fixed by initial constraint (current state), can't be optimized
+        // - k=N-1: Uses extrapolated reference data, not reliable
+        int N = planner.local_solver->N;
+        bool is_valid_stage = (k >= 1) && (k <= N - 2);
+        
+        if (planner.has_consistency_enabled && is_valid_stage)
         {
             weight = CONFIG["weights"]["consistency"].as<double>();
-            prev_x = _prev_trajectory[k](0);
-            prev_y = _prev_trajectory[k](1);
+            // Use the TIME-INTERPOLATED trajectory (computed in interpolatePrevTrajectoryByElapsedTime)
+            prev_x = _interpolated_prev_trajectory[k](0);
+            prev_y = _interpolated_prev_trajectory[k](1);
         }
         
         // Set the parameters in the solver
@@ -990,22 +1026,27 @@ namespace MPCPlanner
     {
         // Get the consistency weight from config
         double weight = CONFIG["weights"]["consistency"].as<double>();
-        double consistency_cost = 0.0;
+        double sum_squared_distances = 0.0;
         
-        // Sum up the consistency cost over all stages
-        // Cost = sum_k { weight * ((x_k - prev_x_k)^2 + (y_k - prev_y_k)^2) }
-        for (int k = 0; k < solver->N; k++)
+        // Sum up the squared distances over stages [1, N-2] only
+        // This matches what was set in the solver via setConsistencyParametersForPlanner
+        // - k=0: Fixed by initial constraint, weight was 0
+        // - k=N-1: Extrapolated data, weight was 0
+        for (int k = 1; k <= solver->N - 2; k++)
         {
             double x = solver->getOutput(k, "x");
             double y = solver->getOutput(k, "y");
             
-            double dx = x - _prev_trajectory[k](0);
-            double dy = y - _prev_trajectory[k](1);
+            // Use the interpolated trajectory (same as what was given to solver)
+            double dx = x - _interpolated_prev_trajectory[k](0);
+            double dy = y - _interpolated_prev_trajectory[k](1);
             
-            consistency_cost += weight * (dx * dx + dy * dy);
+            sum_squared_distances += dx * dx + dy * dy;
         }
         
-        return consistency_cost;
+        // Save and return the consistency cost
+        _consistency_cost = weight * sum_squared_distances;
+        return weight * sum_squared_distances;
     }
 
     void GuidanceConstraints::storePreviousTrajectoryFromSolver(std::shared_ptr<Solver> selected_solver)
@@ -1014,24 +1055,81 @@ namespace MPCPlanner
         if (!_consistency_module_available)
             return;
         
-        // Store the trajectory shifted by 1 step
-        // This accounts for time progression: what was k+1 is now k
+        // Store the RAW trajectory (no shifting) along with timestamp
+        // Time interpolation will be done later in interpolatePrevTrajectoryByElapsedTime()
         for (int k = 0; k < selected_solver->N; k++)
         {
-            if (k < selected_solver->N - 1)
+            _prev_trajectory[k](0) = selected_solver->getOutput(k, "x");
+            _prev_trajectory[k](1) = selected_solver->getOutput(k, "y");
+        }
+        
+        // Record when this trajectory was stored
+        _prev_trajectory_timestamp = ros::Time::now();
+        _has_previous_trajectory = true;
+        
+        LOG_DEBUG(_ego_robot_ns + ": Stored previous trajectory at t=" << _prev_trajectory_timestamp.toSec());
+    }
+
+    void GuidanceConstraints::interpolatePrevTrajectoryByElapsedTime()
+    {
+        // Skip if no previous trajectory available
+        if (!_has_previous_trajectory || !_consistency_module_available)
+            return;
+        
+        // Calculate elapsed time since trajectory was stored
+        ros::Time now = ros::Time::now();
+        double elapsed_time = (now - _prev_trajectory_timestamp).toSec();
+        double dt = CONFIG["integrator_step"].as<double>();  // e.g., 0.2s
+        
+        // Calculate interpolation parameters
+        // k_shift: how many full steps to shift
+        // alpha: fractional interpolation between steps [0, 1)
+        int k_shift = static_cast<int>(std::floor(elapsed_time / dt));
+        double alpha = (elapsed_time - k_shift * dt) / dt;
+        
+        LOG_DEBUG(_ego_robot_ns + ": Interpolating prev trajectory | elapsed=" << elapsed_time 
+                  << "s | k_shift=" << k_shift << " | alpha=" << alpha);
+        
+        // Safety check: if too much time has passed, the trajectory is stale
+        int N = static_cast<int>(_prev_trajectory.size());
+        if (k_shift >= N - 1)
+        {
+            LOG_WARN(_ego_robot_ns + ": Previous trajectory is critically stale (k_shift=" << k_shift 
+                     << " >= N-1=" << N-1 << "). Disabling consistency for this iteration.");
+            // Mark trajectory as invalid - shouldEnableConsistencyForPlanner() will return false
+            _has_previous_trajectory = false;
+            return;
+        }
+        
+        // Interpolate the trajectory forward by elapsed_time
+        for (int k = 0; k < N; k++)
+        {
+            int src_k = k + k_shift;  // Source index in original trajectory
+            
+            if (src_k < N - 1)
             {
-                // Shift: prev[k] = current[k+1]
-                _prev_trajectory[k](0) = selected_solver->getOutput(k + 1, "x");
-                _prev_trajectory[k](1) = selected_solver->getOutput(k + 1, "y");
+                // Linear interpolation between src_k and src_k+1
+                // interpolated[k] = (1 - alpha) * prev[src_k] + alpha * prev[src_k + 1]
+                _interpolated_prev_trajectory[k] = 
+                    (1.0 - alpha) * _prev_trajectory[src_k] + alpha * _prev_trajectory[src_k + 1];
+            }
+            else if (src_k == N - 1)
+            {
+                // At the last point, just use it directly (no next point to interpolate with)
+                _interpolated_prev_trajectory[k] = _prev_trajectory[N - 1];
             }
             else
             {
-                // For the last step, extend with the previous point
-                _prev_trajectory[k] = _prev_trajectory[k - 1];
+                // Beyond the trajectory: extrapolate from last two points
+                // Use constant velocity extrapolation
+                Eigen::Vector2d last = _prev_trajectory[N - 1];
+                Eigen::Vector2d second_last = _prev_trajectory[N - 2];
+                Eigen::Vector2d velocity = (last - second_last) / dt;
+                
+                double extra_time = (src_k - (N - 1)) * dt + alpha * dt;
+                _interpolated_prev_trajectory[k] = last + velocity * extra_time;
             }
         }
-        
-        _has_previous_trajectory = true;
     }
 
     void GuidanceConstraints::visualizePreviousTrajectory()
@@ -1046,35 +1144,36 @@ namespace MPCPlanner
             return;
         }
         
-        // Visualize the previous trajectory as orange line with small spheres
-        // This shows "what we're trying to stay consistent with"
+        // Visualize the INTERPOLATED trajectory (what the solver actually uses)
+        // Orange line with small spheres shows "what we're trying to stay consistent with"
         
-        // Create line connecting all trajectory points
+        // Create line connecting trajectory points for stages [1, N-2] (the active consistency range)
         auto &line = marker_pub.getNewLine();
         line.setColor(1.0, 0.5, 0.0, 0.8);  // Orange color
         line.setScale(0.15);  // Line thickness
         
-        for (size_t k = 1; k < _prev_trajectory.size(); k++)
+        int N = static_cast<int>(_interpolated_prev_trajectory.size());
+        for (int k = 2; k <= N - 2; k++)
         {
-            Eigen::Vector3d p1(_prev_trajectory[k - 1](0), _prev_trajectory[k - 1](1), 0.05);
-            Eigen::Vector3d p2(_prev_trajectory[k](0), _prev_trajectory[k](1), 0.05);
+            Eigen::Vector3d p1(_interpolated_prev_trajectory[k - 1](0), _interpolated_prev_trajectory[k - 1](1), 0.05);
+            Eigen::Vector3d p2(_interpolated_prev_trajectory[k](0), _interpolated_prev_trajectory[k](1), 0.05);
             line.addLine(p1, p2);
         }
         
-        // Add small spheres at each trajectory point
+        // Add small spheres at each trajectory point in the active range [1, N-2]
         auto &spheres = marker_pub.getNewPointMarker("SPHERE");
         spheres.setColor(1.0, 0.5, 0.0, 1.0);  // Orange color, fully opaque
         spheres.setScale(0.1, 0.1, 0.1);  // Small spheres
         
-        for (size_t k = 0; k < _prev_trajectory.size(); k++)
+        for (int k = 1; k <= N - 2; k++)
         {
-            Eigen::Vector3d point(_prev_trajectory[k](0), _prev_trajectory[k](1), 0.05);
+            Eigen::Vector3d point(_interpolated_prev_trajectory[k](0), _interpolated_prev_trajectory[k](1), 0.05);
             spheres.addPointMarker(point);
         }
         
         marker_pub.publish();
         
-        LOG_MARK("Visualized consistency reference trajectory (" << _prev_trajectory.size() << " points)");
+        LOG_MARK("Visualized interpolated consistency reference (" << (N - 2) << " active points, range [1, " << (N - 2) << "])");
     }
     // ==================== END: Consistency Module Integration Functions ====================
 

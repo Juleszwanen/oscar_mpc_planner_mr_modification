@@ -5,7 +5,7 @@ integrator_step: 0.2 # [s] Integration step
 n_discs: 1 # Number of discs to model the robot with
 
 enable_output: true # Enable output to the robot
-control_frequency: 15 # [Hz] Control frequency of the MPC 20-> normal
+control_frequency: 20 # [Hz] Control frequency of the MPC 20-> normal
 
 debug_output: false # Show debug output
 debug_limits: false # Show when state/input limits are hit
@@ -27,7 +27,7 @@ solver_settings:
 recording:
   enable: false # Record data if true
   folder: /workspace/experiment/mpc_planner_sim/data # Data location
-  file: topology_switch_refactoring.txt # File name for the experiment
+  file: sim_world_test # File name for the experiment
   timestamp: true # Add a timestamp
   num_experiments: 4 # Stop after this number of experiments
   save_obstacle_data: false
@@ -89,7 +89,7 @@ weights: # Weights of the MPC, need to correspond to declared weights in the sol
   slack: 10000.
   terminal_angle: 100.0 # 0.0
   terminal_contouring: 10.0 # 0.0
-  consistency: 0.1
+  consistency: 0.05
 
 visualization:
   draw_every: 5 # Visualize every x stages
@@ -100,13 +100,14 @@ JULES:
     have_non_guided_standout: true #Enable special markers for non-guided planner
     override_selected_traject_of_topology_non_guided: true # override the chosen global_guidance topology with that of the mapped non_guided topology
     communicate_on_topology_switch_only: true # This turns on and off if we want to communicate our trajectory only on a topology switch
+    save_only_on_planning_active: false # Only save data when in PLANNING_ACTIVE state (excludes WAITING_FOR_TRAJECTORY_DATA)
     n_paths: 4 # This is hardcoded now but 
     enable_trajectory_interpolation: true # Enable that we itnerpolate and extrapolate stale trajectories
     # Robot physical limits (for velocity clamping during extrapolation)
     robot_max_velocity: 2.5        # m/s
     robot_max_angular_velocity: 2.5  # rad/s
     safe_extra_data: true
-    max_geometric_deviation: 2.0 # Should somehow be related to the radius of the robot, I think
-    heartbeat_time: 4.0 # time in between which we should send a new trajectory of we did not broadcast
+    max_geometric_deviation: 5 # Should somehow be related to the radius of the robot, I think
+    heartbeat_time: 2.0 # time in between which we should send a new trajectory of we did not broadcast
     consistency_enabled: true
     consistency_on_non_guided_planner: true

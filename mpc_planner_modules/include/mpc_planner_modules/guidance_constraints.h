@@ -20,6 +20,7 @@
 #include <mpc_planner_solver/solver_interface.h>
 
 #include <unordered_map>
+#include <ros/ros.h>  // For ros::Time
 
 namespace GuidancePlanner
 {
@@ -126,6 +127,7 @@ namespace MPCPlanner
         double  _control_frequency{20.};
         double  _planning_time;
         bool    _assign_meaningful_topology{false};
+        
 
         int TOPOLOGY_NO_MATCH{8}; // Indicates top
         RealTimeData empty_data_;
@@ -141,7 +143,10 @@ namespace MPCPlanner
         int  _prev_selected_topology_id{-1};          // Topology ID from previous iteration
         bool _prev_was_original_planner{false};      // Was non-guided planner selected last time?
         bool _has_previous_trajectory{false};        // Do we have valid previous trajectory data?
-        std::vector<Eigen::Vector2d> _prev_trajectory;  // Previous trajectory (shifted by 1 step)
+        std::vector<Eigen::Vector2d> _prev_trajectory;  // Previous trajectory (unshifted, raw from solver)
+        std::vector<Eigen::Vector2d> _interpolated_prev_trajectory;  // Interpolated by elapsed time for current use
+        ros::Time _prev_trajectory_timestamp;            // When the previous trajectory was stored
+        double _consistency_cost{999};
         // ================================================================================
 
     public:
@@ -233,12 +238,24 @@ namespace MPCPlanner
         /**
          * @brief Store the selected trajectory for next iteration's consistency tracking
          * 
-         * Shifts the trajectory by 1 step (k -> k+1 mapping) to account for time progression.
+         * Stores the raw trajectory (unshifted) along with the current timestamp.
+         * The time interpolation is done later in interpolatePrevTrajectoryByElapsedTime().
          * Called after best planner selection in the optimize() function.
          * 
          * @param selected_solver The solver from the selected planner
          */
         void storePreviousTrajectoryFromSolver(std::shared_ptr<Solver> selected_solver);
+
+        /**
+         * @brief Interpolate the previous trajectory forward by elapsed time
+         * 
+         * Calculates how much time has passed since the trajectory was stored,
+         * then interpolates the trajectory forward to align with the current time.
+         * This accounts for the mismatch between control frequency and integrator step.
+         * 
+         * Result is stored in _interpolated_prev_trajectory for use by setConsistencyParametersForPlanner.
+         */
+        void interpolatePrevTrajectoryByElapsedTime();
 
         /**
          * @brief Visualize the previous trajectory used for consistency tracking

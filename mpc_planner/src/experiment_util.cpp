@@ -16,20 +16,28 @@ namespace MPCPlanner
     {
         _save_folder = CONFIG["recording"]["folder"].as<std::string>();
         _save_file = CONFIG["recording"]["file"].as<std::string>();
-        _save_obstacle_data  = CONFIG["recording"]["save_obstacle_data"].as<bool>(true);
-        _save_ego_trajectory_plans = CONFIG["recording"]["save_ego_trajectory_plans"].as<bool>(true);
+        _save_obstacle_data  = CONFIG["recording"]["save_obstacle_data"].as<bool>(false);
+        _save_ego_trajectory_plans = CONFIG["recording"]["save_ego_trajectory_plans"].as<bool>(false);
         _data_saver = std::make_unique<RosTools::DataSaver>();
         _data_saver->SetAddTimestamp(CONFIG["recording"]["timestamp"].as<bool>());
 
-
+        LOG_DIVIDER();
         if (CONFIG["recording"]["enable"].as<bool>())
+        {
+            
             LOG_VALUE("Planner Save File", _data_saver->getFilePath(_save_folder, _save_file, false));
+            LOG_INFO("Save obstacle data: " << (_save_obstacle_data ? "TRUE" : "FALSE"));
+            LOG_INFO("Save ego trajectory plans: " << (_save_ego_trajectory_plans ? "TRUE" : "FALSE"));
+        }
+        LOG_DIVIDER();
     }
 
     ExperimentUtil::ExperimentUtil(const std::string& robot_ns)
     {
         _save_folder = CONFIG["recording"]["folder"].as<std::string>();
         _save_file = CONFIG["recording"]["file"].as<std::string>();
+        _save_obstacle_data  = CONFIG["recording"]["save_obstacle_data"].as<bool>();
+        _save_ego_trajectory_plans = CONFIG["recording"]["save_ego_trajectory_plans"].as<bool>();
         
         // Add robot namespace to filename to distinguish between multiple robots
         if (!robot_ns.empty())
@@ -46,8 +54,14 @@ namespace MPCPlanner
         _data_saver = std::make_unique<RosTools::DataSaver>();
         _data_saver->SetAddTimestamp(CONFIG["recording"]["timestamp"].as<bool>());
 
+        LOG_DIVIDER();
         if (CONFIG["recording"]["enable"].as<bool>())
+        {
             LOG_VALUE("Planner Save File", _data_saver->getFilePath(_save_folder, _save_file, false));
+            LOG_INFO("Save obstacle data: " << (_save_obstacle_data ? "TRUE" : "FALSE"));
+            LOG_INFO("Save ego trajectory plans: " << (_save_ego_trajectory_plans ? "TRUE" : "FALSE"));
+        }
+        LOG_DIVIDER();
     }
 
     void ExperimentUtil::update(const State &state, std::shared_ptr<Solver> solver, const RealTimeData &data)
@@ -67,12 +81,16 @@ namespace MPCPlanner
         _data_saver->AddData("vehicle_orientation", state.get("psi"));
 
         // Save the planned trajectory
-        for (int k = 0; k < CONFIG["N"].as<int>(); k++)
-            _data_saver->AddData("vehicle_plan_" + std::to_string(k), solver->getEgoPredictionPosition(k));
-
+        if(_save_ego_trajectory_plans)
+        {
+            LOG_WARN("SAVING save_ego");
+            for (int k = 0; k < CONFIG["N"].as<int>(); k++)
+                _data_saver->AddData("vehicle_plan_" + std::to_string(k), solver->getEgoPredictionPosition(k));
+        }
         // SAVE OBSTACLE DATA
         if(_save_obstacle_data)
         {
+            LOG_WARN("SAVING OBS DATA");
             for (size_t v = 0; v < data.dynamic_obstacles.size(); v++)
                 {
                     auto &obstacle = data.dynamic_obstacles[v];
@@ -143,7 +161,7 @@ namespace MPCPlanner
         _iteration_at_last_reset = _control_iteration;
     }
 
-    void ExperimentUtil::safeExtraData(const State &state, const RealTimeData &data)
+    void ExperimentUtil::safeExtraData(const State &/*state*/, const RealTimeData &data)
     {
         // If true set a double 1.0 and when false set 0.0, the add data is either double or eigen 2d vec
         _data_saver->AddData("communicated_trajectory", data.communicated_trajectory ? 1.0 : 0.0);
