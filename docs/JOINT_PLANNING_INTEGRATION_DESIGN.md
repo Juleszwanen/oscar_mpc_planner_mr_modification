@@ -1030,6 +1030,53 @@ joint_planning:
 
 **Scalability**: Limited - solve time scales cubically with state dimension
 
+#### 6.2.1 acados adaptation blueprint (Eq. 8, small fixed EC set)
+
+Goal: modify the existing acados OCP (see `solver_generator/generate_acados_solver.py` → `create_acados_model`) so the decision vector matches Eq. (8)—the joint IJP cost combining ego tracking + EC deviation—with a small, fixed number of EC robots (e.g., 1–2).
+
+1) **Decision variables and dimensions**
+   - States:  
+     `x = [x_e, y_e, ψ_e, v_e, ...ego extras...,  x_ec1, y_ec1, ψ_ec1, v_ec1, ..., x_ecM, y_ecM, ψ_ecM, v_ecM]`  
+     ⇒ `NX = NX_ego + M * NX_agent`
+   - Inputs:  
+     `u = [a_e, δ_e, ...,  a_ec1, ω_ec1, ..., a_ecM, ω_ecM]` (pick the same simple unicycle/bicycle model already used for ego—if you keep bicycle for EC robots, use `δ_ec` instead of `ω_ec`)  
+     ⇒ `NU = NU_ego + M * NU_agent`
+   - Parameters per stage: stack ego reference + EC unconditioned predictions  
+     `p = [x_ref (ego),  x_pred_ec1, ..., x_pred_ecM]`  
+     ⇒ `NP = NX_ego + M * NX_agent`
+
+2) **Dynamics (model section)**
+   - Keep current ego dynamics.
+   - For each EC robot `i` add the same (linearized) bicycle/unicycle dynamics:  
+     `x_ec_i_dot = f(x_ec_i, u_ec_i)` or discrete RK4 update with `ocp.model.disc_dyn_expr`.
+   - Concatenate all dynamics into `ocp.model.f_expl_expr` / `disc_dyn_expr` so acados sees a single joint system.
+
+3) **Cost = Eq. (8)**
+   - Use stage-wise LLS cost with `Vx`, `Vu`, `Vx_e`:  
+     - Ego tracking + control: weight by `ηe * Q_e`, `ηe * R_e`.  
+     - EC deviation: weight by `ηo * Q_dev` on `(x_ec - x_pred_ec)` using parameters.  
+     - EC control effort: weight by `ηo * R_ec` on `u_ec`.
+   - Build `W = diag([ηe*Q_e, ηe*R_e, ηo*Q_dev (per EC), ηo*R_ec (per EC)])`.
+   - Set `yref` per stage to `[x_ref, u_ref(=0), x_pred_ec1..M, u_ec_ref(=0)]` and fill via the parameter setter.
+
+4) **Constraints**
+   - Input bounds: extend `lbu/ubu` with EC control limits; set `idxbu` accordingly.
+   - Collision constraints (coupled): add nonlinear path constraint  
+     `h_k = (x_e - x_ec_i)² + (y_e - y_ec_i)²` with bound `h_k ≥ (r_sum)²`, where `r_sum = r_ego + r_ec_i`.  
+     Use `ocp.model.con_h_expr` and `ocp.constraints.lh`, `uh`; soften with slack if needed.
+   - Optional: keep non-EC obstacles as fixed constraints as today.
+
+5) **Solver options**
+   - Keep `sqp` / `sqp_rti`; increase `nlp_solver_max_iter` modestly (e.g., 3–5) for the larger joint QP.
+   - QP solver: start with `PARTIAL_CONDENSING_HPIPM`; adjust `qp_solver_iter_max` if required.
+
+6) **Codegen & interface updates**
+   - Update `SOLVER_NX`, `SOLVER_NU`, `SOLVER_NP` in generated headers to include EC variables.
+   - Extend parameter packing in the C++ interface to write per-stage `x_ref` and all `x_pred_ec` into `params.all_parameters`.
+   - Expose EC slices of the solution (`get_x`, `get_u`) so the planner can extract `x_ec_i[k]`.
+
+This keeps changes localized to the acados model creation and parameter packing while implementing the full Eq. (8) joint objective for a fixed small `M`.
+
 ### 6.3 Comparison Table
 
 | Aspect | Variant A (Minimal) | Variant B (Full Joint) |
