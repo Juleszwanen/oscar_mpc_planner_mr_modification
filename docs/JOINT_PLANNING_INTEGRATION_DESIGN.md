@@ -1370,7 +1370,7 @@ struct ECRobot {
 ```cpp
 // NEW: EC robots for joint optimization (subset of dynamic_obstacles that are robots)
 std::vector<ECRobot> ec_robots;
-int max_ec_robots{3};  // Config parameter
+int max_ec_robots{3};  // Loaded from settings.yaml -> joint_planning/max_ec_robots
 ```
 
 #### Step 1.3: Extend ModuleData
@@ -1532,7 +1532,12 @@ void GuidanceConstraints::updateECRobotPredictions(
         // This is a simplified heuristic for Variant A
         // Full joint optimization (Variant B) would solve this properly
         
-        // Implementation left as exercise - depends on specific dynamics model
+        // TODO: Implement one of:
+        // 1. Simple repulsion: shift EC trajectory away from ego by safety margin
+        // 2. Velocity-based avoidance: adjust EC velocity to avoid collision time
+        // 3. Optimization-based: solve small QP for each EC robot given fixed ego
+        // The choice depends on computational budget and desired behavior quality
+        
         LOG_DEBUG("Updating EC robot " << ec.robot_id << " prediction (heuristic)");
     }
 }
@@ -1669,5 +1674,5 @@ For additional context, see:
 ---
 
 *Document version: 2.0*
-*Last updated: December 2024*
+*Last updated: 2025*
 *Authors: Design document for thesis/codebase documentation*
