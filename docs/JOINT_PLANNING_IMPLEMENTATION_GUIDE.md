@@ -45,6 +45,24 @@ This implementation guide provides **concrete, compilable code** for integrating
 | A4 | Topology constraints apply to ego only | EC robots can freely adjust within deviation cost |
 | A5 | EC robot predictions come from communication | Uses existing `DynamicObstacle` infrastructure |
 
+**Note on Heterogeneous Dynamics (Assumption A2):**
+
+This guide assumes homogeneous robots (all unicycle model). To support robots with different dynamics models:
+
+1. **Different parameters, same model type**: Load per-robot bounds from a robot registry:
+   ```cpp
+   struct RobotParams {
+       double max_velocity;
+       double max_acceleration;
+       double max_angular_velocity;
+   };
+   std::map<int, RobotParams> robot_registry;
+   ```
+
+2. **Different model types**: Requires solver regeneration for each combination, or use a generic point-mass model for EC robots with tighter bounds.
+
+3. **Unknown robot type**: Fall back to conservative point-mass dynamics with minimum expected maneuverability.
+
 ### 1.3 Files Modified
 
 | File | Changes |
@@ -577,16 +595,19 @@ void GuidanceConstraints::setJointPlanningParametersForPlanner(
     const std::vector<ECRobot>& ec_robots,
     int k)
 {
+    // Constants for inactive EC robots (far from any realistic position)
+    static constexpr double INACTIVE_EC_POSITION = 1000.0;
+    
     // For each EC robot slot in the solver
     for (int ec_idx = 0; ec_idx < _max_ec_robots; ec_idx++) {
         
-        // Default values (inactive EC robot)
-        double ec_x = 1000.0;  // Far away (inactive)
-        double ec_y = 1000.0;
+        // Default values (inactive EC robot - positioned far away)
+        double ec_x = INACTIVE_EC_POSITION;
+        double ec_y = INACTIVE_EC_POSITION;
         double ec_psi = 0.0;
         double ec_v = 0.0;
-        double ec_pred_x = 1000.0;
-        double ec_pred_y = 1000.0;
+        double ec_pred_x = INACTIVE_EC_POSITION;
+        double ec_pred_y = INACTIVE_EC_POSITION;
         double ec_r = 0.0;
         double ec_active = 0.0;
         
@@ -881,9 +902,12 @@ class JointCollisionConstraint:
                 diff = disc_pos - ec_pos
                 dist_sq = diff[0]**2 + diff[1]**2
                 
+                # Numerical epsilon for division stability
+                EPSILON = 1e-6
+                
                 # Normalized constraint: dist² / min_dist² >= 1
                 # This formulation is better conditioned than dist² >= min_dist²
-                constraint = dist_sq / (min_dist**2 + 1e-6)
+                constraint = dist_sq / (min_dist**2 + EPSILON)
                 constraints.append(constraint)
         
         return constraints
@@ -1044,18 +1068,31 @@ class ContouringSecondOrderUnicycleModelWithEC:
         self._setup_bounds()
     
     def _setup_bounds(self):
-        """Set up bounds for all variables."""
+        """Set up bounds for all variables.
+        
+        Note: These bounds should be loaded from configuration for production use.
+        The values shown here are typical defaults for Jackal robots.
+        """
+        # Constants for bounds (should match settings.yaml in production)
+        POS_LIMIT = 2000.0
+        EGO_MAX_ACCEL = 2.0
+        EGO_MAX_ANGULAR_VEL = 0.8
+        EGO_MAX_VEL = 3.0
+        EC_MAX_ACCEL = 1.5
+        EC_MAX_ANGULAR_VEL = 1.0
+        EC_MAX_VEL = 2.0
+        
         # Ego bounds
-        ego_lower = [-2.0, -0.8,   # a, w
-                     -2000.0, -2000.0, -np.pi*2, -1.0, -1.0]  # x, y, psi, v, spline
-        ego_upper = [2.0, 0.8,
-                     2000.0, 2000.0, np.pi*2, 3.0, 10000.0]
+        ego_lower = [-EGO_MAX_ACCEL, -EGO_MAX_ANGULAR_VEL,   # a, w
+                     -POS_LIMIT, -POS_LIMIT, -np.pi*2, -1.0, -1.0]  # x, y, psi, v, spline
+        ego_upper = [EGO_MAX_ACCEL, EGO_MAX_ANGULAR_VEL,
+                     POS_LIMIT, POS_LIMIT, np.pi*2, EGO_MAX_VEL, 10000.0]
         
         # EC robot bounds (per robot)
-        ec_lower = [-1.5, -1.0,  # a_ec, w_ec
-                    -2000.0, -2000.0, -np.pi*2, -0.1]  # x_ec, y_ec, psi_ec, v_ec
-        ec_upper = [1.5, 1.0,
-                    2000.0, 2000.0, np.pi*2, 2.0]
+        ec_lower = [-EC_MAX_ACCEL, -EC_MAX_ANGULAR_VEL,  # a_ec, w_ec
+                    -POS_LIMIT, -POS_LIMIT, -np.pi*2, -0.1]  # x_ec, y_ec, psi_ec, v_ec
+        ec_upper = [EC_MAX_ACCEL, EC_MAX_ANGULAR_VEL,
+                    POS_LIMIT, POS_LIMIT, np.pi*2, EC_MAX_VEL]
         
         self.lower_bound = ego_lower.copy()
         self.upper_bound = ego_upper.copy()
@@ -2073,12 +2110,21 @@ void Solver::setECRobotPrediction(int ec_idx, int k,
     
     // Calculate parameter offset
     // Assuming EC parameters come after all standard parameters
-    int ec_param_offset = _n_standard_params + ec_idx * 4;  // 4 params per EC
+    // EC parameter layout: [pred_x, pred_y, radius, active] for each EC robot
+    enum ECParamOffset {
+        EC_PRED_X = 0,
+        EC_PRED_Y = 1,
+        EC_RADIUS = 2,
+        EC_ACTIVE = 3,
+        EC_PARAMS_PER_ROBOT = 4
+    };
     
-    _params.all_parameters[k * npar + ec_param_offset + 0] = pred_x;
-    _params.all_parameters[k * npar + ec_param_offset + 1] = pred_y;
-    _params.all_parameters[k * npar + ec_param_offset + 2] = radius;
-    _params.all_parameters[k * npar + ec_param_offset + 3] = active ? 1.0 : 0.0;
+    int ec_param_offset = _n_standard_params + ec_idx * EC_PARAMS_PER_ROBOT;
+    
+    _params.all_parameters[k * npar + ec_param_offset + EC_PRED_X] = pred_x;
+    _params.all_parameters[k * npar + ec_param_offset + EC_PRED_Y] = pred_y;
+    _params.all_parameters[k * npar + ec_param_offset + EC_RADIUS] = radius;
+    _params.all_parameters[k * npar + ec_param_offset + EC_ACTIVE] = active ? 1.0 : 0.0;
 }
 ```
 
@@ -2207,6 +2253,37 @@ void Solver::setECRobotPrediction(int ec_idx, int k,
 - Use `sqp_iterations = 2` (diminishing returns beyond)
 - Consider adaptive EC count based on available compute time
 
+### 11.3 Adaptive Performance Management
+
+When compute time is critical, consider implementing adaptive joint planning:
+
+```cpp
+// Adaptive EC robot count based on available time budget
+int GuidanceConstraints::computeAdaptiveECCount(
+    double remaining_time_ms,
+    double avg_solve_time_per_ec_ms)
+{
+    // Reserve time for baseline operations
+    const double BASELINE_TIME_MS = 30.0;
+    const double SAFETY_MARGIN_MS = 10.0;
+    
+    double available_for_ec = remaining_time_ms - BASELINE_TIME_MS - SAFETY_MARGIN_MS;
+    
+    if (available_for_ec <= 0) {
+        LOG_WARN("Insufficient time for joint planning, falling back to baseline");
+        return 0;  // Disable joint planning this cycle
+    }
+    
+    int max_affordable = static_cast<int>(available_for_ec / avg_solve_time_per_ec_ms);
+    return std::min(max_affordable, _max_ec_robots);
+}
+```
+
+**When to disable joint planning:**
+- If `remaining_time < 40ms` after topology update
+- If previous solve exceeded time budget by >20%
+- If all EC robots are far away (>15m)
+
 ---
 
 ## 12. Implementation Checklist
@@ -2326,6 +2403,28 @@ void Solver::setECRobotPrediction(int ec_idx, int k,
 | `ego_selfishness` | 0.8 | 0-1 | Higher = ego less willing to yield |
 | `sqp_iterations` | 2 | 1-4 | More = better convergence, longer time |
 | `safety_margin` | 0.1 | 0.05-0.3 | Extra distance buffer |
+
+### A.1 SQP Iterations: Understanding Convergence
+
+The `sqp_iterations` parameter controls how many times the optimization is refined:
+
+- **Iteration 1**: Solve with initial EC predictions (from communication)
+- **Iteration 2**: Update EC predictions based on ego's solution, re-solve
+- **Iteration 3+**: Further refinement (diminishing returns)
+
+**Practical guidance for `sqp_iterations`:**
+
+| Value | Use Case | Expected Behavior |
+|-------|----------|-------------------|
+| 1 | Time-critical, simple scenarios | EC predictions unchanged; ego adjusts only |
+| 2 | Recommended default | Good balance; EC predictions adjust once |
+| 3 | High-precision needed | Better convergence; ~50% more compute |
+| 4+ | Research/offline planning | Near-optimal; rarely needed in real-time |
+
+**Convergence indicators:**
+- Change in ego trajectory < 0.1m between iterations
+- Change in EC trajectory < 0.2m between iterations
+- Cost improvement < 1% between iterations
 
 ---
 
