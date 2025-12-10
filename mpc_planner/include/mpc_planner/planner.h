@@ -90,7 +90,9 @@ namespace MPCPlanner
         std::unique_ptr<RosTools::Timer> _startup_timer;
 
         std::vector<std::shared_ptr<ControllerModule>> _modules; // Will contain all modules used in the mpc formulation and the _modules are filled by the function initializeModules() in the file modules.h
-        };
+    
+        void saveSquaredDistanceOtherRobots(const State &state, const RealTimeData &data, RosTools::DataSaver &data_saver) const;
+    };
 
 }
 

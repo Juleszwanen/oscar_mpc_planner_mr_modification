@@ -379,6 +379,8 @@ namespace MPCPlanner
             data_saver.AddData("jules_communication_trigger_reason", static_cast<double>(data.communication_trigger_reason));
             data_saver.AddData("jules_current_state", current_state);
             data_saver.AddData("jules_previous_state", previous_state);
+            saveSquaredDistanceOtherRobots(state,  data, data_saver);
+            
         }
 
         _experiment_util->update(state, _solver, data);
@@ -409,6 +411,21 @@ namespace MPCPlanner
         for (auto &module : _modules)
             objective_reached = objective_reached && module->isObjectiveReached(state, data);
         return objective_reached;
+    }
+
+    void Planner::saveSquaredDistanceOtherRobots(const State &state, const RealTimeData &data, RosTools::DataSaver &data_saver) const
+    {
+        // const auto& ego_position_x = state.get("x");
+        // const auto& ego_position_y = state.get("y");
+        
+
+        for (auto const& [other_robot_ns, robot_trajectory_obstacle] : data.trajectory_dynamic_obstacles)
+        {   
+            const auto& squared_distance = (robot_trajectory_obstacle.position - Eigen::Vector2d(state.get("x"), state.get("y"))).squaredNorm();
+
+            data_saver.AddData("squared_distance_" + other_robot_ns, squared_distance);
+        }
+        
     }
 }
 

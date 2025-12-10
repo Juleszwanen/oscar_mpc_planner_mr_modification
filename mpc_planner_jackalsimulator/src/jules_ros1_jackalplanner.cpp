@@ -1506,7 +1506,7 @@ void JulesJackalPlanner::saveDataStateBased()
         return;
     
     const bool save_only_on_planning_active = CONFIG["JULES"]["save_only_on_planning_active"].as<bool>(false);
-    auto& ds = _planner->getDataSaver();
+    // auto& ds = _planner->getDataSaver();
     switch (_current_state)
     {
 
