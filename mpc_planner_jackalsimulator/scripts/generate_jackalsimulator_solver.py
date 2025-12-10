@@ -37,7 +37,12 @@ from scenario_constraints import ScenarioConstraintModule
 # Import solver models that you want to use, these imports are coming from the solver_generator package
 from solver_model import ContouringSecondOrderUnicycleModel, ContouringSecondOrderUnicycleModelWithSlack
 from solver_model import ContouringSecondOrderUnicycleModelCurvatureAware
+from solver_model import ContouringSecondOrderUnicycleModelWithEC
 #########################################################################################################
+
+# Import joint planning modules (for Variant B full joint optimization)
+from joint_ec_objective import JointECObjectiveModule
+from joint_ec_constraints import JointECConstraintModule
 
 def configuration_no_obstacles(settings):
     modules = ModuleManager()
@@ -120,6 +125,83 @@ def configuration_tmpc_consistency_cost(settings):
     ))
     return model, modules
 
+
+def configuration_tmpc_joint_planning(settings):
+    """
+    T-MPC++ with joint EC robot optimization (Variant B from IJP paper).
+    
+    This configuration extends T-MPC++ with joint optimization capabilities:
+    - Uses ContouringSecondOrderUnicycleModelWithEC for extended state/input space
+    - Adds JointECObjectiveModule for EC deviation and control costs
+    - Adds JointECConstraintModule for coupled collision constraints
+    
+    The joint planning modules add decision variables for EC (Ego-Conditioned) robots,
+    allowing the optimizer to adjust both ego and EC trajectories to find
+    collision-free solutions.
+    
+    Configuration in settings.yaml:
+        joint_planning:
+            enabled: true
+            max_ec_robots: 2
+            ...
+    """
+    # Get joint planning configuration
+    joint_planning_config = settings.get("joint_planning", {})
+    joint_planning_enabled = joint_planning_config.get("enabled", False)
+    max_ec_robots = joint_planning_config.get("max_ec_robots", 2)
+    
+    modules = ModuleManager()
+    
+    if joint_planning_enabled:
+        # Use extended model with EC robot variables
+        model = ContouringSecondOrderUnicycleModelWithEC(max_ec_robots=max_ec_robots)
+        print(f"[Joint Planning] Using ContouringSecondOrderUnicycleModelWithEC with {max_ec_robots} EC robots")
+        print(f"[Joint Planning] Model dimensions: nx={model.nx}, nu={model.nu}")
+    else:
+        # Use standard model
+        model = ContouringSecondOrderUnicycleModel()
+        print("[Joint Planning] Joint planning disabled, using standard model")
+    
+    # Base module for input penalties
+    base_module = modules.add_module(MPCBaseModule(settings))
+    base_module.weigh_variable(var_name="a", weight_names="acceleration")
+    base_module.weigh_variable(var_name="w", weight_names="angular_velocity")
+    
+    if not settings["contouring"]["dynamic_velocity_reference"]:
+        base_module.weigh_variable(
+            var_name="v",
+            weight_names=["velocity", "reference_velocity"],
+            cost_function=lambda x, w: w[0] * (x - w[1])**2
+        )
+    
+    # Contouring module for path tracking
+    modules.add_module(ContouringModule(settings))
+    if settings["contouring"]["dynamic_velocity_reference"]:
+        modules.add_module(PathReferenceVelocityModule(settings))
+    
+    # Consistency module if enabled
+    if settings.get("JULES", {}).get("consistency_enabled", False):
+        modules.add_module(ConsistencyModule(settings))
+    
+    # Joint EC modules (only when joint planning is enabled)
+    if joint_planning_enabled:
+        # EC robot objective costs (deviation + control effort)
+        modules.add_module(JointECObjectiveModule(settings, max_ec_robots=max_ec_robots))
+        
+        # EC robot coupled collision constraints
+        modules.add_module(JointECConstraintModule(settings, max_ec_robots=max_ec_robots))
+        
+        print(f"[Joint Planning] Added JointECObjectiveModule and JointECConstraintModule")
+    
+    # Guidance constraints with underlying obstacle avoidance
+    # Note: Non-EC obstacles are still handled by EllipsoidConstraintModule
+    modules.add_module(GuidanceConstraintModule(
+        settings,
+        constraint_submodule=EllipsoidConstraintModule
+    ))
+    
+    return model, modules
+
 def configuration_lmpcc(settings):
     modules = ModuleManager()
     model = ContouringSecondOrderUnicycleModel()
@@ -150,11 +232,30 @@ settings = load_settings()
 # NOTE: T-MPC - Parallelized MPC optimizing trajectories with several distinct passing behaviors.
 # model, modules = configuration_tmpc(settings)
 
-model, modules = configuration_tmpc_consistency_cost(settings)
+# NOTE: T-MPC++ with consistency cost (current default)
+# model, modules = configuration_tmpc_consistency_cost(settings)
+
+# NOTE: T-MPC++ with joint EC robot optimization (Variant B from IJP paper)
+# Use this when joint_planning.enabled = true in settings.yaml
+# model, modules = configuration_tmpc_joint_planning(settings)
 
 # NOTE: SH-MPC - MPC incorporating non Gaussian uncertainty in obstacle motion. 
 # More configuration parameters in `scenario_module/config/params.yaml`
 # model, modules = configuration_safe_horizon(settings)
+
+# Select configuration based on settings
+# If joint_planning is enabled, use joint planning configuration
+# Otherwise, fall back to tmpc_consistency_cost
+if settings.get("joint_planning", {}).get("enabled", False):
+    print("=" * 60)
+    print("Joint Planning ENABLED - using configuration_tmpc_joint_planning")
+    print("=" * 60)
+    model, modules = configuration_tmpc_joint_planning(settings)
+else:
+    print("=" * 60)
+    print("Joint Planning DISABLED - using configuration_tmpc_consistency_cost")
+    print("=" * 60)
+    model, modules = configuration_tmpc_consistency_cost(settings)
 
 generate_solver(modules, model, settings)
 exit(0)

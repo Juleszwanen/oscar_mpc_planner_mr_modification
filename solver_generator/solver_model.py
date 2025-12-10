@@ -516,3 +516,258 @@ class BicycleModel2ndOrderCurvatureAware(DynamicsModel):
 #                          0., # set in the discrete dynamics
 #                          w,
 #                          v])
+
+
+class ContouringSecondOrderUnicycleModelWithEC(DynamicsModel):
+    """
+    Extended unicycle model that includes EC (Ego-Conditioned) robot state variables.
+    
+    This model is used for joint optimization (Variant B from Interactive Joint Planning paper).
+    It extends the base ContouringSecondOrderUnicycleModel by adding decision variables
+    for M EC robots that are jointly optimized with the ego robot.
+    
+    Each EC robot has:
+    - States: x_ec, y_ec, psi_ec, v_ec (4 states per EC robot)
+    - Inputs: a_ec, w_ec (2 inputs per EC robot)
+    
+    The ego robot uses the same dynamics as ContouringSecondOrderUnicycleModel:
+    - States: x, y, psi, v, spline (5 states)
+    - Inputs: a, w (2 inputs)
+    
+    Total dimensions:
+    - nx = 5 (ego) + max_ec_robots * 4 (EC states)
+    - nu = 2 (ego) + max_ec_robots * 2 (EC inputs)
+    
+    Args:
+        max_ec_robots: Maximum number of EC robots to jointly optimize (default: 2)
+    
+    Design Rationale:
+        This model is defined in solver_model.py to follow the same architecture as other
+        dynamics models in the codebase. It inherits from DynamicsModel and implements
+        all required methods (continuous_model, acados_symbolics, get_acados_dynamics, etc.)
+        to integrate seamlessly with the solver generator pipeline.
+    """
+
+    def __init__(self, max_ec_robots=2):
+        super().__init__()
+        
+        self.max_ec_robots = max_ec_robots
+        
+        # Ego robot dimensions (same as ContouringSecondOrderUnicycleModel)
+        self.nu_ego = 2  # a, w
+        self.nx_ego = 5  # x, y, psi, v, spline
+        
+        # EC robot dimensions (per robot)
+        self.nu_ec = 2  # a_ec, w_ec
+        self.nx_ec = 4  # x_ec, y_ec, psi_ec, v_ec
+        
+        # Total dimensions
+        self.nu = self.nu_ego + max_ec_robots * self.nu_ec
+        self.nx = self.nx_ego + max_ec_robots * self.nx_ec
+        
+        # Build state and input lists
+        # Ego states and inputs
+        self.states = ["x", "y", "psi", "v", "spline"]
+        self.inputs = ["a", "w"]
+        
+        # EC robot states and inputs
+        for ec_idx in range(max_ec_robots):
+            prefix = f"ec{ec_idx}_"
+            self.states.extend([prefix + "x", prefix + "y", prefix + "psi", prefix + "v"])
+            self.inputs.extend([prefix + "a", prefix + "w"])
+        
+        # Build bounds
+        self._setup_bounds()
+    
+    def _setup_bounds(self):
+        """
+        Set up bounds for all variables (inputs first, then states).
+        
+        Bound order: [u0, u1, ..., x0, x1, ...]
+        
+        Ego bounds are taken from ContouringSecondOrderUnicycleModel.
+        EC robot bounds are configurable but use reasonable defaults for unicycle robots.
+        """
+        # Constants for bounds (should match settings.yaml in production)
+        POS_LIMIT = 2000.0
+        EGO_MAX_ACCEL = 2.0
+        EGO_MAX_ANGULAR_VEL = 0.8
+        EGO_MAX_VEL = 3.0
+        EGO_MIN_VEL = -0.01
+        SPLINE_MIN = -1.0
+        SPLINE_MAX = 10000.0
+        
+        # EC robot bounds (slightly more conservative than ego)
+        EC_MAX_ACCEL = 1.5
+        EC_MAX_ANGULAR_VEL = 1.0
+        EC_MAX_VEL = 2.0
+        EC_MIN_VEL = -0.1  # Allow small negative for numerical stability
+        
+        # Ego input bounds: [a, w]
+        ego_input_lower = [-EGO_MAX_ACCEL, -EGO_MAX_ANGULAR_VEL]
+        ego_input_upper = [EGO_MAX_ACCEL, EGO_MAX_ANGULAR_VEL]
+        
+        # Ego state bounds: [x, y, psi, v, spline]
+        ego_state_lower = [-POS_LIMIT, -POS_LIMIT, -np.pi * 4, EGO_MIN_VEL, SPLINE_MIN]
+        ego_state_upper = [POS_LIMIT, POS_LIMIT, np.pi * 4, EGO_MAX_VEL, SPLINE_MAX]
+        
+        # EC input bounds (per robot): [a_ec, w_ec]
+        ec_input_lower = [-EC_MAX_ACCEL, -EC_MAX_ANGULAR_VEL]
+        ec_input_upper = [EC_MAX_ACCEL, EC_MAX_ANGULAR_VEL]
+        
+        # EC state bounds (per robot): [x_ec, y_ec, psi_ec, v_ec]
+        ec_state_lower = [-POS_LIMIT, -POS_LIMIT, -np.pi * 4, EC_MIN_VEL]
+        ec_state_upper = [POS_LIMIT, POS_LIMIT, np.pi * 4, EC_MAX_VEL]
+        
+        # Build complete bound vectors (order: all inputs, then all states)
+        self.lower_bound = ego_input_lower.copy()
+        self.upper_bound = ego_input_upper.copy()
+        
+        # Add EC robot inputs
+        for _ in range(self.max_ec_robots):
+            self.lower_bound.extend(ec_input_lower)
+            self.upper_bound.extend(ec_input_upper)
+        
+        # Add ego states
+        self.lower_bound.extend(ego_state_lower)
+        self.upper_bound.extend(ego_state_upper)
+        
+        # Add EC robot states
+        for _ in range(self.max_ec_robots):
+            self.lower_bound.extend(ec_state_lower)
+            self.upper_bound.extend(ec_state_upper)
+
+    def continuous_model(self, x, u):
+        """
+        Continuous dynamics for ego and all EC robots.
+        
+        Ego dynamics (unicycle):
+            x_dot = v * cos(psi)
+            y_dot = v * sin(psi)
+            psi_dot = w
+            v_dot = a
+            spline_dot = v
+        
+        EC robot dynamics (same unicycle model for each):
+            x_ec_dot = v_ec * cos(psi_ec)
+            y_ec_dot = v_ec * sin(psi_ec)
+            psi_ec_dot = w_ec
+            v_ec_dot = a_ec
+        
+        Args:
+            x: State vector [x_ego, x_ec_0, x_ec_1, ...]
+            u: Input vector [u_ego, u_ec_0, u_ec_1, ...]
+        
+        Returns:
+            np.array: State derivatives [x_dot_ego, x_dot_ec_0, x_dot_ec_1, ...]
+        """
+        # Ego dynamics
+        a_ego = u[0]
+        w_ego = u[1]
+        psi_ego = x[2]
+        v_ego = x[3]
+        
+        ego_dynamics = [
+            v_ego * cd.cos(psi_ego),  # x_dot
+            v_ego * cd.sin(psi_ego),  # y_dot
+            w_ego,                     # psi_dot
+            a_ego,                     # v_dot
+            v_ego                      # spline_dot
+        ]
+        
+        # EC robot dynamics
+        ec_dynamics = []
+        for ec_idx in range(self.max_ec_robots):
+            # Input offset for this EC robot
+            u_offset = self.nu_ego + ec_idx * self.nu_ec
+            # State offset for this EC robot
+            x_offset = self.nx_ego + ec_idx * self.nx_ec
+            
+            a_ec = u[u_offset]
+            w_ec = u[u_offset + 1]
+            psi_ec = x[x_offset + 2]
+            v_ec = x[x_offset + 3]
+            
+            ec_dynamics.extend([
+                v_ec * cd.cos(psi_ec),  # x_ec_dot
+                v_ec * cd.sin(psi_ec),  # y_ec_dot
+                w_ec,                    # psi_ec_dot
+                a_ec                     # v_ec_dot
+            ])
+        
+        return np.array(ego_dynamics + ec_dynamics)
+
+    def acados_symbolics(self):
+        """
+        Create CasADi symbolic variables for acados OCP formulation.
+        
+        Returns:
+            cd.SX: Concatenated symbolic vector z = [u; x]
+        """
+        x = cd.SX.sym("x", self.nx)
+        u = cd.SX.sym("u", self.nu)
+        z = cd.vertcat(u, x)
+        self.load(z)
+        return z
+
+    def get_acados_dynamics(self):
+        """
+        Return dynamics expressions for acados OCP.
+        
+        Returns:
+            tuple: (f_expl, f_impl) where:
+                - f_expl: Explicit dynamics x_dot = f(x, u)
+                - f_impl: Implicit dynamics x_dot - f(x, u) = 0
+        """
+        self._x_dot = cd.SX.sym("x_dot", self.nx)
+        
+        f_expl = numpy_to_casadi(self.continuous_model(self._z[self.nu:], self._z[:self.nu]))
+        f_impl = self._x_dot - f_expl
+        
+        return f_expl, f_impl
+
+    def get_xinit(self):
+        """
+        Get indices for initial state constraint.
+        
+        For the joint model, only ego robot states are constrained to initial state.
+        EC robot initial states are set via parameters (their current observed state).
+        
+        Returns:
+            range: Indices of ego states in the decision variable vector
+        """
+        # Only constrain ego states to initial state (indices nu to nu + nx_ego)
+        # EC robot states are initialized via parameters
+        return range(self.nu, self.nu + self.nx_ego)
+
+    def get_ec_state_indices(self, ec_idx):
+        """
+        Get state indices for a specific EC robot.
+        
+        Args:
+            ec_idx: Index of EC robot (0 to max_ec_robots-1)
+        
+        Returns:
+            range: Indices of EC robot states in the state vector
+        """
+        if ec_idx >= self.max_ec_robots:
+            raise ValueError(f"EC robot index {ec_idx} out of range (max: {self.max_ec_robots - 1})")
+        
+        start_idx = self.nx_ego + ec_idx * self.nx_ec
+        return range(start_idx, start_idx + self.nx_ec)
+
+    def get_ec_input_indices(self, ec_idx):
+        """
+        Get input indices for a specific EC robot.
+        
+        Args:
+            ec_idx: Index of EC robot (0 to max_ec_robots-1)
+        
+        Returns:
+            range: Indices of EC robot inputs in the input vector
+        """
+        if ec_idx >= self.max_ec_robots:
+            raise ValueError(f"EC robot index {ec_idx} out of range (max: {self.max_ec_robots - 1})")
+        
+        start_idx = self.nu_ego + ec_idx * self.nu_ec
+        return range(start_idx, start_idx + self.nu_ec)
