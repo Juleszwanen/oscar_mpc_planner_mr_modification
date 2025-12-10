@@ -243,19 +243,36 @@ settings = load_settings()
 # More configuration parameters in `scenario_module/config/params.yaml`
 # model, modules = configuration_safe_horizon(settings)
 
-# Select configuration based on settings
-# If joint_planning is enabled, use joint planning configuration
-# Otherwise, fall back to tmpc_consistency_cost
-if settings.get("joint_planning", {}).get("enabled", False):
-    print("=" * 60)
-    print("Joint Planning ENABLED - using configuration_tmpc_joint_planning")
-    print("=" * 60)
-    model, modules = configuration_tmpc_joint_planning(settings)
-else:
-    print("=" * 60)
-    print("Joint Planning DISABLED - using configuration_tmpc_consistency_cost")
-    print("=" * 60)
-    model, modules = configuration_tmpc_consistency_cost(settings)
 
+def select_configuration(settings):
+    """
+    Select the appropriate MPC configuration based on settings.
+    
+    This function chooses between different MPC configurations:
+    - Joint planning (when joint_planning.enabled = true)
+    - T-MPC++ with consistency cost (default)
+    
+    Args:
+        settings: Dictionary of solver settings from settings.yaml
+    
+    Returns:
+        tuple: (model, modules) for the selected configuration
+    """
+    joint_planning_enabled = settings.get("joint_planning", {}).get("enabled", False)
+    
+    if joint_planning_enabled:
+        print("=" * 60)
+        print("Joint Planning ENABLED - using configuration_tmpc_joint_planning")
+        print("=" * 60)
+        return configuration_tmpc_joint_planning(settings)
+    else:
+        print("=" * 60)
+        print("Joint Planning DISABLED - using configuration_tmpc_consistency_cost")
+        print("=" * 60)
+        return configuration_tmpc_consistency_cost(settings)
+
+
+# Select configuration and generate solver
+model, modules = select_configuration(settings)
 generate_solver(modules, model, settings)
 exit(0)

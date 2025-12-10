@@ -108,11 +108,14 @@ class JointECDeviationObjective(Objective):
             prefix = f"ec{ec_idx}_"
             
             # Get EC robot position (decision variable)
+            # If EC robot variables are not in the model, skip this robot
+            # This allows the module to gracefully handle non-joint-planning models
             try:
                 ec_x = model.get(prefix + "x")
                 ec_y = model.get(prefix + "y")
-            except Exception:
-                # EC robot variables not in model (joint planning not enabled)
+            except (IOError, KeyError):
+                # IOError is raised by model.get() when variable not found
+                # KeyError could be raised if model uses dict-based storage
                 continue
             
             # Get EC robot prediction (parameter)
@@ -188,11 +191,12 @@ class JointECControlObjective(Objective):
             prefix = f"ec{ec_idx}_"
             
             # Get EC robot control inputs (decision variables)
+            # If EC robot variables are not in the model, skip this robot
             try:
                 ec_a = model.get(prefix + "a")
                 ec_w = model.get(prefix + "w")
-            except Exception:
-                # EC robot variables not in model (joint planning not enabled)
+            except (IOError, KeyError):
+                # IOError is raised by model.get() when variable not found
                 continue
             
             # Get active flag

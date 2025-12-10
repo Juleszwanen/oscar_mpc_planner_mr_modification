@@ -146,21 +146,29 @@ class JointCollisionConstraint:
         # Safety margin
         safety_margin = params.get("joint_safety_margin")
         
-        # Numerical epsilon for division stability
-        EPSILON = 1e-6
+        # Numerical epsilon for division stability in normalized constraint formulation
+        # This prevents division by zero when min_dist is very small
+        # Value chosen to be small enough to not affect constraint behavior
+        # but large enough to prevent numerical issues
+        CONSTRAINT_EPSILON = 1e-6
         
         for ec_idx in range(self.max_ec_robots):
             prefix = f"ec{ec_idx}_"
             
             # Get EC robot position (DECISION VARIABLE - this is the key difference!)
+            # The joint optimization couples ego and EC positions in the constraint
             try:
                 ec_x = model.get(prefix + "x")
                 ec_y = model.get(prefix + "y")
-            except Exception:
-                # EC robot variables not in model, use fallback
-                # This shouldn't happen if model is properly configured
-                ec_x = params.get(prefix + "pred_x")
-                ec_y = params.get(prefix + "pred_y")
+            except (IOError, KeyError):
+                # IOError is raised by model.get() when variable not found
+                # This indicates a configuration error - EC constraint module is enabled
+                # but EC variables are not in the model
+                raise RuntimeError(
+                    f"EC robot {ec_idx} variables not found in model. "
+                    f"Ensure ContouringSecondOrderUnicycleModelWithEC is used when "
+                    f"JointECConstraintModule is enabled."
+                )
             
             ec_pos = np.array([ec_x, ec_y])
             
@@ -183,7 +191,7 @@ class JointCollisionConstraint:
                 
                 # Normalized constraint: dist² / min_dist² >= 1
                 # This formulation is better conditioned than dist² >= min_dist²
-                constraint = dist_sq / (min_dist_sq + EPSILON)
+                constraint = dist_sq / (min_dist_sq + CONSTRAINT_EPSILON)
                 constraints.append(constraint)
         
         return constraints

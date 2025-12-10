@@ -587,8 +587,18 @@ class ContouringSecondOrderUnicycleModelWithEC(DynamicsModel):
         
         Ego bounds are taken from ContouringSecondOrderUnicycleModel.
         EC robot bounds are configurable but use reasonable defaults for unicycle robots.
+        
+        Design Note: Bounds are hardcoded here rather than loaded from settings for two reasons:
+        1. Solver generation happens at compile time, not runtime, so bounds must be known
+        2. Consistency with other models in this file (e.g., ContouringSecondOrderUnicycleModel)
+        
+        The bounds can be overridden using model.set_bounds() after instantiation if needed.
+        EC-specific bounds in settings.yaml (ec_max_velocity, etc.) are intended for
+        runtime parameter validation in C++, not solver generation.
         """
-        # Constants for bounds (should match settings.yaml in production)
+        # Default bound constants for solver generation
+        # These match the values in ContouringSecondOrderUnicycleModel
+        # and can be overridden via model.set_bounds() after instantiation
         POS_LIMIT = 2000.0
         EGO_MAX_ACCEL = 2.0
         EGO_MAX_ANGULAR_VEL = 0.8
@@ -598,6 +608,7 @@ class ContouringSecondOrderUnicycleModelWithEC(DynamicsModel):
         SPLINE_MAX = 10000.0
         
         # EC robot bounds (slightly more conservative than ego)
+        # These can be adjusted via joint_planning config for runtime parameter validation
         EC_MAX_ACCEL = 1.5
         EC_MAX_ANGULAR_VEL = 1.0
         EC_MAX_VEL = 2.0
@@ -667,15 +678,18 @@ class ContouringSecondOrderUnicycleModelWithEC(DynamicsModel):
         psi_ego = x[2]
         v_ego = x[3]
         
+        # Ego robot dynamics (unicycle model with spline progress)
+        # Note: spline_dot = v_ego assumes the spline progress is parameterized by arc length
+        # This is consistent with the ContouringSecondOrderUnicycleModel implementation
         ego_dynamics = [
-            v_ego * cd.cos(psi_ego),  # x_dot
-            v_ego * cd.sin(psi_ego),  # y_dot
-            w_ego,                     # psi_dot
-            a_ego,                     # v_dot
-            v_ego                      # spline_dot
+            v_ego * cd.cos(psi_ego),  # x_dot: forward motion in x
+            v_ego * cd.sin(psi_ego),  # y_dot: forward motion in y
+            w_ego,                     # psi_dot: angular velocity
+            a_ego,                     # v_dot: acceleration
+            v_ego                      # spline_dot: arc length progress = velocity
         ]
         
-        # EC robot dynamics
+        # EC robot dynamics (unicycle model, no spline state)
         ec_dynamics = []
         for ec_idx in range(self.max_ec_robots):
             # Input offset for this EC robot
@@ -689,10 +703,10 @@ class ContouringSecondOrderUnicycleModelWithEC(DynamicsModel):
             v_ec = x[x_offset + 3]
             
             ec_dynamics.extend([
-                v_ec * cd.cos(psi_ec),  # x_ec_dot
-                v_ec * cd.sin(psi_ec),  # y_ec_dot
-                w_ec,                    # psi_ec_dot
-                a_ec                     # v_ec_dot
+                v_ec * cd.cos(psi_ec),  # x_ec_dot: forward motion in x
+                v_ec * cd.sin(psi_ec),  # y_ec_dot: forward motion in y
+                w_ec,                    # psi_ec_dot: angular velocity
+                a_ec                     # v_ec_dot: acceleration
             ])
         
         return np.array(ego_dynamics + ec_dynamics)
