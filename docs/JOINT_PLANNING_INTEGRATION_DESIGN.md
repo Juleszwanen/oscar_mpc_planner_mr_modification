@@ -4,6 +4,7 @@
 - **Purpose**: Step-by-step design document for integrating joint optimization (Interactive Joint Planning) into the existing topology-aware explicit communication framework
 - **Target Audience**: Developers familiar with MPC, homotopy, and ROS but not with the specifics of the IJP paper or current codebase
 - **Constraint**: Topology/homotopy class extraction mechanism should remain unchanged; focus is on adding joint optimization
+- **Scope**: This document covers the conceptual design, code-level analysis, and implementation procedure for integrating the Interactive Joint Planning (IJP) approach from the reference paper into the existing T-MPC++ codebase
 
 ---
 
@@ -17,6 +18,10 @@
 5. [Part D: Code-Level Integration](#part-d-code-level-integration)
 6. [Part E: Trade-offs and Variants](#part-e-trade-offs-and-variants)
 7. [Part F: Recommendations](#part-f-recommendations)
+8. [Appendix C: Detailed Paper-to-Code Symbol Mapping](#appendix-c-detailed-paper-to-code-symbol-mapping)
+9. [Appendix D: Step-by-Step Implementation Procedure](#appendix-d-step-by-step-implementation-procedure)
+10. [Appendix E: Assumptions, Limitations, and Open Questions](#appendix-e-assumptions-limitations-and-open-questions)
+11. [Appendix F: Related Documentation](#appendix-f-related-documentation)
 
 ---
 
@@ -117,6 +122,68 @@ This is computed via angular distance:
 ```
 Δθ(x, xo) = Σ [arctan((Yi+1 - Yo_i+1)/(Xi+1 - Xo_i+1)) - arctan((Yi - Yo_i)/(Xi - Xo_i))]
 ```
+
+#### 2.1.5 Technical Summary: IJP Optimization Problem
+
+For completeness, the full IJP optimization problem from the paper is:
+
+**Optimization Variables** (Equation 8):
+```
+z = [u_e, u_o, x_e, x_o]
+```
+where:
+- `u_e ∈ ℝ^{n_u × N}`: Ego control inputs over horizon N
+- `u_o ∈ ℝ^{(M × n_u) × N}`: M agents' control inputs over horizon N
+- `x_e ∈ ℝ^{n_x × (N+1)}`: Ego states over horizon
+- `x_o ∈ ℝ^{(M × n_x) × (N+1)}`: M agents' states over horizon
+
+**Objective Function** (Equation 8):
+```
+minimize  η_e · [J_ref(x_e, x_ref) + J_u(u_e)] + η_o · [J_dev(x_o, x_pred) + J_u(u_o)]
+```
+
+Where the individual cost terms are:
+- `J_ref(x_e, x_ref) = Σ_k ||x_e[k] - x_ref[k]||²_Q`: Reference tracking
+- `J_u(u) = Σ_k ||u[k]||²_R + ||Δu[k]||²_S`: Control effort + smoothness (jerk)
+- `J_dev(x_o, x_pred) = Σ_k ||x_o[k] - x_pred[k]||²_Q_dev`: Deviation from prediction
+
+**Constraints**:
+```
+Subject to:
+  x_e[0] = x0_e                                    (Ego initial state)
+  x_o[0] = x0_o                                    (Agents' initial states)
+  x_e[k+1] = A_e[k] x_e[k] + B_e[k] u_e[k] + C_e[k]  (Linearized ego dynamics)
+  x_o[k+1] = A_o[k] x_o[k] + B_o[k] u_o[k] + C_o[k]  (Linearized agent dynamics)
+  G_d,x[k] x[k] + G_d,u[k] u[k] ≤ g_d[k]           (Input/state bounds)
+  G_s,e[k] x_e[k] + G_s,o[k] x_o[k] ≤ g_s[k]       (COUPLED collision avoidance)
+```
+
+**Key Insight**: The collision avoidance constraint `G_s,e[k] x_e[k] + G_s,o[k] x_o[k] ≤ g_s[k]` is what makes this "joint" optimization - both ego and agent positions appear in the same constraint, creating a coupling that standard MPC lacks.
+
+#### 2.1.6 What Makes IJP Different from Independent Planning
+
+| Aspect | Independent Planning | IJP Joint Planning |
+|--------|---------------------|-------------------|
+| Agent prediction | Fixed, received externally | Optimized jointly with ego |
+| Collision constraint | `‖x_e - x_pred‖ ≥ d` (one-sided) | `‖x_e - x_o‖ ≥ d` (coupled) |
+| Agent reaction | Assumed to follow prediction | Modeled as yielding (with cost) |
+| Decision variables | Only ego: `[u_e, x_e]` | Ego + agents: `[u_e, u_o, x_e, x_o]` |
+| Computation | O(n_ego³) per solve | O((n_ego + M·n_agent)³) per solve |
+| Implicit assumption | Agents are obstacles | Agents are rational actors |
+
+#### 2.1.7 Most Relevant Parts for Integration
+
+The following IJP concepts are **most relevant** for integration into T-MPC++:
+
+1. **Deviation Cost (J_dev)**: Can be added as new cost term in solver generation
+2. **Coupled Collision Constraints**: Requires modifying constraint formulation
+3. **Selfishness Parameter (η)**: New tuning parameter for balancing
+4. **SQP Iterative Refinement**: Can leverage existing parallel structure
+
+The following IJP concepts are **less relevant** or already covered:
+- Free-end homotopy: T-MPC++ already handles topology differently
+- Unconditioned prediction: Already have this via communication
+- Ego sampling: Already have guidance trajectories
 
 ### 2.2 Current Codebase Analysis
 
@@ -1186,5 +1253,426 @@ This keeps changes localized to the acados model creation and parameter packing 
 
 ---
 
-*Document version: 1.0*
-*Last updated: December 2024*
+## Appendix C: Detailed Paper-to-Code Symbol Mapping
+
+This appendix provides an explicit mapping between the mathematical notation used in the "Interactive Joint Planning for Autonomous Vehicles" paper and the corresponding code symbols, files, and line numbers in the existing codebase.
+
+### C.1 State Variables Mapping
+
+| Paper Symbol | Description | Code Variable | File Location |
+|-------------|-------------|---------------|---------------|
+| `x_e` | Ego vehicle state vector | `state.getPos()`, `state.get("psi")`, `state.get("v")` | `mpc_planner_solver/include/.../state.h` |
+| `x_e[k]` | Ego state at timestep k | `solver->getOutput(k, "x")`, `solver->getOutput(k, "y")` | `mpc_planner_solver/src/solver_interface.cpp` |
+| `x_o` | Other agent state | `data.dynamic_obstacles[i].position` | `mpc_planner_types/include/.../realtime_data.h:28` |
+| `x_o[k]` | Agent predicted state at k | `obstacle.prediction.modes[0][k].position` | `mpc_planner_types/include/.../data_types.h:60` |
+| `x_pred` | Unconditioned prediction | `DynamicObstacle::prediction` | `mpc_planner_types/include/.../data_types.h:98` |
+| `x_ref` | Reference trajectory | `module_data.path` | `mpc_planner_types/include/.../module_data.h:26` |
+
+### C.2 Control Input Variables Mapping
+
+| Paper Symbol | Description | Code Variable | File Location |
+|-------------|-------------|---------------|---------------|
+| `u_e` | Ego control inputs | `solver->getOutput(k, "a")`, `solver->getOutput(k, "w")` | `mpc_planner_solver/src/solver_interface.cpp` |
+| `a_e` | Ego acceleration | `solver->setParameter(k, "acceleration", value)` | Solver generated code |
+| `δ_e` / `ω_e` | Ego steering/angular velocity | `solver->setParameter(k, "angular_velocity", value)` | Solver generated code |
+| `u_o` | Agent control (IJP paper) | **NOT IMPLEMENTED** - would be new EC robot inputs | N/A |
+
+### C.3 Cost Function Terms Mapping
+
+| Paper Term | Description | Current Code | Location | Status |
+|------------|-------------|--------------|----------|--------|
+| `J_ref(x_e, x_ref)` | Reference tracking cost | `ContouringModule` objective | `mpc_planner_modules/src/contouring.cpp` | ✅ Exists |
+| `J_u(u_e)` | Ego control effort | `MPCBaseModule::weigh_variable("a", ...)` | `mpc_planner_modules/src/mpc_base.cpp` | ✅ Exists |
+| `J_dev(x_o, x_pred)` | Agent deviation cost | **NOT IMPLEMENTED** | N/A | ❌ Needs addition |
+| `J_u(u_o)` | Agent control effort | **NOT IMPLEMENTED** | N/A | ❌ Needs addition |
+| `η_e` | Ego weight (selfishness) | **NOT IMPLEMENTED** | N/A | ❌ Needs addition |
+| `η_o` | Agent weight (altruism) | **NOT IMPLEMENTED** | N/A | ❌ Needs addition |
+
+### C.4 Constraint Terms Mapping
+
+| Paper Constraint | Description | Current Code | Location | Status |
+|-----------------|-------------|--------------|----------|--------|
+| `x_e[0] = x0_e` | Ego initial state | `solver->setXinit(state)` | `mpc_planner/src/planner.cpp:139` | ✅ Exists |
+| `x_e[k+1] = f(x_e[k], u_e[k])` | Ego dynamics | `model.get_acados_dynamics()` | `solver_generator/generate_acados_solver.py:34` | ✅ Exists |
+| `‖x_e[k] - x_obs‖ ≥ d` | Collision avoidance (fixed) | `EllipsoidConstraints`, `LinearizedConstraints` | `mpc_planner_modules/src/ellipsoid_constraints.cpp` | ✅ Exists |
+| `‖x_e[k] - x_o[k]‖ ≥ d` | **Coupled** collision (IJP) | **NOT IMPLEMENTED** - would be joint constraint | N/A | ❌ Needs addition |
+| `u_min ≤ u ≤ u_max` | Input bounds | `model.lower_bound`, `model.upper_bound` | `solver_generator/solver_model.py` | ✅ Exists |
+
+### C.5 Homotopy/Topology Terms Mapping
+
+| Paper Term | Description | Code Variable | File Location |
+|------------|-------------|---------------|---------------|
+| `h` | Homotopy class index | `guidance_trajectory.topology_class` | `guidance_planner/` package |
+| `m(x_e, x_o)` | Free-end mode (CW/S/CCW) | **NOT IMPLEMENTED** | N/A |
+| `Δθ` | Angular distance | **NOT IMPLEMENTED** | N/A |
+| Selected topology | Which class chosen | `module_data.selected_topology_id` | `mpc_planner_types/include/.../module_data.h:39` |
+| Guidance trajectory | Path through obstacles | `global_guidance_->GetGuidanceTrajectory(i)` | `mpc_planner_modules/src/guidance_constraints.cpp:398` |
+
+### C.6 Communication Variables Mapping
+
+| Paper Concept | Description | Code Implementation | File Location |
+|---------------|-------------|---------------------|---------------|
+| Trajectory broadcast | Share planned path | `publishDirectTrajectory()` | `jules_ros1_jackalplanner.cpp` |
+| Topology announcement | Share homotopy ID | `output.selected_topology_id` | `mpc_planner/include/.../planner.h:31` |
+| Prediction input | Receive other's plan | `obstacleCallback()` → `dynamic_obstacles` | `jules_ros1_jackalplanner.cpp` |
+| EC suggestion (IJP) | Suggest trajectory to other | **NOT IMPLEMENTED** | N/A |
+
+---
+
+## Appendix D: Step-by-Step Implementation Procedure
+
+This appendix provides a detailed implementation procedure for integrating joint optimization into the existing T-MPC++ framework.
+
+### D.1 Pre-Implementation Checklist
+
+Before starting implementation, verify:
+
+- [ ] Understanding of existing `GuidanceConstraints::optimize()` flow
+- [ ] Familiarity with solver generation (`generate_acados_solver.py`)
+- [ ] Access to test environments (Gazebo simulation)
+- [ ] Backup of current working codebase
+
+### D.2 Phase 1: Data Structures (Week 1)
+
+#### Step 1.1: Add ECRobot Struct
+**File**: `mpc_planner_types/include/mpc_planner_types/data_types.h`
+**After line 114** (after DynamicObstacle struct):
+
+```cpp
+/**
+ * @brief Ego-Conditioned Robot for joint optimization
+ * Represents a robot whose trajectory is jointly optimized with ego
+ */
+struct ECRobot {
+    int robot_id;                          // Unique identifier
+    Eigen::Vector2d position;              // Current position
+    double heading;                        // Current heading
+    double velocity;                       // Current velocity
+    
+    Trajectory predicted_trajectory;       // Received/predicted trajectory (unconditioned)
+    Trajectory planned_trajectory;         // Joint optimization result (ego-conditioned)
+    
+    double deviation_cost;                 // Cost incurred by deviation from predicted
+    double control_cost;                   // Cost of EC robot's control inputs
+    
+    bool is_active;                        // Whether included in current optimization
+    
+    ECRobot(int id) : robot_id(id), is_active(false), deviation_cost(0.0), control_cost(0.0) {}
+    
+    double totalCost() const { return deviation_cost + control_cost; }
+};
+```
+
+#### Step 1.2: Extend RealTimeData
+**File**: `mpc_planner_types/include/mpc_planner_types/realtime_data.h`
+**After line 29** (after dynamic_obstacles):
+
+```cpp
+// NEW: EC robots for joint optimization (subset of dynamic_obstacles that are robots)
+std::vector<ECRobot> ec_robots;
+int max_ec_robots{3};  // Loaded from settings.yaml -> joint_planning/max_ec_robots
+```
+
+#### Step 1.3: Extend ModuleData
+**File**: `mpc_planner_types/include/mpc_planner_types/module_data.h`
+**After line 44** (after num_of_guidance_found):
+
+```cpp
+// NEW: Joint planning results
+std::vector<Trajectory> ec_robot_planned_trajectories;
+std::vector<double> ec_robot_deviation_costs;
+bool joint_planning_enabled{false};
+```
+
+**Verification**: Build the project to ensure structs compile correctly.
+
+### D.3 Phase 2: Configuration (Week 1)
+
+#### Step 2.1: Add Config Parameters
+**File**: `mpc_planner_jackalsimulator/config/settings.yaml`
+**Add new section**:
+
+```yaml
+joint_planning:
+  enabled: false                          # Toggle joint planning on/off
+  max_ec_robots: 3                        # Max robots to jointly optimize
+  ec_robot_selection_radius: 10.0         # [m] Select EC robots within this radius
+  deviation_weight: 5.0                   # Weight for Jdev
+  ec_control_effort_weight: 1.0           # Weight for Ju of EC robots
+  ego_selfishness: 0.8                    # ηe: 0=altruistic, 1=selfish
+  sqp_iterations: 2                       # Number of iterative refinement rounds
+  use_coupled_collision: true             # Joint collision constraints vs. fixed
+  safety_margin: 0.1                      # [m] Additional safety buffer
+  ec_max_velocity: 2.0                    # [m/s] EC robot velocity bound
+  ec_max_acceleration: 1.5                # [m/s²] EC robot acceleration bound
+  ec_max_angular_velocity: 1.0            # [rad/s] EC robot angular velocity bound
+```
+
+#### Step 2.2: Load Config in GuidanceConstraints
+**File**: `mpc_planner_modules/src/guidance_constraints.cpp`
+**In constructor (around line 40), add**:
+
+```cpp
+// Joint planning configuration
+try {
+    _joint_planning_enabled = CONFIG["joint_planning"]["enabled"].as<bool>(false);
+    _max_ec_robots = CONFIG["joint_planning"]["max_ec_robots"].as<int>(3);
+    _ec_selection_radius = CONFIG["joint_planning"]["ec_robot_selection_radius"].as<double>(10.0);
+    _deviation_weight = CONFIG["joint_planning"]["deviation_weight"].as<double>(5.0);
+    _ec_control_weight = CONFIG["joint_planning"]["ec_control_effort_weight"].as<double>(1.0);
+    _ego_selfishness = CONFIG["joint_planning"]["ego_selfishness"].as<double>(0.8);
+    _sqp_iterations = CONFIG["joint_planning"]["sqp_iterations"].as<int>(2);
+    LOG_INFO("Joint planning: " << (_joint_planning_enabled ? "ENABLED" : "DISABLED"));
+} catch (...) {
+    _joint_planning_enabled = false;
+    LOG_WARN("Joint planning config not found, disabled by default");
+}
+```
+
+**Verification**: Run planner, verify config loads without errors.
+
+### D.4 Phase 3: EC Robot Selection (Week 2)
+
+#### Step 3.1: Implement Selection Function
+**File**: `mpc_planner_modules/src/guidance_constraints.cpp`
+**Add new private function**:
+
+```cpp
+std::vector<ECRobot> GuidanceConstraints::selectECRobots(
+    const std::vector<DynamicObstacle>& obstacles,
+    const Eigen::Vector2d& ego_pos,
+    double radius)
+{
+    std::vector<ECRobot> ec_robots;
+    
+    for (const auto& obs : obstacles) {
+        // Only consider obstacles that are robots
+        if (obs.type != ObstacleType::ROBOT)
+            continue;
+        
+        // Check distance
+        double dist = (obs.position - ego_pos).norm();
+        if (dist > radius)
+            continue;
+        
+        // Create ECRobot from DynamicObstacle
+        ECRobot ec(obs.index);
+        ec.position = obs.position;
+        ec.heading = obs.angle;
+        ec.velocity = obs.current_speed;
+        ec.is_active = true;
+        
+        // Copy prediction as unconditioned trajectory
+        if (!obs.prediction.empty() && !obs.prediction.modes[0].empty()) {
+            ec.predicted_trajectory = Trajectory(CONFIG["integrator_step"].as<double>());
+            for (const auto& step : obs.prediction.modes[0]) {
+                ec.predicted_trajectory.add(step.position);
+            }
+        }
+        
+        ec_robots.push_back(ec);
+        
+        if (ec_robots.size() >= _max_ec_robots)
+            break;
+    }
+    
+    LOG_DEBUG(_ego_robot_ns + ": Selected " << ec_robots.size() << " EC robots within radius " << radius);
+    return ec_robots;
+}
+```
+
+#### Step 3.2: Add Header Declaration
+**File**: `mpc_planner_modules/include/mpc_planner_modules/guidance_constraints.h`
+**In private section (around line 115), add**:
+
+```cpp
+// Joint planning configuration
+bool _joint_planning_enabled{false};
+int _max_ec_robots{3};
+double _ec_selection_radius{10.0};
+double _deviation_weight{5.0};
+double _ec_control_weight{1.0};
+double _ego_selfishness{0.8};
+int _sqp_iterations{2};
+
+// Joint planning helper functions
+std::vector<ECRobot> selectECRobots(
+    const std::vector<DynamicObstacle>& obstacles,
+    const Eigen::Vector2d& ego_pos,
+    double radius);
+```
+
+**Verification**: Build project, call selectECRobots in optimize() and log results.
+
+### D.5 Phase 4: Iterative Coupling (Variant A) (Weeks 3-4)
+
+This phase implements the minimal "iterative coupling" approach.
+
+#### Step 4.1: Modify optimize() for SQP Loop
+**File**: `mpc_planner_modules/src/guidance_constraints.cpp`
+**Modify `optimize()` function (around line 280)**:
+
+The key modification is wrapping the parallel optimization loop in an SQP outer loop. See Section 5.2 of the main document for the detailed pseudocode.
+
+#### Step 4.2: Implement EC Trajectory Update
+**File**: `mpc_planner_modules/src/guidance_constraints.cpp`
+**Add new function**:
+
+```cpp
+void GuidanceConstraints::updateECRobotPredictions(
+    std::vector<ECRobot>& ec_robots,
+    const std::vector<LocalPlanner>& planners)
+{
+    // After ego optimization, update EC robot predictions based on
+    // simple collision avoidance heuristic
+    for (auto& ec : ec_robots) {
+        // For each EC robot, find if any ego trajectory would collide
+        // and if so, shift the EC prediction slightly
+        
+        // This is a simplified heuristic for Variant A
+        // Full joint optimization (Variant B) would solve this properly
+        
+        // TODO: Implement one of:
+        // 1. Simple repulsion: shift EC trajectory away from ego by safety margin
+        // 2. Velocity-based avoidance: adjust EC velocity to avoid collision time
+        // 3. Optimization-based: solve small QP for each EC robot given fixed ego
+        // The choice depends on computational budget and desired behavior quality
+        
+        LOG_DEBUG("Updating EC robot " << ec.robot_id << " prediction (heuristic)");
+    }
+}
+```
+
+**Verification**: Run multi-robot simulation, verify SQP iterations execute and EC predictions update.
+
+### D.6 Phase 5: Testing and Validation (Week 5)
+
+#### Step 5.1: Unit Tests
+Create test file: `mpc_planner_modules/test/test_joint_planning.cpp`
+
+```cpp
+#include <gtest/gtest.h>
+#include "mpc_planner_modules/guidance_constraints.h"
+
+TEST(JointPlanningTest, ECRobotSelection) {
+    // Test that EC robot selection respects radius
+    // Test that max EC robots is enforced
+    // Test that only ROBOT type obstacles are selected
+}
+
+TEST(JointPlanningTest, ConfigLoading) {
+    // Test that joint_planning config loads correctly
+    // Test default values when config missing
+}
+```
+
+#### Step 5.2: Integration Tests
+- Run 2-robot simulation in narrow corridor
+- Verify both robots complete trajectory
+- Verify no collisions occur
+- Compare solve times with/without joint planning
+
+#### Step 5.3: Benchmark Tests
+- Measure solve time increase
+- Measure trajectory smoothness
+- Measure collision avoidance quality
+
+### D.7 Phase 6: Full Joint Optimization (Variant B) (Weeks 6-10)
+
+This phase requires solver regeneration.
+
+#### Step 6.1: Extend Solver Definition
+**File**: `mpc_planner_jackalsimulator/scripts/generate_jackalsimulator_solver.py`
+
+Add EC robot variables and costs (see Section 6.2.1 of main document for acados blueprint).
+
+#### Step 6.2: Regenerate Solver
+```bash
+cd /path/to/mpc_planner
+poetry run python mpc_planner_jackalsimulator/scripts/generate_jackalsimulator_solver.py
+catkin build mpc_planner_jackalsimulator
+```
+
+#### Step 6.3: Update C++ Interface
+**File**: `mpc_planner_solver/src/solver_interface.cpp`
+
+Add methods to access EC robot solution variables.
+
+---
+
+## Appendix E: Assumptions, Limitations, and Open Questions
+
+### E.1 Assumptions Made in This Design
+
+| # | Assumption | Rationale | Risk if Wrong |
+|---|------------|-----------|---------------|
+| A1 | EC robots follow unicycle/bicycle dynamics | Same as ego robot model | Medium - may need model adaptation |
+| A2 | EC robots share accurate trajectory predictions | Required for deviation cost | High - poor predictions lead to poor plans |
+| A3 | Communication delay is negligible (<50ms) | Assumed synchronous planning | Medium - async planning adds complexity |
+| A4 | Max 3 EC robots sufficient for practical scenarios | Computational tractability | Low - can adjust parameter |
+| A5 | Horizon length N same for all robots | Required for joint constraints | Medium - could interpolate if different |
+| A6 | Topology extraction only needed for ego | IJP paper doesn't use topology | Low - clear design choice |
+| A7 | Iterative coupling converges in 2-3 rounds | Based on IJP paper results | Medium - may need more iterations |
+
+### E.2 Known Limitations
+
+| # | Limitation | Impact | Potential Mitigation |
+|---|------------|--------|---------------------|
+| L1 | QP size grows with EC robots | Solve time increases ~O(M³) | Limit max_ec_robots, use sparse solvers |
+| L2 | No guarantee EC robots follow planned trajectories | Plans may become inconsistent | Replan frequently, use prediction intervals |
+| L3 | Selfishness parameter (η) is static | May not adapt to context | Could learn adaptive η |
+| L4 | Joint planning is centralized in ego | Not truly distributed | Future: negotiate or distributed ADMM |
+| L5 | Topology constraints only apply to ego | EC robots may cross topologies | Accept as design choice; could extend |
+| L6 | Variant A is heuristic, not optimal | Solution quality varies | Migrate to Variant B if needed |
+
+### E.3 Open Questions Requiring Expert Input
+
+| # | Question | Impact | Suggested Resolution |
+|---|----------|--------|---------------------|
+| Q1 | Should topology constraints apply to EC robots too? | Affects constraint formulation | Start with ego-only; extend if needed |
+| Q2 | What η values work best in practice? | Affects behavior | Empirical tuning in simulation |
+| Q3 | How to handle EC robots leaving selection radius mid-plan? | Constraint consistency | Warm-start with fixed prediction |
+| Q4 | Central vs. distributed joint optimization? | Architecture choice | Start central; consider distributed later |
+| Q5 | Real-time feasibility with Variant B? | Deployment viability | Profile extensively; may need faster hardware |
+| Q6 | Integration with SH-MPC (scenario-based)? | Uncertainty handling | Separate research question |
+| Q7 | How to validate "ego-conditioned" predictions? | Correctness verification | Compare with actual robot behavior |
+
+### E.4 Points Requiring Clarification
+
+1. **Paper Interpretation**: The IJP paper assumes all agents are "vehicles" with similar dynamics. In our multi-robot scenario, should we:
+   - Assume homogeneous robots (easier)
+   - Allow heterogeneous dynamics (more realistic but complex)
+
+2. **Solver Choice**: The paper uses a custom SQP solver. Should we:
+   - Use Acados SQP (better supported)
+   - Use Forces Pro interior point (current implementation)
+   - Both should work; Acados may handle joint QP better
+
+3. **Communication Protocol**: When should EC robot suggestions be communicated?
+   - After every plan (high bandwidth)
+   - Only on significant changes (lower bandwidth)
+   - Never (EC plans are internal only) - recommended for Variant A
+
+4. **Failure Modes**: If joint optimization fails, should we:
+   - Fall back to independent planning (recommended)
+   - Fall back to braking
+   - Retry with fewer EC robots
+
+---
+
+## Appendix F: Related Documentation
+
+For additional context, see:
+
+| Document | Purpose | Location |
+|----------|---------|----------|
+| MPC Pipeline Documentation | Detailed pipeline explanation | `docs/mpc_pipeline_documentation.md` |
+| Guidance Constraints Guide | T-MPC++ module details | `docs/guidance_constraints_documentation.md` |
+| Solver Creation Guide | How to modify solver | `docs/MPC_SOLVER_CREATION_GUIDE.md` |
+| RViz Visualization Guide | Debugging visuals | `docs/rviz_visualization_documentation.md` |
+
+---
+
+*Document version: 2.0*
+*Last updated: 2025*
+*Authors: Design document for thesis/codebase documentation*
