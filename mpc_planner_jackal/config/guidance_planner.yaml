@@ -9,7 +9,7 @@ guidance_planner:
 
   homotopy:
     n_paths: 4 # Number of guidance trajectories
-    comparison_function: Winding # Homology (default) Winding or UVD
+    comparison_function: Homology # Homology (default) Winding or UVD
     winding:
       pass_threshold: 0.87 #1.74 # half of pi
       use_non_passing: false
@@ -63,3 +63,9 @@ guidance_planner:
 
   test_node:
     continuous_replanning: true         # When using the test nodes: keep planning continuously?
+
+  JULES:
+    use_extra_params_module_data: true  # This uses the extra variables in the module_data struct which are filled inside the GuidanceConstraints::optimize() func 
+    assign_meaningful_topology_id_to_non_guided: true #Default: should be false for backward compatibility
+
+  

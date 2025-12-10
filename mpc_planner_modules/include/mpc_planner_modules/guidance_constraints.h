@@ -20,6 +20,7 @@
 #include <mpc_planner_solver/solver_interface.h>
 
 #include <unordered_map>
+#include <ros/ros.h>  // For ros::Time
 
 namespace GuidancePlanner
 {
@@ -81,6 +82,7 @@ namespace MPCPlanner
         void onDataReceived(RealTimeData &data, std::string &&data_name) override;
 
         void reset() override;
+        void resetConsistencyParameters();
         void saveData(RosTools::DataSaver &data_saver) override;
         // void GetMethodName(std::string &name) override;
 
@@ -100,6 +102,10 @@ namespace MPCPlanner
             bool taken = false;
             bool existing_guidance = false;
 
+            // ========== JULES: Added for consistency module integration ==========
+            bool has_consistency_enabled = false;  // Track if consistency was enabled for this planner
+            // =====================================================================
+
             LocalPlanner(int _id, bool _is_original_planner = false);
         };
 
@@ -117,15 +123,31 @@ namespace MPCPlanner
         std::unordered_map<int, int> _map_homotopy_class_to_planner;
 
         // Configuration parameters
-        bool _use_tmpcpp{true}, _enable_constraints{true};
-        double _control_frequency{20.};
-        double _planning_time;
-        bool _assign_meaningful_topology{false};
+        bool    _use_tmpcpp{true}, _enable_constraints{true};
+        double  _control_frequency{20.};
+        double  _planning_time;
+        bool    _assign_meaningful_topology{false};
+        
 
         int TOPOLOGY_NO_MATCH{8}; // Indicates top
         RealTimeData empty_data_;
 
         int best_planner_index_ = -1;
+
+        // ==================== JULES: Consistency Module Integration ====================
+        // These members track the previous trajectory for fair cost comparison
+        // when using consistency costs in the MPC formulation
+        bool _consistency_module_available{false};   // True if solver has consistency_weight parameter
+        bool _consistency_on_non_guided{false};      // Config: enable consistency tracking for non-guided planner
+        
+        int  _prev_selected_topology_id{-1};          // Topology ID from previous iteration
+        bool _prev_was_original_planner{false};      // Was non-guided planner selected last time?
+        bool _has_previous_trajectory{false};        // Do we have valid previous trajectory data?
+        std::vector<Eigen::Vector2d> _prev_trajectory;  // Previous trajectory (unshifted, raw from solver)
+        std::vector<Eigen::Vector2d> _interpolated_prev_trajectory;  // Interpolated by elapsed time for current use
+        ros::Time _prev_trajectory_timestamp;            // When the previous trajectory was stored
+        double _consistency_cost{999};
+        // ================================================================================
 
     public:
         std::string _ego_robot_ns{"jackalX"};
@@ -169,6 +191,84 @@ namespace MPCPlanner
          * We use 1000000+ to ensure no conflicts
          */
         static constexpr int MPC_NODE_BASE_ID = 1000000;
+
+        // ==================== JULES: Consistency Module Integration Functions ====================
+        /**
+         * @brief Initialize consistency tracking at construction time
+         * 
+         * Checks if the solver has consistency parameters and initializes storage.
+         * Called from constructor after planners are created.
+         */
+        void initializeConsistencyTracking();
+
+        /**
+         * @brief Determine if consistency cost should be enabled for a specific planner
+         * 
+         * Logic:
+         * - Non-guided planner: Only if _consistency_on_non_guided AND previous was non-guided
+         * - Guided planner: Only if previous was guided AND topology matches
+         * 
+         * @param planner The local planner to check
+         * @return true if consistency cost should be applied to this planner
+         */
+        bool shouldEnableConsistencyForPlanner(const LocalPlanner& planner);
+
+        /**
+         * @brief Set consistency parameters for a specific planner at stage k
+         * 
+         * Sets consistency_weight, prev_traj_x, prev_traj_y in the solver parameters.
+         * At k=0, also determines and stores has_consistency_enabled for the planner.
+         * 
+         * @param planner The local planner (modified to store has_consistency_enabled)
+         * @param k The stage index (0 to N-1)
+         */
+        void setConsistencyParametersForPlanner(LocalPlanner& planner, int k);
+
+        /**
+         * @brief Calculate the consistency cost contribution from a solved trajectory
+         * 
+         * Computes: sum over k of { weight * ((x_k - prev_x_k)^2 + (y_k - prev_y_k)^2) }
+         * This is used to subtract the cost BEFORE selection_weight_consistency_ is applied.
+         * 
+         * @param solver The solver with the optimized trajectory
+         * @return The total consistency cost contribution
+         */
+        double calculateConsistencyCostForSolver(std::shared_ptr<Solver> solver);
+
+        /**
+         * @brief Store the selected trajectory for next iteration's consistency tracking
+         * 
+         * Stores the raw trajectory (unshifted) along with the current timestamp.
+         * The time interpolation is done later in interpolatePrevTrajectoryByElapsedTime().
+         * Called after best planner selection in the optimize() function.
+         * 
+         * @param selected_solver The solver from the selected planner
+         */
+        void storePreviousTrajectoryFromSolver(std::shared_ptr<Solver> selected_solver);
+
+        /**
+         * @brief Interpolate the previous trajectory forward by elapsed time
+         * 
+         * Calculates how much time has passed since the trajectory was stored,
+         * then interpolates the trajectory forward to align with the current time.
+         * This accounts for the mismatch between control frequency and integrator step.
+         * 
+         * Result is stored in _interpolated_prev_trajectory for use by setConsistencyParametersForPlanner.
+         */
+        void interpolatePrevTrajectoryByElapsedTime();
+
+        /**
+         * @brief Visualize the previous trajectory used for consistency tracking
+         * 
+         * Displays the trajectory from the previous planning cycle as an orange line
+         * with small spheres at each waypoint. This shows "what we're trying to stay
+         * consistent with" during the current optimization.
+         * 
+         * Called at the start of optimize() before the parallel optimization loop.
+         * If no previous trajectory exists, clears any existing visualization.
+         */
+        void visualizePreviousTrajectory();
+        // =========================================================================================
     };
 } // namespace MPCPlanner
 #endif // __GUIDANCE_CONSTRAINTS_H__

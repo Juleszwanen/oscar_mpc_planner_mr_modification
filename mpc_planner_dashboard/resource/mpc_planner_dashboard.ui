@@ -1,0 +1,447 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  This .ui file defines the layout for the MPC Planner Dashboard rqt plugin.
+  The hierarchy matches the design outlined in our earlier conversation:
+    * A top bar with a robot selector and status indicator
+    * Two rows of group boxes for solver performance, communication metrics,
+      topology selection, and trajectory statistics
+    * A timeline view at the bottom for session‑local history
+
+  Each dynamic widget has a specific objectName so it can be referenced from
+  Python. Static labels (e.g. "Solve Time:") do not need an objectName.
+
+  To edit this layout visually, open it in Qt Designer.
+-->
+<ui version="4.0">
+ <class>MPCPlannerDashboardUi</class>
+ <widget class="QWidget" name="MPCPlannerDashboardUi">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>800</width>
+    <height>600</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>MPC Planner Dashboard</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainVerticalLayout">
+   <!-- Top bar: Robot selector and status -->
+   <item>
+    <layout class="QHBoxLayout" name="topBarLayout">
+     <!-- Robot label -->
+     <item>
+      <widget class="QLabel" name="labelRobot">
+       <property name="text">
+        <string>Robot:</string>
+       </property>
+      </widget>
+     </item>
+     <!-- Robot combo box -->
+     <item>
+      <widget class="QComboBox" name="robotComboBox"/>
+     </item>
+     <!-- Spacer to push status to the right -->
+     <item>
+      <spacer name="horizontalSpacer">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <!-- Status label -->
+     <item>
+      <widget class="QLabel" name="statusLabel">
+       <property name="text">
+        <string>● UNKNOWN</string>
+       </property>
+       <property name="alignment">
+        <set>Qt::AlignRight|Qt::AlignVCenter</set>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+
+   <!-- Middle row: Solver Performance and Communication Metrics -->
+   <item>
+    <layout class="QHBoxLayout" name="middleRowLayout">
+     <!-- Solver Performance group box -->
+     <item>
+      <widget class="QGroupBox" name="solverGroupBox">
+       <property name="title">
+        <string>Solver Performance</string>
+       </property>
+       <layout class="QFormLayout" name="solverFormLayout">
+        <!-- Solve Time -->
+        <item row="0" column="0">
+         <widget class="QLabel" name="labelSolveTime">
+          <property name="text">
+           <string>Solve Time:</string>
+          </property>
+         </widget>
+        </item>
+        <item row="0" column="1">
+         <widget class="QProgressBar" name="solveTimeBar">
+          <property name="minimum">
+           <number>0</number>
+          </property>
+          <property name="maximum">
+           <number>200</number>
+          </property>
+          <property name="value">
+           <number>0</number>
+          </property>
+          <property name="format">
+           <string>0 ms</string>
+          </property>
+         </widget>
+        </item>
+        <!-- Success Rate -->
+        <item row="1" column="0">
+         <widget class="QLabel" name="labelSuccessRate">
+          <property name="text">
+           <string>Success Rate:</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="1">
+         <widget class="QLabel" name="successRateValue">
+          <property name="text">
+           <string>0.0 %</string>
+          </property>
+         </widget>
+        </item>
+        <!-- Iterations -->
+        <item row="2" column="0">
+         <widget class="QLabel" name="labelIterations">
+          <property name="text">
+           <string>Iterations:</string>
+          </property>
+         </widget>
+        </item>
+        <item row="2" column="1">
+         <widget class="QLabel" name="iterationsValue">
+          <property name="text">
+           <string>0</string>
+          </property>
+         </widget>
+        </item>
+        <!-- Exit Code -->
+        <item row="3" column="0">
+         <widget class="QLabel" name="labelExitCode">
+          <property name="text">
+           <string>Exit Code:</string>
+          </property>
+         </widget>
+        </item>
+        <item row="3" column="1">
+         <widget class="QLabel" name="exitCodeValue">
+          <property name="text">
+           <string>0</string>
+          </property>
+         </widget>
+        </item>
+        <!-- Objective Value -->
+        <item row="4" column="0">
+         <widget class="QLabel" name="labelObjective">
+          <property name="text">
+           <string>Objective:</string>
+          </property>
+         </widget>
+        </item>
+        <item row="4" column="1">
+         <widget class="QLabel" name="objectiveValue">
+          <property name="text">
+           <string>0.0</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+     <!-- Communication Metrics group box -->
+     <item>
+      <widget class="QGroupBox" name="commGroupBox">
+       <property name="title">
+        <string>Communication Metrics</string>
+       </property>
+       <layout class="QVBoxLayout" name="commVerticalLayout">
+        <!-- Top section with form layout for metrics -->
+        <item>
+         <layout class="QFormLayout" name="commFormLayout">
+          <!-- Last Trigger -->
+          <item row="0" column="0">
+           <widget class="QLabel" name="labelLastTrigger">
+            <property name="text">
+             <string>Last Trigger:</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QLabel" name="lastTriggerValue">
+            <property name="text">
+             <string/>
+            </property>
+           </widget>
+          </item>
+          <!-- Messages Sent -->
+          <item row="1" column="0">
+           <widget class="QLabel" name="labelMessagesSent">
+            <property name="text">
+             <string>Messages Sent:</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QLabel" name="messagesSentValue">
+            <property name="text">
+             <string>0</string>
+            </property>
+           </widget>
+          </item>
+          <!-- Messages Saved -->
+          <item row="2" column="0">
+           <widget class="QLabel" name="labelMessagesSaved">
+            <property name="text">
+             <string>Messages Saved:</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="1">
+           <widget class="QLabel" name="messagesSavedValue">
+            <property name="text">
+             <string>0</string>
+            </property>
+           </widget>
+          </item>
+          <!-- Communication Savings -->
+          <item row="3" column="0">
+           <widget class="QLabel" name="labelCommSavings">
+            <property name="text">
+             <string>Comm. Savings:</string>
+            </property>
+           </widget>
+          </item>
+          <item row="3" column="1">
+           <widget class="QLabel" name="commSavingsValue">
+            <property name="text">
+             <string>0.0 %</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <!-- Communication distribution table -->
+        <item>
+         <widget class="QTableWidget" name="commTable">
+          <column>
+           <property name="text">
+            <string/>
+           </property>
+          </column>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+    </layout>
+   </item>
+
+   <!-- Lower row: Topology Selection and Trajectory Statistics -->
+   <item>
+    <layout class="QHBoxLayout" name="lowerRowLayout">
+     <!-- Topology Selection group box -->
+     <item>
+      <widget class="QGroupBox" name="topologyGroupBox">
+       <property name="title">
+        <string>Topology Selection</string>
+       </property>
+       <layout class="QVBoxLayout" name="topologyVerticalLayout">
+        <!-- Topology metrics form -->
+        <item>
+         <layout class="QFormLayout" name="topologyFormLayout">
+          <!-- Current Topology -->
+          <item row="0" column="0">
+           <widget class="QLabel" name="labelCurrentTopology">
+            <property name="text">
+             <string>Current Topology:</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QLabel" name="currentTopologyValue">
+            <property name="text">
+             <string>0</string>
+            </property>
+           </widget>
+          </item>
+          <!-- Previous Topology -->
+          <item row="1" column="0">
+           <widget class="QLabel" name="labelPreviousTopology">
+            <property name="text">
+             <string>Previous Topology:</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QLabel" name="previousTopologyValue">
+            <property name="text">
+             <string>0</string>
+            </property>
+           </widget>
+          </item>
+          <!-- Topology Switch -->
+          <item row="2" column="0">
+           <widget class="QLabel" name="labelTopologySwitch">
+            <property name="text">
+             <string>Topology Switch:</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="1">
+           <widget class="QLabel" name="topologySwitchValue">
+            <property name="text">
+             <string>NO</string>
+            </property>
+           </widget>
+          </item>
+          <!-- Using Guidance -->
+          <item row="3" column="0">
+           <widget class="QLabel" name="labelUsedGuidance">
+            <property name="text">
+             <string>Using Guidance:</string>
+            </property>
+           </widget>
+          </item>
+          <item row="3" column="1">
+           <widget class="QLabel" name="usedGuidanceValue">
+            <property name="text">
+             <string>NO</string>
+            </property>
+           </widget>
+          </item>
+          <!-- Planner Index -->
+          <item row="4" column="0">
+           <widget class="QLabel" name="labelPlannerIndex">
+            <property name="text">
+             <string>Planner Index:</string>
+            </property>
+           </widget>
+          </item>
+          <item row="4" column="1">
+           <widget class="QLabel" name="plannerIndexValue">
+            <property name="text">
+             <string>0</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <!-- Topology distribution table -->
+        <item>
+         <widget class="QTableWidget" name="topologyTable">
+          <column>
+           <property name="text">
+            <string/>
+           </property>
+          </column>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+     <!-- Trajectory Statistics group box -->
+     <item>
+      <widget class="QGroupBox" name="trajectoryGroupBox">
+       <property name="title">
+        <string>Trajectory Statistics</string>
+       </property>
+       <layout class="QFormLayout" name="trajectoryFormLayout">
+        <!-- Trajectory Cost -->
+        <item row="0" column="0">
+         <widget class="QLabel" name="labelTrajectoryCost">
+          <property name="text">
+           <string>Trajectory Cost:</string>
+          </property>
+         </widget>
+        </item>
+        <item row="0" column="1">
+         <widget class="QLabel" name="trajectoryCostValue">
+          <property name="text">
+           <string>0.0</string>
+          </property>
+         </widget>
+        </item>
+        <!-- Messages Sent (copy for trajectory stats) -->
+        <item row="1" column="0">
+         <widget class="QLabel" name="labelMessagesSent2">
+          <property name="text">
+           <string>Messages Sent:</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="1">
+         <widget class="QLabel" name="messagesSentValue2">
+          <property name="text">
+           <string>0</string>
+          </property>
+         </widget>
+        </item>
+        <!-- Messages Saved (copy) -->
+        <item row="2" column="0">
+         <widget class="QLabel" name="labelMessagesSaved2">
+          <property name="text">
+           <string>Messages Saved:</string>
+          </property>
+         </widget>
+        </item>
+        <item row="2" column="1">
+         <widget class="QLabel" name="messagesSavedValue2">
+          <property name="text">
+           <string>0</string>
+          </property>
+         </widget>
+        </item>
+        <!-- Communication Savings (copy) -->
+        <item row="3" column="0">
+         <widget class="QLabel" name="labelCommSavings2">
+          <property name="text">
+           <string>Comm. Savings:</string>
+          </property>
+         </widget>
+        </item>
+        <item row="3" column="1">
+         <widget class="QLabel" name="commSavingsValue2">
+          <property name="text">
+           <string>0.0 %</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+    </layout>
+   </item>
+
+   <!-- Timeline view at the bottom - DISABLED to prevent recursive repaint
+   <item>
+    <widget class="QPlainTextEdit" name="timelineText">
+     <property name="readOnly">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   -->
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

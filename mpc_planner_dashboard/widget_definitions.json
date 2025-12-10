@@ -1,0 +1,79 @@
+{
+    "description": "Widget definitions extracted from mpc_planner_dashboard.ui file. Maps widget object names to their Qt class types.",
+    "main_container": {
+        "MPCPlannerDashboardUi": "QWidget"
+    },
+    "top_bar": {
+        "labelRobot": "QLabel",
+        "robotComboBox": "QComboBox",
+        "statusLabel": "QLabel"
+    },
+    "solver_performance": {
+        "solverGroupBox": "QGroupBox",
+        "labelSolveTime": "QLabel",
+        "solveTimeBar": "QProgressBar",
+        "labelSuccessRate": "QLabel",
+        "successRateLabel": "QLabel",
+        "labelIterations": "QLabel",
+        "iterationsLabel": "QLabel",
+        "labelExitCode": "QLabel",
+        "exitCodeLabel": "QLabel",
+        "labelObjective": "QLabel",
+        "objectiveLabel": "QLabel"
+    },
+    "communication_metrics": {
+        "commGroupBox": "QGroupBox",
+        "labelLastTrigger": "QLabel",
+        "lastTriggerLabel": "QLabel",
+        "labelMessagesSent": "QLabel",
+        "messagesSentLabel": "QLabel",
+        "labelMessagesSaved": "QLabel",
+        "messagesSavedLabel": "QLabel",
+        "labelCommSavings": "QLabel",
+        "commSavingsLabel": "QLabel",
+        "commTable": "QTableWidget"
+    },
+    "topology_selection": {
+        "topologyGroupBox": "QGroupBox",
+        "labelCurrentTopology": "QLabel",
+        "currentTopologyLabel": "QLabel",
+        "labelPreviousTopology": "QLabel",
+        "previousTopologyLabel": "QLabel",
+        "labelTopologySwitch": "QLabel",
+        "topologySwitchLabel": "QLabel",
+        "labelUsedGuidance": "QLabel",
+        "usedGuidanceLabel": "QLabel",
+        "labelPlannerIndex": "QLabel",
+        "plannerIndexLabel": "QLabel",
+        "labelNumGuidance": "QLabel",
+        "numGuidanceLabel": "QLabel",
+        "topologyTable": "QTableWidget"
+    },
+    "state_information": {
+        "stateGroupBox": "QGroupBox",
+        "labelCurrentState": "QLabel",
+        "currentStateLabel": "QLabel",
+        "labelPreviousState": "QLabel",
+        "previousStateLabel": "QLabel",
+        "labelPosition": "QLabel",
+        "positionLabel": "QLabel",
+        "labelLinearVel": "QLabel",
+        "linearVelLabel": "QLabel",
+        "labelAngularVel": "QLabel",
+        "angularVelLabel": "QLabel"
+    },
+    "trajectory_statistics": {
+        "trajectoryGroupBox": "QGroupBox",
+        "labelTrajectoryCost": "QLabel",
+        "trajectoryCostValue": "QLabel",
+        "labelMessagesSent2": "QLabel",
+        "messagesSentValue2": "QLabel",
+        "labelMessagesSaved2": "QLabel",
+        "messagesSavedValue2": "QLabel",
+        "labelCommSavings2": "QLabel",
+        "commSavingsValue2": "QLabel"
+    },
+    "timeline": {
+        "timelineText": "QPlainTextEdit"
+    }
+}

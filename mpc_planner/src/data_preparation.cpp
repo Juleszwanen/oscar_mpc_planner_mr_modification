@@ -212,7 +212,7 @@ namespace MPCPlanner
                                 // If we cannot find the robot in the validated_trajectory it means that that robots has not yet send valid trajectory information
                                 if (_validated_trajectory_robots.find(ns) == _validated_trajectory_robots.end())
                                 {
-                                        LOG_WARN(_ego_robot_ns + ": Skipping updating info for " + ns + " this robot has not send valid trajectory information yet");
+                                        LOG_DEBUG_THROTTLE(4000, _ego_robot_ns + ": Skipping updating info for " + ns + " this robot has not send valid trajectory information yet");
                                         skipped_count++;
                                         continue;
                                 }

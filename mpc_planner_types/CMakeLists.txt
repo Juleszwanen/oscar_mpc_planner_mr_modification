@@ -7,7 +7,8 @@ endif()
 
 
 find_package(catkin REQUIRED COMPONENTS 
-            roscpp)
+            roscpp
+            ros_tools)
 
 find_package(Eigen3 REQUIRED)
 add_definitions(${EIGEN_DEFINITIONS})
@@ -15,7 +16,7 @@ add_definitions(${EIGEN_DEFINITIONS})
 catkin_package(
   INCLUDE_DIRS include ${EIGEN3_INCLUDE_DIRS}
   LIBRARIES ${PROJECT_NAME}
-  CATKIN_DEPENDS roscpp
+  CATKIN_DEPENDS roscpp ros_tools
   DEPENDS EIGEN3
 )
 
@@ -27,6 +28,7 @@ include_directories(
 
 add_library(${PROJECT_NAME} SHARED
   src/data_types.cpp
+  src/multi_robot_utility_functions.cpp
 )
 add_dependencies(${PROJECT_NAME} ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(${PROJECT_NAME} ${catkin_LIBRARIES})

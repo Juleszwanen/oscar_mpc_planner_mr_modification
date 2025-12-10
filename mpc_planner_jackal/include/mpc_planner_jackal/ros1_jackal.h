@@ -70,10 +70,10 @@ private:
 
     double _measured_velocity{0.};
 
-    double y_max{2.4}; // 2.6 when the blocks are not at the wall
-    double y_min{-2.0};
-    double x_max{3.5};
-    double x_min{-3.5};
+    double y_max{2.6}; // 2.6 when the blocks are not at the wall
+    double y_min{-2.6};
+    double x_max{3.9};
+    double x_min{-3.9};
 
     std::unique_ptr<RosTools::Benchmarker> _benchmarker;
 

@@ -41,6 +41,7 @@ namespace MPCPlanner
         bool used_guidance{true};
         double trajectory_cost{0.0};
         int solver_exit_code{-1};
+        int num_of_guidance_found{-1};
     };
 
 

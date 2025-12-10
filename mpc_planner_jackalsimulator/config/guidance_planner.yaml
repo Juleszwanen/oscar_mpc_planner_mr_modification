@@ -1,7 +1,7 @@
 guidance_planner:
   debug:
     output: false # Enable debug information
-    visuals: false # Enable debug visuals
+    visuals: true # Enable debug visuals
 
   T: 6.0 # Time horizon [s]
   N: 30  # Discrete time steps [#]
@@ -34,7 +34,7 @@ guidance_planner:
     velocity: true
     acceleration: false
   selection_weights: # Weights on the spline selection heuristic cost
-    consistency: 0.75 # 0 = consistent, 1 = inconsistent
+    consistency: 0.75 # 0 = consistent, 1 = inconsistent, prev 0.75
     length: 5.
     velocity: 0.
     acceleration: 1.
@@ -54,7 +54,7 @@ guidance_planner:
   visuals:
     transparency: 0.5 # Transparency of obstacle predictions (0-1)
     visualize_all_samples: false # Visualize all PRM samples (slow!)
-    visualize_homology: false # Visualize the H-signature
+    visualize_homology: true # Visualize the H-signature
     show_indices: true # Show trajectory indices
 
   enable:

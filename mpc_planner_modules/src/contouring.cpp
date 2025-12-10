@@ -41,7 +41,8 @@ namespace MPCPlanner
 
     state.set("spline", closest_s); // We need to initialize the spline state here
 
-    // JULES: This is what it is all about we update the current_path_segment of th module_data
+    // JULES: This is what it is all about we update the current_path_segment of the module_data
+    // This is the same for all the parallel formualtions
     module_data.current_path_segment = _closest_segment;
 
     if (_add_road_constraints)
@@ -173,7 +174,7 @@ namespace MPCPlanner
       return false;
 
     // Check if we reached the end of the spline
-    return RosTools::distance(state.getPos(), _spline->getPoint(_spline->parameterLength())) < 1.0;
+    return RosTools::distance(state.getPos(), _spline->getPoint(_spline->parameterLength())) < 1.5;
 
     // int index = _closest_segment + _n_segments - 1;
     // return index >= _spline->numSegments();

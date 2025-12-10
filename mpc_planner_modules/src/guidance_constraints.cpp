@@ -64,9 +64,13 @@ namespace MPCPlanner
 
         if (_use_tmpcpp) // ADD IT AS FIRST PLAN
         {
-            LOG_INFO("Using T-MPC++ (Adding the non-guided planner in parallel)");
+            LOG_INFO("Using T-MPC++ (Adding the non-guided planner in parallel) with ID: " + std::to_string(n_solvers));
             planners_.emplace_back(n_solvers, true);
         }
+
+        // ========== JULES: Initialize consistency tracking after planners are created ==========
+        this->initializeConsistencyTracking();
+        // =======================================================================================
 
         LOG_INITIALIZED();
     }
@@ -285,6 +289,15 @@ namespace MPCPlanner
         if (!_use_tmpcpp && !global_guidance_->Succeeded())
             return 0;
 
+        // ========== JULES: Interpolate previous trajectory by elapsed time ==========
+        // This must be done BEFORE the parallel loop so all planners use the same reference
+        interpolatePrevTrajectoryByElapsedTime();
+        // =============================================================================
+
+        // ========== JULES: Visualize previous trajectory (consistency reference) ==========
+        visualizePreviousTrajectory();
+        // ==================================================================================
+
         bool shift_forward = CONFIG["shift_previous_solution_forward"].as<bool>() &&
                              CONFIG["enable_output"].as<bool>();
 
@@ -338,6 +351,11 @@ namespace MPCPlanner
                     planner.guidance_constraints->setParameters(data, module_data, k); // Set this solver's parameters
 
                 planner.safety_constraints->setParameters(data, module_data, k);
+
+                // ========== JULES: Set consistency parameters for fair cost comparison if consistency is enabled in config file ==========
+                // ==========        Be aware for which stages you do this; perhaps skip stage k=0, beceause this should be equal to the current position ======
+                setConsistencyParametersForPlanner(planner, k);
+                // ===============================================================================
             }
 
             // Set timeout (Planning time - used time - time necessary afterwards)
@@ -360,12 +378,42 @@ namespace MPCPlanner
             {
                 planner.result.guidance_ID = 2 * global_guidance_->GetConfig()->n_paths_; // one higher than the maximum number of topology classes
                 planner.result.color = -1;
+
+                // ========== JULES: Subtract consistency cost for non-guided planner ==========
+                // This ensures fair comparison: raw cost without consistency penalty
+                if (planner.has_consistency_enabled)
+                {
+                    double consistency_cost = calculateConsistencyCostForSolver(planner.local_solver);
+                    planner.result.objective -= consistency_cost;
+                    
+                    LOG_DEBUG(_ego_robot_ns + ": Planner [" << planner.id << "] (non-guided)"
+                              << " | raw=" << solver->_info.pobj
+                              << " | consistency=" << consistency_cost
+                              << " | fair=" << planner.result.objective);
+                }
+                // =============================================================================
             }
             else
             {
                 auto &guidance_trajectory = global_guidance_->GetGuidanceTrajectory(planner.id); // planner.local_solver->_solver_id);
                 planner.result.guidance_ID = guidance_trajectory.topology_class;                 // We were using this guidance
                 planner.result.color = guidance_trajectory.color_;                               // A color index to visualize with
+
+                // ========== JULES: Subtract consistency cost BEFORE selection_weight ==========
+                // This ensures selection_weight_consistency_ is applied to fair cost (C1)
+                // Result: selection_weight_consistency_ * C1 (not selection_weight * (C1 + C2))
+                if (planner.has_consistency_enabled)
+                {
+                    double consistency_cost = calculateConsistencyCostForSolver(planner.local_solver);
+                    planner.result.objective -= consistency_cost;
+                    
+                    LOG_DEBUG(_ego_robot_ns + ": Planner [" << planner.id << "] (guided, topology=" << planner.result.guidance_ID << ")"
+                              << " | raw=" << solver->_info.pobj
+                              << " | consistency=" << consistency_cost
+                              << " | fair=" << planner.result.objective);
+                    
+                }
+                // ==============================================================================
 
                 if (guidance_trajectory.previously_selected_) // Prefer the selected trajectory
                     planner.result.objective *= global_guidance_->GetConfig()->selection_weight_consistency_;
@@ -381,6 +429,15 @@ namespace MPCPlanner
             if (best_planner_index_ == -1)
             {
                 LOG_MARK("Failed to find a feasible trajectory in any of the " << std::to_string(planners_.size()) << " optimizations.");
+                
+                // ========== JULES: Reset consistency tracking when all solvers fail ==========
+                // We have no valid trajectory or topology to track
+                _has_previous_trajectory = false;
+                _prev_selected_topology_id = -1;
+                _prev_was_original_planner = false;
+                LOG_DEBUG(_ego_robot_ns + ": All solvers infeasible - resetting consistency tracking");
+                // =============================================================================
+                
                 return planners_[0].result.exit_code;
             }
 
@@ -408,8 +465,8 @@ namespace MPCPlanner
                             // Try to assign matching color
                             best_planner.result.color = -1;
 
-                            LOG_INFO_THROTTLE(5000, _ego_robot_ns + " NON-GUIDED PLANNER SELECTED AS BEST PLANNER| Topology match SUCCESS | ID: " << meaningful_topology_id
-                                                                                                                                                  << " | Visualization: Dark red elevated | Color assignment disabled for verification");
+                            LOG_DEBUG_THROTTLE(5000, _ego_robot_ns + " NON-GUIDED PLANNER SELECTED AS BEST PLANNER| Topology match SUCCESS | ID: " << meaningful_topology_id
+                                                                                                                                                    << " | Visualization: Dark red elevated | Color assignment disabled for verification");
                             // for (int i = 0; i < global_guidance_->NumberOfGuidanceTrajectories(); i++)
                             // {
                             //     auto &guidance_traj = global_guidance_->GetGuidanceTrajectory(i);
@@ -425,7 +482,7 @@ namespace MPCPlanner
                         }
                         else
                         {
-                            LOG_WARN_THROTTLE(5000, "NON-GUIDED PLANNER SELECTED AS BEST PLANNER| Topology match FAILED - TOPOLOGY SWITCH detected | Fallback ID: "
+                            LOG_DEBUG_THROTTLE(5000, "NON-GUIDED PLANNER SELECTED AS BEST PLANNER| Topology match FAILED - TOPOLOGY SWITCH detected | Fallback ID: "
                                                         << best_planner.result.guidance_ID << " | Visualization: Dark red elevated");
                             // Keep the default ID that was already assigned above
                         }
@@ -472,7 +529,15 @@ namespace MPCPlanner
                 module_data.used_guidance = !best_planner.is_original_planner;
                 module_data.trajectory_cost = best_planner.result.objective;
                 module_data.solver_exit_code = best_planner.result.exit_code;
+                module_data.num_of_guidance_found = global_guidance_->NumberOfGuidanceTrajectories();
             }
+
+            // ========== JULES: Store trajectory and selection info for next iteration ==========
+            // This enables consistency tracking across iterations
+            storePreviousTrajectoryFromSolver(best_solver);
+            _prev_selected_topology_id = best_planner.result.guidance_ID;
+            _prev_was_original_planner = best_planner.is_original_planner;
+            // ==================================================================================
 
             return best_planner.result.exit_code; // Return its exit code
         }
@@ -703,8 +768,28 @@ namespace MPCPlanner
 
         for (auto &planner : planners_)
             planner.local_solver->reset();
+
+        this->resetConsistencyParameters();
     }
 
+    void GuidanceConstraints::resetConsistencyParameters()
+    {
+        // Only reset if consistency module is not available/enabled
+        // (if consistency IS enabled, we want to keep tracking across resets)
+        if (!_consistency_module_available)
+        {
+            return;
+        }
+        
+        _prev_selected_topology_id = -1;         // Topology ID from previous iteration (int, not bool!)
+        _prev_was_original_planner = false;      // Was non-guided planner selected last time?
+        _has_previous_trajectory = false;        // Do we have valid previous trajectory data?
+        for (auto& el : _prev_trajectory) { el.setZero(); }
+        for (auto& el : _interpolated_prev_trajectory) { el.setZero(); }
+        _prev_trajectory_timestamp = ros::Time::now();
+        
+        LOG_DEBUG(_ego_robot_ns + ": Reset consistency parameters");
+    }
     void GuidanceConstraints::saveData(RosTools::DataSaver &data_saver)
     {
         data_saver.AddData("runtime_guidance", global_guidance_->GetLastRuntime());
@@ -718,10 +803,16 @@ namespace MPCPlanner
             {
                 data_saver.AddData("lmpcc_objective", objective);
                 data_saver.AddData("original_planner_id", planner.id); // To identify which one is the original planner
+
+                // save if the non-guided planner used the consistency cost
+                data_saver.AddData("jules_non_gd_planner_used_consistency", ((planner.has_consistency_enabled)? 1.0 : 0));
+                
+                
             }
             else
             {
 
+                data_saver.AddData("jules_planner_" + std::to_string(i) + "_used_consistency", ((planner.has_consistency_enabled)? 1.0 : 0));
                 // for (int k = 1; k < _solver->N; k++)
                 // {
                 //     data_saver.AddData(
@@ -736,13 +827,12 @@ namespace MPCPlanner
         double best_objective = best_planner_index_ != -1 ? planners_[best_planner_index_].local_solver->_info.pobj : -1.;
 
         data_saver.AddData("gmpcc_objective", best_objective);
-
+        // Save the isolated consistency cost
+        data_saver.AddData("jules_consistency_cost", _consistency_cost);
         global_guidance_->saveData(data_saver); // Save data from the guidance planner
     }
 
-    GuidancePlanner::GeometricPath GuidanceConstraints::convertMPCTrajectoryToGeometricPath(
-        std::shared_ptr<Solver> solver,
-        GuidancePlanner::NodeType node_type)
+    GuidancePlanner::GeometricPath GuidanceConstraints::convertMPCTrajectoryToGeometricPath(std::shared_ptr<Solver> solver, GuidancePlanner::NodeType node_type)
     {
         // Clear any previous temporary nodes to avoid memory issues
         mpc_trajectory_nodes_.clear();
@@ -801,6 +891,292 @@ namespace MPCPlanner
 
         return mpc_path;
     }
+
+    // ==================== JULES: Consistency Module Integration Functions ====================
+    // These functions enable fair cost comparison between planners when using consistency costs.
+    // The key insight is that consistency cost (C2) should be subtracted before applying
+    // selection_weight_consistency_, so the decision is based on raw trajectory cost (C1).
+    // =========================================================================================
+
+    void GuidanceConstraints::initializeConsistencyTracking()
+    {
+        // Check if the solver has consistency parameters available AND config enables it
+        bool explict_config_enabled = CONFIG["JULES"]["consistency_enabled"].as<bool>(false);
+        if(!explict_config_enabled) {
+            LOG_WARN(_ego_robot_ns + ": Config 'JULES/consistency_enabled' not found, defaulting to false");
+       
+        }
+
+        
+        
+        _consistency_module_available = (_solver->hasParameter("consistency_weight") && explict_config_enabled);
+        
+        if (_consistency_module_available)
+        {
+            LOG_INFO(_ego_robot_ns + ": Consistency module detected - enabling fair cost comparison");
+            
+            // Initialize storage for previous trajectory (raw, unshifted)
+            _prev_trajectory.resize(_solver->N);
+            for (auto& pos : _prev_trajectory)
+                pos = Eigen::Vector2d::Zero();
+            
+            // Initialize storage for interpolated trajectory (used during optimization)
+            _interpolated_prev_trajectory.resize(_solver->N);
+            for (auto& pos : _interpolated_prev_trajectory)
+                pos = Eigen::Vector2d::Zero();
+            
+            _has_previous_trajectory = false;
+            _prev_selected_topology_id = -1;
+            _prev_was_original_planner = false;
+            _prev_trajectory_timestamp = ros::Time::now();
+            
+            // Load configuration for non-guided planner consistency
+            try 
+            {
+                _consistency_on_non_guided = CONFIG["JULES"]["consistency_on_non_guided_planner"].as<bool>(false);
+                LOG_VALUE("Consistency on non-guided planner", _consistency_on_non_guided);
+            }
+            catch (...)
+            {
+                _consistency_on_non_guided = false;
+                LOG_INFO("Config 'consistency_on_non_guided_planner' not found, defaulting to false");
+            }
+        }
+        else
+        {
+            LOG_DEBUG(_ego_robot_ns + ": Consistency module not detected - fair cost comparison disabled");
+        }
+    }
+
+    bool GuidanceConstraints::shouldEnableConsistencyForPlanner(const LocalPlanner& planner)
+    {
+        // No previous trajectory means no consistency to track
+        if (!_has_previous_trajectory)
+            return false;
+        
+        // First iteration: no valid previous selection
+        if (_prev_selected_topology_id == -1 && !_prev_was_original_planner)
+            return false;
+        
+        if (planner.is_original_planner)
+        {
+            // Non-guided planner: Only enable if config allows AND previous was also non-guided
+            // This ensures consistency only applies when we're "continuing" the non-guided strategy
+            return _consistency_on_non_guided && _prev_was_original_planner;
+        }
+        else
+        {
+            // Guided planner: Enable only if previous was guided AND topology matches
+            // This prevents consistency from "pulling" towards a different topology
+            
+            // If previous was non-guided, don't enable consistency for guided planners
+            if (_prev_was_original_planner)
+                return false;
+            
+            // Check if this planner's topology matches the previous selection
+            if (planner.id < global_guidance_->NumberOfGuidanceTrajectories())
+            {
+                int this_topology = global_guidance_->GetGuidanceTrajectory(planner.id).topology_class;
+                return (this_topology == _prev_selected_topology_id);
+            }
+            return false;
+        }
+    }
+
+    void GuidanceConstraints::setConsistencyParametersForPlanner(LocalPlanner& planner, int k)
+    {
+        // Skip if consistency module is not available
+        if (!_consistency_module_available)
+            return;
+        
+        // Determine and store whether consistency is enabled (only once at k=0)
+        // This avoids redundant checks and ensures consistent behavior across all k
+        if (k == 0)
+        {
+            planner.has_consistency_enabled = shouldEnableConsistencyForPlanner(planner);
+        }
+        
+        // Prepare parameter values
+        double weight = 0.0;
+        double prev_x = 0.0;
+        double prev_y = 0.0;
+        
+        // Only apply consistency cost to stages [1, N-2]:
+        // - k=0: Fixed by initial constraint (current state), can't be optimized
+        // - k=N-1: Uses extrapolated reference data, not reliable
+        int N = planner.local_solver->N;
+        bool is_valid_stage = (k >= 1) && (k <= N - 2);
+        
+        if (planner.has_consistency_enabled && is_valid_stage)
+        {
+            weight = CONFIG["weights"]["consistency"].as<double>();
+            // Use the TIME-INTERPOLATED trajectory (computed in interpolatePrevTrajectoryByElapsedTime)
+            prev_x = _interpolated_prev_trajectory[k](0);
+            prev_y = _interpolated_prev_trajectory[k](1);
+        }
+        
+        // Set the parameters in the solver
+        // Note: These function names must match your solver's parameter interface
+        planner.local_solver->setParameter(k, "consistency_weight", weight);
+        planner.local_solver->setParameter(k, "prev_traj_x", prev_x);
+        planner.local_solver->setParameter(k, "prev_traj_y", prev_y);
+    }
+
+    double GuidanceConstraints::calculateConsistencyCostForSolver(std::shared_ptr<Solver> solver)
+    {
+        // Get the consistency weight from config
+        double weight = CONFIG["weights"]["consistency"].as<double>();
+        double sum_squared_distances = 0.0;
+        
+        // Sum up the squared distances over stages [1, N-2] only
+        // This matches what was set in the solver via setConsistencyParametersForPlanner
+        // - k=0: Fixed by initial constraint, weight was 0
+        // - k=N-1: Extrapolated data, weight was 0
+        for (int k = 1; k <= solver->N - 2; k++)
+        {
+            double x = solver->getOutput(k, "x");
+            double y = solver->getOutput(k, "y");
+            
+            // Use the interpolated trajectory (same as what was given to solver)
+            double dx = x - _interpolated_prev_trajectory[k](0);
+            double dy = y - _interpolated_prev_trajectory[k](1);
+            
+            sum_squared_distances += dx * dx + dy * dy;
+        }
+        
+        // Save and return the consistency cost
+        _consistency_cost = weight * sum_squared_distances;
+        return weight * sum_squared_distances;
+    }
+
+    void GuidanceConstraints::storePreviousTrajectoryFromSolver(std::shared_ptr<Solver> selected_solver)
+    {
+        // Skip if consistency module is not available
+        if (!_consistency_module_available)
+            return;
+        
+        // Store the RAW trajectory (no shifting) along with timestamp
+        // Time interpolation will be done later in interpolatePrevTrajectoryByElapsedTime()
+        for (int k = 0; k < selected_solver->N; k++)
+        {
+            _prev_trajectory[k](0) = selected_solver->getOutput(k, "x");
+            _prev_trajectory[k](1) = selected_solver->getOutput(k, "y");
+        }
+        
+        // Record when this trajectory was stored
+        _prev_trajectory_timestamp = ros::Time::now();
+        _has_previous_trajectory = true;
+        
+        LOG_DEBUG(_ego_robot_ns + ": Stored previous trajectory at t=" << _prev_trajectory_timestamp.toSec());
+    }
+
+    void GuidanceConstraints::interpolatePrevTrajectoryByElapsedTime()
+    {
+        // Skip if no previous trajectory available
+        if (!_has_previous_trajectory || !_consistency_module_available)
+            return;
+        
+        // Calculate elapsed time since trajectory was stored
+        ros::Time now = ros::Time::now();
+        double elapsed_time = (now - _prev_trajectory_timestamp).toSec();
+        double dt = CONFIG["integrator_step"].as<double>();  // e.g., 0.2s
+        
+        // Calculate interpolation parameters
+        // k_shift: how many full steps to shift
+        // alpha: fractional interpolation between steps [0, 1)
+        int k_shift = static_cast<int>(std::floor(elapsed_time / dt));
+        double alpha = (elapsed_time - k_shift * dt) / dt;
+        
+        LOG_DEBUG(_ego_robot_ns + ": Interpolating prev trajectory | elapsed=" << elapsed_time 
+                  << "s | k_shift=" << k_shift << " | alpha=" << alpha);
+        
+        // Safety check: if too much time has passed, the trajectory is stale
+        int N = static_cast<int>(_prev_trajectory.size());
+        if (k_shift >= N - 1)
+        {
+            LOG_WARN(_ego_robot_ns + ": Previous trajectory is critically stale (k_shift=" << k_shift 
+                     << " >= N-1=" << N-1 << "). Disabling consistency for this iteration.");
+            // Mark trajectory as invalid - shouldEnableConsistencyForPlanner() will return false
+            _has_previous_trajectory = false;
+            return;
+        }
+        
+        // Interpolate the trajectory forward by elapsed_time
+        for (int k = 0; k < N; k++)
+        {
+            int src_k = k + k_shift;  // Source index in original trajectory
+            
+            if (src_k < N - 1)
+            {
+                // Linear interpolation between src_k and src_k+1
+                // interpolated[k] = (1 - alpha) * prev[src_k] + alpha * prev[src_k + 1]
+                _interpolated_prev_trajectory[k] = 
+                    (1.0 - alpha) * _prev_trajectory[src_k] + alpha * _prev_trajectory[src_k + 1];
+            }
+            else if (src_k == N - 1)
+            {
+                // At the last point, just use it directly (no next point to interpolate with)
+                _interpolated_prev_trajectory[k] = _prev_trajectory[N - 1];
+            }
+            else
+            {
+                // Beyond the trajectory: extrapolate from last two points
+                // Use constant velocity extrapolation
+                Eigen::Vector2d last = _prev_trajectory[N - 1];
+                Eigen::Vector2d second_last = _prev_trajectory[N - 2];
+                Eigen::Vector2d velocity = (last - second_last) / dt;
+                
+                double extra_time = (src_k - (N - 1)) * dt + alpha * dt;
+                _interpolated_prev_trajectory[k] = last + velocity * extra_time;
+            }
+        }
+    }
+
+    void GuidanceConstraints::visualizePreviousTrajectory()
+    {
+        auto &marker_pub = VISUALS.getPublisher(_name + "/consistency_reference");
+        
+        // If no previous trajectory or consistency is disabled, clear the visualization
+        if (!_consistency_module_available || !_has_previous_trajectory)
+        {
+            // Publish empty to clear any previous markers
+            marker_pub.publish();
+            return;
+        }
+        
+        // Visualize the INTERPOLATED trajectory (what the solver actually uses)
+        // Orange line with small spheres shows "what we're trying to stay consistent with"
+        
+        // Create line connecting trajectory points for stages [1, N-2] (the active consistency range)
+        auto &line = marker_pub.getNewLine();
+        line.setColor(1.0, 0.5, 0.0, 0.8);  // Orange color
+        line.setScale(0.15);  // Line thickness
+        
+        int N = static_cast<int>(_interpolated_prev_trajectory.size());
+        for (int k = 2; k <= N - 2; k++)
+        {
+            Eigen::Vector3d p1(_interpolated_prev_trajectory[k - 1](0), _interpolated_prev_trajectory[k - 1](1), 0.05);
+            Eigen::Vector3d p2(_interpolated_prev_trajectory[k](0), _interpolated_prev_trajectory[k](1), 0.05);
+            line.addLine(p1, p2);
+        }
+        
+        // Add small spheres at each trajectory point in the active range [1, N-2]
+        auto &spheres = marker_pub.getNewPointMarker("SPHERE");
+        spheres.setColor(1.0, 0.5, 0.0, 1.0);  // Orange color, fully opaque
+        spheres.setScale(0.1, 0.1, 0.1);  // Small spheres
+        
+        for (int k = 1; k <= N - 2; k++)
+        {
+            Eigen::Vector3d point(_interpolated_prev_trajectory[k](0), _interpolated_prev_trajectory[k](1), 0.05);
+            spheres.addPointMarker(point);
+        }
+        
+        marker_pub.publish();
+        
+        LOG_MARK("Visualized interpolated consistency reference (" << (N - 2) << " active points, range [1, " << (N - 2) << "])");
+    }
+    // ==================== END: Consistency Module Integration Functions ====================
+
 }
 
 // namespace MPCPlanner

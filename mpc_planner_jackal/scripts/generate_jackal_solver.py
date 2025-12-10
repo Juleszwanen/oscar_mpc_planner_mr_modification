@@ -17,6 +17,7 @@ from generate_solver import generate_solver
 from mpc_base import MPCBaseModule
 from contouring import ContouringModule
 from goal_module import GoalModule
+from consistency_module import ConsistencyModule
 from path_reference_velocity import PathReferenceVelocityModule
 
 from ellipsoid_constraints import EllipsoidConstraintModule
@@ -66,9 +67,10 @@ def configuration_tmpc(settings):
 
     modules.add_module(ContouringModule(settings))
     # modules.add_module(PathReferenceVelocityModule(settings))
-
-    # modules.add_module(GuidanceConstraintModule(settings, constraint_submodule=EllipsoidConstraintModule))
-    modules.add_module(GuidanceConstraintModule(settings, constraint_submodule=GaussianConstraintModule))
+    if(settings["JULES"]["consistency_enabled"]):
+        modules.add_module(ConsistencyModule(settings))
+    modules.add_module(GuidanceConstraintModule(settings, constraint_submodule=EllipsoidConstraintModule))
+    # modules.add_module(GuidanceConstraintModule(settings, constraint_submodule=GaussianConstraintModule))
 
     return model, modules
 

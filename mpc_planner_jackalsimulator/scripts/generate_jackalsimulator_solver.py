@@ -20,6 +20,7 @@ from mpc_base import MPCBaseModule
 from contouring import ContouringModule
 from curvature_aware_contouring import CurvatureAwareContouringModule
 from goal_module import GoalModule
+from consistency_module import ConsistencyModule
 from path_reference_velocity import PathReferenceVelocityModule
 
 from ellipsoid_constraints import EllipsoidConstraintModule
@@ -98,10 +99,21 @@ def configuration_tmpc(settings):
         settings, 
         constraint_submodule=EllipsoidConstraintModule # This configures the obstacle avoidance used in each planner
     ))
+
     # modules.add_module(GuidanceConstraintModule(settings, constraint_submodule=GaussianConstraintModule)) <- when this is commented we dont even use the GuassianConstraintModule
 
     return model, modules
 
+def configuration_tmpc_consistency_cost(settings):
+    model, modules = configuration_no_obstacles(settings)
+    if(settings["JULES"]["consistency_enabled"]):
+        modules.add_module(ConsistencyModule(settings))
+    
+    modules.add_module(GuidanceConstraintModule(
+        settings, 
+        constraint_submodule=EllipsoidConstraintModule # This configures the obstacle avoidance used in each planner
+    ))
+    return model, modules
 
 def configuration_lmpcc(settings):
     modules = ModuleManager()
@@ -131,7 +143,9 @@ settings = load_settings()
 # model, modules = configuration_lmpcc(settings)
 
 # NOTE: T-MPC - Parallelized MPC optimizing trajectories with several distinct passing behaviors.
-model, modules = configuration_tmpc(settings)
+# model, modules = configuration_tmpc(settings)
+
+model, modules = configuration_tmpc_consistency_cost(settings)
 
 # NOTE: SH-MPC - MPC incorporating non Gaussian uncertainty in obstacle motion. 
 # More configuration parameters in `scenario_module/config/params.yaml`

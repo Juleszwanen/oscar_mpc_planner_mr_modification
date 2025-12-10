@@ -7,9 +7,13 @@
   <!-- <arg name="roadmap" default="maps/mobile_robotics_lab/straight.xml"/> -->
   <arg name="roadmap" default="maps/mobile_robotics_lab/diagonal.xml"/>
 
-  <arg name="jackal_name" default="jackal3"/>
+  <arg name="jackal_name" default="jackal1"/>
 
+  <!-- <node pkg="tf2_ros" type="static_transform_publisher" name="map_to_odom"
+      args="0 0 0 0 0 0 map odom" /> -->
+  
   <rosparam command="load" file="$(find mpc_planner_jackal)/config/guidance_planner.yaml"/>
+  
   <node pkg="mpc_planner_jackal" type="jackal_planner" name="jackal_planner" respawn="false" output="screen">
     <param name="simulation" value="false"/>
     <remap from="/input/state" to="/$(arg jackal_name)/odometry/filtered"/>
@@ -26,6 +30,8 @@
       <arg name="topics" default="[$(arg jackal_name), dynamic_object1, dynamic_object2, dynamic_object3, dynamic_object4, dynamic_object5, rectangle2x1_1]"/>
       <arg name="message_types" default="[geometry_msgs/PoseWithCovarianceStamped, geometry_msgs/PoseWithCovarianceStamped, geometry_msgs/PoseWithCovarianceStamped, geometry_msgs/PoseWithCovarianceStamped, geometry_msgs/PoseWithCovarianceStamped, geometry_msgs/PoseWithCovarianceStamped, geometry_msgs/PoseWithCovarianceStamped]"/>
   </include> -->
+
+  
 
   <!-- Start the vicon bridge -->
   <include file="$(find vicon_bridge)/launch/vicon.launch">

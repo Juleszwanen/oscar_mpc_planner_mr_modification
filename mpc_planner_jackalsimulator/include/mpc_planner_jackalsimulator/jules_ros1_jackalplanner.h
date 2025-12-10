@@ -6,7 +6,9 @@
 
 #include <mpc_planner_msgs/ObstacleArray.h>
 #include <mpc_planner_msgs/GetOtherTrajectories.h>
+#include <mpc_planner_msgs/MPCMetrics.h>
 #include <ros_tools/profiling.h>
+#include <mpc_planner_communication/communication_triggers.h>
 
 #include <ros/ros.h>
 
@@ -18,7 +20,7 @@
 
 #include <geometry_msgs/Pose.h>
 #include <geometry_msgs/PoseStamped.h>
-
+#include <mpc_planner/experiment_util.h>
 #include <nav_msgs/Odometry.h>
 #include <nav_msgs/Path.h>
 #include <derived_object_msgs/ObjectArray.h>
@@ -32,6 +34,11 @@
 #include <memory>
 #include <ros/console.h>
 
+// Forward declarations
+namespace JackalPlanner {
+    struct InitializationConfig;
+}
+
 namespace MPCPlanner
 {
     class Planner;
@@ -41,129 +48,145 @@ namespace MPCPlanner
 class JulesJackalPlanner
 {
 public:
-    explicit JulesJackalPlanner(ros::NodeHandle &nh, ros::NodeHandle &pnh);
+    explicit JulesJackalPlanner(ros::NodeHandle &nh);
     ~JulesJackalPlanner();
 
     // Wiring
-    void initializeSubscribersAndPublishers(ros::NodeHandle &nh, ros::NodeHandle &pnh);
+    void initializeSubscribersAndPublishers(ros::NodeHandle &nh);
     void subscribeToOtherRobotTopics(ros::NodeHandle &nh, const std::set<std::string> &other_robot_namespaces);
 
-    // Planning loop functions
-    void loop(const ros::TimerEvent &event);
-    void loopDirectTrajectory(const ros::TimerEvent &event);
-    void loopWithService(const ros::TimerEvent &event);
-    void loopDirectTrajectoryStateMachine(const ros::TimerEvent &event);
+    bool objectiveReached(MPCPlanner::State& _state, MPCPlanner::RealTimeData& _data) const;
+    void rotateToGoal(geometry_msgs::Twist &cmd);
+    void reset();
 
-    // Callbacks
-    void stateCallback(const nav_msgs::Odometry::ConstPtr &msg);
+    bool isPathTheSame(const nav_msgs::Path::ConstPtr &msg) const;
+    void visualize();
+private:
+    // ===== Initialization helper methods =====
+    void loadSimulatorPlatformParameters(ros::NodeHandle& nh, JackalPlanner::InitializationConfig& config);
+    void applyConfiguration(const JackalPlanner::InitializationConfig& config);
+    // bool initializeOtherRobotsAsObstaclesWithNonCom(const std::set<std::string>& other_robot_namespaces, MPCPlanner::RealTimeData& data, double robot_radius);
+    void initializeSimulatorComponents(ros::NodeHandle& nh, const JackalPlanner::InitializationConfig& config);
+    void initializeTimersAndStateMachine(ros::NodeHandle& nh, const JackalPlanner::InitializationConfig& config);
+
+public:
+    bool initializeOtherRobotsAsObstacles(const std::set<std::string> &other_robot_namespaces, MPCPlanner::RealTimeData &data, const double radius);
+    // Planning loop functions
+
+
+    void prepareObstacleData();
+    void interpolateTrajectoryPredictionsByTime();
+    std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> generatePlanningCommand(const MPCPlanner::PlannerState &current_state);
+    void applyBrakingCommand(geometry_msgs::Twist &cmd);
+    void buildOutputFromBrakingCommand(MPCPlanner::PlannerOutput &output, const geometry_msgs::Twist &cmd);
+    void publishCmdAndVisualize(const geometry_msgs::Twist &cmd, const MPCPlanner::PlannerOutput &output);
+    void publishMetrics(const MPCPlanner::PlannerOutput &output, const geometry_msgs::Twist &cmd);  // State-based metrics publishing
+    void publishDirectTrajectory(const MPCPlanner::PlannerOutput &output);
+    void publishObjectiveReachedEvent();
+    
+    
+
+public:
+    void loop(const ros::TimerEvent &event);
     void statePoseCallback(const geometry_msgs::PoseStamped::ConstPtr &msg);
     void goalCallback(const geometry_msgs::PoseStamped::ConstPtr &msg);
     void pathCallback(const nav_msgs::Path::ConstPtr &msg);
     void obstacleCallback(const mpc_planner_msgs::ObstacleArray::ConstPtr &msg);
-    void obstacleServiceCallback(const mpc_planner_msgs::ObstacleArray &msg);
+    
 
+public:
     void poseOtherRobotCallback(const geometry_msgs::PoseStamped::ConstPtr &msg, const std::string ns);
     void trajectoryCallback(const mpc_planner_msgs::ObstacleGMM::ConstPtr &msg, const std::string ns);
     void allRobotsReachedObjectiveCallback(const std_msgs::Bool::ConstPtr &msg);
+    // void rqtDeadManSwitchCallback(const geometry_msgs::Twist::ConstPtr &msg);
+    void julesControllerCallback(const sensor_msgs::Joy::ConstPtr &msg);
+    
+    void saveDataStateBased();
+   
+    // Communication helper functions
+    bool decideCommunication(const MPCPlanner::PlannerOutput &output);
+    void recordCommunicationDecision(bool communicated);
+    void logCommunicationDecision(bool communicated, const MPCPlanner::PlannerOutput &output);
 
-    // publish functions
-    void publishCurrentTrajectory(const MPCPlanner::PlannerOutput &output);
-    void publishObjectiveReachedEvent();
-    void publishEgoPose();
-    void publishDirectTrajectory(const MPCPlanner::PlannerOutput &output);
-
-    // Apply commands
-    void applyBrakingCommand(geometry_msgs::Twist &cmd);
-
-    // Utils
-    void visualize();
-
-    bool initializeOtherRobotsAsObstacles(const std::set<std::string> &_other_robot_nss, MPCPlanner::RealTimeData &_data, const double);
-    bool objectiveReached(MPCPlanner::State _state, MPCPlanner::RealTimeData _data) const;
-    void buildOutputFromBrakingCommand(MPCPlanner::PlannerOutput &output, const geometry_msgs::Twist &cmd);
-    void logDataState(const std::string &context = "") const;
-
-private:
-    bool isPathTheSame(const nav_msgs::Path::ConstPtr &msg) const;
-    double estimateYaw(const geometry_msgs::Quaternion &q) const;
-
-    // Functions structuring planning phase:
-    void prepareObstacleData();
-    void interpolateTrajectoryPredictionsByTime();
-
-    std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> generatePlanningCommand(const MPCPlanner::PlannerState &current_state);
-    void publishCmdAndVisualize(const geometry_msgs::Twist &cmd, const MPCPlanner::PlannerOutput &output);
-    void rotatePiRadiansCw(geometry_msgs::Twist &cmd);
+    // Communication triggers (orchestration - delegates to CommunicationTriggers utility)
+    bool shouldCommunicate(const MPCPlanner::PlannerOutput &output, const MPCPlanner::RealTimeData &data);
 
 private:
     // Core MPC types
     std::unique_ptr<MPCPlanner::Planner> _planner;
-
+    std::unique_ptr<JackalsimulatorReconfigure> _reconfigure;
     // Planner data that is updated via callbacks
 
-    MPCPlanner::State _state;
     MPCPlanner::RealTimeData _data;
+    MPCPlanner::State _state;
+    
+    ros::Timer _timer;
 
-    // dynamic reconfigure instance
-    std::unique_ptr<JackalsimulatorReconfigure> _reconfigure;
+    bool _enable_output{false};
+    bool _rotate_to_goal{false};
+    // bool _forward_x_experiment{true};
 
+    // double _measured_velocity{0.};
+
+    // double y_max{2.4}; // 2.6 when the blocks are not at the wall
+    // double y_min{-2.0};
+    // double x_max{3.6};
+    // double x_min{-3.6};
+
+    std::unique_ptr<RosTools::Benchmarker> _benchmarker;
+    
     // ROS Subscribers
-    ros::Subscriber _state_sub;
     ros::Subscriber _state_pose_sub;
     ros::Subscriber _goal_sub;
     ros::Subscriber _path_sub;
-    ros::Subscriber _obstacles_sub;
+    ros::Subscriber _obstacle_sub;
+    // ros::Subscriber _bluetooth_sub;
+    // ros::Subscriber _rqt_dead_man_sub;
+    ros::Subscriber _jules_controller_sub;
+
     ros::Subscriber _all_robots_reached_objective_sub;             // Subscriber for central aggregator signal
     std::vector<ros::Subscriber> _other_robot_pose_sub_list;       // List of otherrobot pose subcribers
     std::vector<ros::Subscriber> _other_robot_trajectory_sub_list; // List of otherRobot trajectory subscribers
 
-    // ROS publishers
-    ros::Publisher _cmd_pub;
-    ros::Publisher _pose_pub;
-    ros::Publisher _objective_pub;         // events/objective_reached
-    ros::Publisher _trajectory_pub;        // publish the trajectory the robots is about to follow, this one publishes first to the central aggregator
-    ros::Publisher _direct_trajectory_pub; // this publishes to a robot immediately so no central aggregator in between
     ros::Publisher _reverse_roadmap_pub;
-    ros::Timer _timer;
+    ros::Publisher _cmd_pub;
+
+
+    // ROS publishers
+    ros::Publisher _pose_pub;              // Publish your own pose in the system
+    ros::Publisher _direct_trajectory_pub; // this publishes to a robot immediately so no central aggregator in between
+    ros::Publisher _objective_pub;         // events/objective_reached
+    ros::Publisher _metrics_pub;
 
     std::unique_ptr<RosTools::Timer> _startup_timer;
-    ros::ServiceClient _trajectory_client;
 
-    // Simulation reset:
-    std_srvs::Empty _reset_msg;
-    ros::Publisher _reset_simulation_pub;
-    ros::ServiceClient _reset_simulation_client;
-
-    // Config
-    std::string _global_frame{"map"};
-    std::string _ego_robot_ns;
-    int _ego_robot_id{-1};
-    std::set<std::string> _other_robot_nss;          // List of namespaces of all other robots in the area excluding ego robot ns
-    std::vector<std::string> _robot_ns_list;         // List of namespaces of all robots in the area
-    bool _immediate_robot_robot_communication{true}; // This boolean can turn on and off immideate robot to robot communication, which means there is no central aggregator in between
-
-    bool _enable_output{true};
-    double _control_frequency{20.0};
-    double _infeasible_deceleration{1.0};
-    double _goal_tolerance{0.8};
-    bool _received_obstacle_callback_first_time{true};
-    bool _have_received_meaningful_trajectory_data{false}; // Track trajectory data readiness
-    bool _stop_when_reached_goal{false};                   // This is a configuration parameter that determines if we stop at out goal or that we will rotate pi radians.
-    bool _communicate_on_topology_switch_only{false};       // This is a configuration parameter that determiens if an _ego_robot only communicates its trajectory when a topology switch is detected.
-
-    std::set<std::string>
-        _validated_trajectory_robots; // this set will record whihc robot has send a correct trajectory, this is important during the initialization phase.
-
-    // Goal cache
-    bool _goal_received{false};
-
-    Eigen::Vector2d _goal_xy{0.0, 0.0};
-
+   
 private:
-    // StateMachine logic
-    MPCPlanner::PlannerState _current_state{MPCPlanner::PlannerState::UNINITIALIZED};
+    std::string _global_frame{"map"};
+    std::string _ego_robot_ns{"/jackalX"};
+    int _ego_robot_id{-1};
+    int _num_non_com_obj{0};
+    std::set<std::string> _other_robot_nss;
+    std::vector<std::string> _robot_ns_list;
 
-    void transitionTo(MPCPlanner::PlannerState &_current_state, const MPCPlanner::PlannerState &new_state, const std::string &ego_robot_ns);
-    bool canTransitionTo(const MPCPlanner::PlannerState &_current_state, const MPCPlanner::PlannerState &new_state, const std::string &ego_robot_ns);
-    void onStateEnter(const MPCPlanner::PlannerState &current_state, const MPCPlanner::PlannerState &new_state, const std::string &ego_robot_ns);
+    double _goal_tolerance{0.8};
+    bool _stop_when_reached_goal{false};
+
+    double _control_frequency{20.0};
+    bool _communicate_on_topology_switch_only{false};
+    bool _rqt_dead_man_switch{false};
+    bool _jules_controller_deadman_switch{false};
+    std::set<std::string> _validated_trajectory_robots;
+
+    MPCPlanner::PlannerState _current_state{MPCPlanner::PlannerState::UNINITIALIZED};
+    MPCPlanner::PlannerState _previous_state{MPCPlanner::PlannerState::UNINITIALIZED};
+    
+    // Communication trigger tracking
+    MPCPlanner::CommunicationTriggerReason _communication_trigger_reason{MPCPlanner::CommunicationTriggerReason::NO_COMMUNICATION};
 };
+
+    
+
+    
+
+

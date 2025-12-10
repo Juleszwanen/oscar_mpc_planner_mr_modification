@@ -9,6 +9,7 @@ set(DEPENDENCIES
   mpc_planner_solver
   mpc_planner_util
   mpc_planner_types
+  mpc_planner_communication
   mpc_planner_msgs
   ros_tools
   nav_msgs
@@ -34,6 +35,13 @@ include_directories(
 add_executable(jackal_planner src/ros1_jackal.cpp)
 add_dependencies(jackal_planner ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(jackal_planner ${catkin_LIBRARIES})
+
+add_executable(jules_ros1_real_jackalplanner 
+  src/jules_ros1_real_jackalplanner.cpp
+  src/common/jackal_planner_initializer.cpp
+)
+add_dependencies(jules_ros1_real_jackalplanner ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(jules_ros1_real_jackalplanner ${catkin_LIBRARIES})
 
 add_definitions(-DMPC_PLANNER_ROS)
 
