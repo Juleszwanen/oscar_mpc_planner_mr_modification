@@ -111,3 +111,41 @@ JULES:
     heartbeat_time: 2.0 # time in between which we should send a new trajectory of we did not broadcast
     consistency_enabled: true
     consistency_on_non_guided_planner: true
+
+# ============================================================================
+# Joint Planning Configuration (Variant B from IJP paper)
+# ============================================================================
+# When enabled, the solver will include EC (Ego-Conditioned) robot decision
+# variables and coupled collision constraints for joint optimization.
+#
+# This implements the Full Joint Optimization approach from the Interactive
+# Joint Planning paper, where nearby robots' trajectories are jointly optimized
+# with the ego robot's trajectory.
+#
+# IMPORTANT: Enabling joint planning requires solver regeneration!
+# Run: poetry run python mpc_planner_jackalsimulator/scripts/generate_jackalsimulator_solver.py
+# ============================================================================
+joint_planning:
+  enabled: false                          # Toggle joint planning on/off
+  max_ec_robots: 2                        # Max robots to jointly optimize (1-3 recommended)
+  
+  # EC robot selection parameters
+  ec_robot_selection_radius: 10.0         # [m] Select EC robots within this radius
+  
+  # Cost weights (see IJP paper Equation 8)
+  deviation_weight: 5.0                   # Weight for J_dev (EC deviation from prediction)
+  ec_control_effort_weight: 1.0           # Weight for J_u of EC robots
+  ego_selfishness: 0.8                    # η_e: 0=altruistic, 1=selfish (0.8 recommended)
+  
+  # SQP iterations for iterative coupling
+  sqp_iterations: 2                       # Number of SQP refinement rounds
+  
+  # Constraint parameters
+  use_coupled_collision: true             # Use joint collision constraints
+  safety_margin: 0.1                      # [m] Additional safety buffer for coupled constraints
+  repulsion_strength: 0.3                 # Strength of EC repulsion in SQP update (heuristic)
+  
+  # EC robot dynamics bounds (used in solver generation)
+  ec_max_velocity: 2.0                    # [m/s] EC robot velocity bound
+  ec_max_acceleration: 1.5                # [m/s²] EC robot acceleration bound
+  ec_max_angular_velocity: 1.0            # [rad/s] EC robot angular velocity bound
