@@ -22,8 +22,9 @@ JackalPlanner::JackalPlanner(ros::NodeHandle &nh)
 {
     LOG_INFO("Started Jackal Planner");
 
+    // This intializes CONFIG -> which is just a yaml node
     Configuration::getInstance().initialize(SYSTEM_CONFIG_PATH(__FILE__, "settings")); // Initialize the configuration
-
+    
     // _data.robot_area = {Disc(0., CONFIG["robot_radius"].as<double>())}; // Zero offset single disc
     _data.robot_area = defineRobotArea(CONFIG["robot"]["length"].as<double>(),
                                        CONFIG["robot"]["width"].as<double>(),

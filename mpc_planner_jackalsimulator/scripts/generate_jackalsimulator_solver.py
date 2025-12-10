@@ -4,6 +4,7 @@ import os
 import sys
 import numpy as np
 
+# Add the solver_generator and mpc_planner_modules directories to the system path so that we can find the scripts
 sys.path.append(os.path.join(sys.path[0], "..", "..", "solver_generator"))
 sys.path.append(os.path.join(sys.path[0], "..", "..", "mpc_planner_modules", "scripts"))
 
@@ -11,10 +12,12 @@ sys.path.append(os.path.join(sys.path[0], "..", "..", "mpc_planner_modules", "sc
 forces_path = os.path.join(os.path.expanduser("~"), "forces_pro_client")
 sys.path.append(forces_path)
 
+################################################################
+# This comes from the solver_generator package
 from util.files import load_settings, get_current_package
 from control_modules import ModuleManager
 from generate_solver import generate_solver
-
+################################################################
 # Import modules here from mpc_planner_modules
 from mpc_base import MPCBaseModule
 from contouring import ContouringModule
@@ -23,16 +26,18 @@ from goal_module import GoalModule
 from consistency_module import ConsistencyModule
 from path_reference_velocity import PathReferenceVelocityModule
 
+# Import modules here from mpc_planner_modules
 from ellipsoid_constraints import EllipsoidConstraintModule
 from gaussian_constraints import GaussianConstraintModule
 from guidance_constraints import GuidanceConstraintModule
 from linearized_constraints import LinearizedConstraintModule
 from scenario_constraints import ScenarioConstraintModule
 
-# Import solver models that you want to use
+########################################################################################################
+# Import solver models that you want to use, these imports are coming from the solver_generator package
 from solver_model import ContouringSecondOrderUnicycleModel, ContouringSecondOrderUnicycleModelWithSlack
 from solver_model import ContouringSecondOrderUnicycleModelCurvatureAware
-
+#########################################################################################################
 
 def configuration_no_obstacles(settings):
     modules = ModuleManager()
