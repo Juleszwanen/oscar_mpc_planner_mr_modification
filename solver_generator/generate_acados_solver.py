@@ -25,7 +25,7 @@ def parse_constraint_bounds(bounds):
 
 
 def create_acados_model(settings, model, modules):
-    # Create an acados ocp model
+    # Create an acados Optimal Control problem (ocp) model
     acados_model = AcadosModel()
     acados_model.name = solver_name(settings)
 

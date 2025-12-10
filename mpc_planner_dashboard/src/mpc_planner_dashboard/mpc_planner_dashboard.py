@@ -1,9 +1,13 @@
 import rospy
 from rqt_gui_py.plugin import Plugin
 from python_qt_binding import loadUi
-from python_qt_binding.QtWidgets import QWidget
+from python_qt_binding.QtWidgets import (
+    QWidget, QTableWidgetItem, QProgressBar, QLabel, 
+    QHBoxLayout, QVBoxLayout, QGroupBox, QSizePolicy
+)
 from python_qt_binding.QtCore import Qt, Signal, QObject
-from python_qt_binding.QtWidgets import QTableWidgetItem
+from python_qt_binding.QtGui import QPalette, QColor
+
  # Resolve path to the .ui file in the package
 from rospkg import RosPack
 from mpc_planner_msgs.msg import MPCMetrics
@@ -67,6 +71,9 @@ class MPCPlannerDashboard(Plugin):
         # Initialize ROS subscriber (will subscribe to /<robot>/mpc_metrics)
         self._sub = None
         
+        # Flag to track if plugin is shutting down (prevents GUI updates after widget destruction)
+        self._is_shutdown = False
+        
         # Create signal bridge for thread-safe GUI updates
         # ROS callbacks run in a separate spinner thread, but Qt widgets can only
         # be safely modified from the main GUI thread. This bridge marshals data.
@@ -81,6 +88,13 @@ class MPCPlannerDashboard(Plugin):
         # Cache for distribution data to avoid unnecessary table updates
         self._last_topology_data = None
         self._last_comm_trigger_data = None
+        
+        # Storage for dynamically created objective cost widgets
+        self._objective_bars = {}  # Dict[str, QProgressBar] - maps planner name to progress bar
+        self._objective_labels = {}  # Dict[str, QLabel] - maps planner name to label
+        
+        # Reference the UI-defined container for objective cost bars
+        self._initializeObjectiveCostsFromUI()
 
     # ---------------------------------------------------------------------
     # ROS subscription management
@@ -108,6 +122,162 @@ class MPCPlannerDashboard(Plugin):
                                      queue_size=1)
 
     # ---------------------------------------------------------------------
+    # Objective Costs UI Initialization
+    # ---------------------------------------------------------------------
+    def _initializeObjectiveCostsFromUI(self):
+        """
+        Initialize references to the objective costs container defined in the .ui file.
+        The group box and layout are defined in mpc_planner_dashboard.ui, 
+        and progress bars will be added dynamically as data arrives.
+        """
+        # Get references to UI-defined widgets
+        self._objective_costs_group = self._widget.objectiveCostsGroupBox
+        self._objective_costs_layout = self._widget.objectiveCostsLayout
+        self._objective_costs_placeholder = self._widget.objectiveCostsPlaceholder
+
+    def _getOrCreateObjectiveBar(self, planner_name):
+        """
+        Get an existing progress bar for the planner, or create a new one.
+        Returns the progress bar widget.
+        """
+        if planner_name in self._objective_bars:
+            return self._objective_bars[planner_name]
+        
+        # Hide placeholder if this is the first bar
+        if self._objective_costs_placeholder.isVisible():
+            self._objective_costs_placeholder.hide()
+        
+        # Create a horizontal layout for this planner's row
+        row_layout = QHBoxLayout()
+        row_layout.setSpacing(8)
+        
+        # Create label for planner name (fixed width for alignment)
+        label = QLabel(planner_name)
+        label.setMinimumWidth(100)
+        label.setMaximumWidth(150)
+        label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        row_layout.addWidget(label)
+        
+        # Create progress bar for objective value
+        bar = QProgressBar()
+        bar.setMinimum(-100)  # Scaled: -1.0 maps to -100
+        bar.setMaximum(3000)  # Scaled: 30.0 maps to 3000
+        bar.setValue(0)
+        bar.setFormat("%.2f")  # Will be overwritten with actual value
+        bar.setTextVisible(True)
+        bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        bar.setMinimumHeight(20)
+        
+        # Style the bar with color coding
+        self._styleObjectiveBar(bar, 0.0)
+        
+        row_layout.addWidget(bar)
+        
+        # Store references
+        self._objective_bars[planner_name] = bar
+        self._objective_labels[planner_name] = label
+        
+        # Add row to the main layout
+        self._objective_costs_layout.addLayout(row_layout)
+        
+        return bar
+    
+    def _styleObjectiveBar(self, bar, value):
+        """
+        Apply color styling to progress bar based on value.
+        - value < 0: Red (infeasible/no guidance)
+        - value 0-10: Green (good)
+        - value 10-20: Yellow (moderate)
+        - value > 20: Orange/Red (high cost)
+        """
+        if value < 0:
+            # Red for infeasible
+            bar.setStyleSheet("""
+                QProgressBar {
+                    border: 1px solid grey;
+                    border-radius: 3px;
+                    text-align: center;
+                    background-color: #3a3a3a;
+                }
+                QProgressBar::chunk {
+                    background-color: #cc4444;
+                }
+            """)
+        elif value < 10:
+            # Green for good
+            bar.setStyleSheet("""
+                QProgressBar {
+                    border: 1px solid grey;
+                    border-radius: 3px;
+                    text-align: center;
+                    background-color: #3a3a3a;
+                }
+                QProgressBar::chunk {
+                    background-color: #44aa44;
+                }
+            """)
+        elif value < 20:
+            # Yellow for moderate
+            bar.setStyleSheet("""
+                QProgressBar {
+                    border: 1px solid grey;
+                    border-radius: 3px;
+                    text-align: center;
+                    background-color: #3a3a3a;
+                }
+                QProgressBar::chunk {
+                    background-color: #aaaa44;
+                }
+            """)
+        else:
+            # Orange for high cost
+            bar.setStyleSheet("""
+                QProgressBar {
+                    border: 1px solid grey;
+                    border-radius: 3px;
+                    text-align: center;
+                    background-color: #3a3a3a;
+                }
+                QProgressBar::chunk {
+                    background-color: #cc8844;
+                }
+            """)
+    
+    def _updateObjectiveCostBars(self, planner_names, planner_objective_values):
+        """
+        Update the objective cost progress bars with new data.
+        Creates new bars as needed for new planner names.
+        
+        Args:
+            planner_names: List of planner name strings
+            planner_objective_values: List of corresponding objective values
+        """
+        # Safety check: arrays must be same length
+        if len(planner_names) != len(planner_objective_values):
+            rospy.logwarn_throttle(5.0, 
+                f"Planner names ({len(planner_names)}) and values ({len(planner_objective_values)}) length mismatch")
+            return
+        
+        # Update each planner's bar
+        for name, value in zip(planner_names, planner_objective_values):
+            bar = self._getOrCreateObjectiveBar(name)
+            
+            # Scale value for the progress bar (multiply by 100 for precision)
+            # Range: -1.0 to 30.0 maps to -100 to 3000
+            scaled_value = int(value * 100)
+            scaled_value = max(-100, min(3000, scaled_value))  # Clamp to range
+            bar.setValue(scaled_value)
+            
+            # Update the display format with actual value
+            if value < 0:
+                bar.setFormat(f"{value:.2f} (N/A)")
+            else:
+                bar.setFormat(f"{value:.2f}")
+            
+            # Update styling based on value
+            self._styleObjectiveBar(bar, value)
+
+    # ---------------------------------------------------------------------
     # Callback: update GUI (thread-safe via signal bridge)
     # ---------------------------------------------------------------------
     def metricsCallback(self, msg):
@@ -121,6 +291,9 @@ class MPCPlannerDashboard(Plugin):
         Instead, we emit a signal that will be delivered to _handle_metrics_in_main_thread
         via QueuedConnection, ensuring the GUI update runs in the main thread.
         """
+        # Don't emit signals if plugin is shutting down
+        if self._is_shutdown:
+            return
         # Emit signal to transfer message to main thread for safe GUI updates
         self._signal_bridge.metrics_received.emit(msg)
     
@@ -132,7 +305,15 @@ class MPCPlannerDashboard(Plugin):
         Qt.QueuedConnection, ensuring it runs in the main GUI thread even though
         the signal was emitted from the ROS spinner thread.
         """
+        # Check if plugin is shutting down or widget was destroyed
+        if self._is_shutdown:
+            return
+        
         try:
+            # Additional check: verify widget still exists
+            if self._widget is None:
+                return
+            
             # Update status indicator to show robot is running
             self._widget.statusLabel.setText('● RUNNING')
 
@@ -219,6 +400,16 @@ class MPCPlannerDashboard(Plugin):
                         counts=msg.communication_trigger_counts
                     )
             
+            # --- Planner Objective Costs Section ---
+            # Update progress bars showing objective cost for each planner
+            # Safely extract planner_names and planner_objective_values arrays
+            if hasattr(msg, 'planner_names') and hasattr(msg, 'planner_objective_values'):
+                if len(msg.planner_names) > 0:
+                    self._updateObjectiveCostBars(
+                        planner_names=list(msg.planner_names),
+                        planner_objective_values=list(msg.planner_objective_values)
+                    )
+            
         except Exception as e:
             rospy.logerr(f"Error in _handle_metrics_in_main_thread: {e}")
             import traceback
@@ -262,6 +453,15 @@ class MPCPlannerDashboard(Plugin):
     # ---------------------------------------------------------------------
     def shutdownPlugin(self):
         """Called when the plugin is being closed - cleanup resources"""
+        # Set shutdown flag FIRST to stop processing new messages
+        self._is_shutdown = True
+        
+        # Disconnect signal to prevent queued messages from being processed
+        try:
+            self._signal_bridge.metrics_received.disconnect(self._handle_metrics_in_main_thread)
+        except (TypeError, RuntimeError):
+            pass  # Signal was already disconnected
+        
         # Unsubscribe from ROS topic to prevent memory leaks
         if self._sub is not None:
             self._sub.unregister()

@@ -147,6 +147,7 @@ namespace MPCPlanner
         std::vector<Eigen::Vector2d> _interpolated_prev_trajectory;  // Interpolated by elapsed time for current use
         ros::Time _prev_trajectory_timestamp;            // When the previous trajectory was stored
         double _consistency_cost{999};
+        std::vector<std::tuple<std::string, double>> _cost_per_planner;
         // ================================================================================
 
     public:

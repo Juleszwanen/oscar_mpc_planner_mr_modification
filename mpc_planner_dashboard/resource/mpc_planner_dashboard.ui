@@ -358,9 +358,34 @@
        </layout>
       </widget>
      </item>
-     <!-- Trajectory Statistics group box -->
+     <!-- Planner Objective Costs group box -->
      <item>
-      <widget class="QGroupBox" name="trajectoryGroupBox">
+      <widget class="QGroupBox" name="objectiveCostsGroupBox">
+       <property name="title">
+        <string>Planner Objective Costs</string>
+       </property>
+       <layout class="QVBoxLayout" name="objectiveCostsLayout">
+        <!-- Placeholder label shown until data arrives -->
+        <item>
+         <widget class="QLabel" name="objectiveCostsPlaceholder">
+          <property name="text">
+           <string>Waiting for data...</string>
+          </property>
+          <property name="alignment">
+           <set>Qt::AlignCenter</set>
+          </property>
+         </widget>
+        </item>
+        <!-- Dynamic progress bars will be added here by Python code -->
+       </layout>
+      </widget>
+     </item>
+    </layout>
+   </item>
+
+   <!-- Bottom row: Trajectory Statistics -->
+   <item>
+    <widget class="QGroupBox" name="trajectoryGroupBox">
        <property name="title">
         <string>Trajectory Statistics</string>
        </property>
@@ -427,8 +452,6 @@
         </item>
        </layout>
       </widget>
-     </item>
-    </layout>
    </item>
 
    <!-- Timeline view at the bottom - DISABLED to prevent recursive repaint

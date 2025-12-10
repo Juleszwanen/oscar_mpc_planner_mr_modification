@@ -32,6 +32,8 @@ from gaussian_constraints import GaussianConstraintModule
 from guidance_constraints import GuidanceConstraintModule
 from linearized_constraints import LinearizedConstraintModule
 from scenario_constraints import ScenarioConstraintModule
+# New: Import joint EC constraints module
+from joint_ec_constraints import JointECConstraintModule
 
 ########################################################################################################
 # Import solver models that you want to use, these imports are coming from the solver_generator package

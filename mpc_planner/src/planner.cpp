@@ -221,6 +221,8 @@ namespace MPCPlanner
             _output.following_new_topology = (prev_followed_topology == _module_data.selected_topology_id) ? false : true;
             _output.previous_topology_id = prev_followed_topology; // Add this line
             _output.num_of_guidance_found = _module_data.num_of_guidance_found;
+            _output.cost_per_planner = _module_data.cost_per_planner;
+
         }
 
         if (_output.success && CONFIG["debug_limits"].as<bool>())

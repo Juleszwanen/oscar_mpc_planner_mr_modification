@@ -7,7 +7,7 @@ float64 success_rate           # 0..100 or 0..1 depending on your choice
 int32 iterations
 int32 exit_code
 float64 objective_value
-float64[] objective_values_all_planners 
+# float64[] objective_values_all_planners 
 
 # Topology metrics  
 int32 current_topology_id
@@ -23,6 +23,9 @@ string previous_state
 float64[] current_position # x_pos, y_pos
 float64   current_linear_x
 float64   current_angular_vel
+string[]  planner_names
+float64[] planner_objective_values
+
 
 # Communication metrics
 string last_communication_trigger

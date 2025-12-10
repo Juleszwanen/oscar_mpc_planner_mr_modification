@@ -56,17 +56,21 @@ namespace MPCPlanner
 
         ROSTOOLS_ASSERT(n_solvers > 0 || _use_tmpcpp, "Guidance constraints cannot run with 0 paths and T-MPC++ disabled!");
 
+        int total_planners = n_solvers + (_use_tmpcpp ? 1 : 0);
+        // Reserve space for all planners + 1 extra for "lmpcc_objective" entry
+        _cost_per_planner.reserve(total_planners + 1);
+
         LOG_VALUE("Solvers", n_solvers);
         for (int i = 0; i < n_solvers; i++)
         {
             planners_.emplace_back(i);
         }
-
+        
         if (_use_tmpcpp) // ADD IT AS FIRST PLAN
         {
             LOG_INFO("Using T-MPC++ (Adding the non-guided planner in parallel) with ID: " + std::to_string(n_solvers));
             planners_.emplace_back(n_solvers, true);
-        }
+        } 
 
         // ========== JULES: Initialize consistency tracking after planners are created ==========
         this->initializeConsistencyTracking();
@@ -530,6 +534,20 @@ namespace MPCPlanner
                 module_data.trajectory_cost = best_planner.result.objective;
                 module_data.solver_exit_code = best_planner.result.exit_code;
                 module_data.num_of_guidance_found = global_guidance_->NumberOfGuidanceTrajectories();
+                
+                // Populate _cost_per_planner with current iteration data
+                _cost_per_planner.clear();
+                for (size_t i = 0; i < planners_.size(); i++)
+                {
+                    auto &planner = planners_[i];
+                    double objective = planner.result.success ? planner.result.objective : -1.0;
+                    _cost_per_planner.emplace_back("objective_" + std::to_string(i), objective);
+                    if (planner.is_original_planner)
+                    {
+                        _cost_per_planner.emplace_back("lmpcc_objective", objective);
+                    }
+                }
+                module_data.cost_per_planner = _cost_per_planner;
             }
 
             // ========== JULES: Store trajectory and selection info for next iteration ==========
@@ -798,7 +816,7 @@ namespace MPCPlanner
             auto &planner = planners_[i];
             double objective = planner.result.success ? planner.result.objective : -1.;
             data_saver.AddData("objective_" + std::to_string(i), objective);
-
+            
             if (planner.is_original_planner)
             {
                 data_saver.AddData("lmpcc_objective", objective);
@@ -806,7 +824,7 @@ namespace MPCPlanner
 
                 // save if the non-guided planner used the consistency cost
                 data_saver.AddData("jules_non_gd_planner_used_consistency", ((planner.has_consistency_enabled)? 1.0 : 0));
-                
+               
                 
             }
             else

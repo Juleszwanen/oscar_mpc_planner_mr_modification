@@ -42,6 +42,7 @@ namespace MPCPlanner
         double trajectory_cost{0.0};
         int solver_exit_code{-1};
         int num_of_guidance_found{-1};
+        std::vector<std::tuple<std::string, double>> cost_per_planner;
     };
 
 

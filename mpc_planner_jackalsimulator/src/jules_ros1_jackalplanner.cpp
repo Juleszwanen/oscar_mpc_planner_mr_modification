@@ -1374,6 +1374,14 @@ void JulesJackalPlanner::publishMetrics(const MPCPlanner::PlannerOutput &output,
         metrics.current_linear_x = cmd.linear.x;
         metrics.current_angular_vel = cmd.angular.z;
         
+        // Planner objective values (from guidance_constraints module)
+        // Parallel arrays: planner_names[i] corresponds to planner_objective_values[i]
+        for (const auto& entry : output.cost_per_planner)
+        {
+            metrics.planner_names.push_back(std::get<0>(entry));
+            metrics.planner_objective_values.push_back(std::get<1>(entry));
+        }
+        
         // Communication metrics
         metrics.last_communication_trigger = MPCPlanner::toString(_communication_trigger_reason);
         metrics.messages_sent_total = 0;  // Track later
