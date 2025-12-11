@@ -383,6 +383,46 @@
     </layout>
    </item>
 
+   <!-- X-Y Plots Row: Communication Events and Topology Selection -->
+   <item>
+    <layout class="QHBoxLayout" name="plotsRowLayout">
+     <!-- Communication Events X-Y Plot -->
+     <item>
+      <widget class="QGroupBox" name="commPlotGroupBox">
+       <property name="title">
+        <string>Communication Events (X-Y)</string>
+       </property>
+       <property name="minimumSize">
+        <size>
+         <width>300</width>
+         <height>200</height>
+        </size>
+       </property>
+       <layout class="QVBoxLayout" name="commPlotLayout">
+        <!-- Matplotlib FigureCanvas will be added here by Python code -->
+       </layout>
+      </widget>
+     </item>
+     <!-- Topology Selection X-Y Plot -->
+     <item>
+      <widget class="QGroupBox" name="topoPlotGroupBox">
+       <property name="title">
+        <string>Topology Selection (X-Y)</string>
+       </property>
+       <property name="minimumSize">
+        <size>
+         <width>300</width>
+         <height>200</height>
+        </size>
+       </property>
+       <layout class="QVBoxLayout" name="topoPlotLayout">
+        <!-- Matplotlib FigureCanvas will be added here by Python code -->
+       </layout>
+      </widget>
+     </item>
+    </layout>
+   </item>
+
    <!-- Bottom row: Trajectory Statistics -->
    <item>
     <widget class="QGroupBox" name="trajectoryGroupBox">

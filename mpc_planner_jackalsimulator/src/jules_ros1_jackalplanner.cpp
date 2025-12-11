@@ -380,6 +380,7 @@ void JulesJackalPlanner::loop(const ros::TimerEvent &event)
             _previous_state = MPCPlanner::PlannerState::RESETTING;
         }
 
+        
         LOG_DEBUG_THROTTLE(2000, _ego_robot_ns + ": In resetting state, waiting for allRobotsReachedObjecitveCallback... to change _ego state to TIMER_STARTUP");
         break;
     }
@@ -1342,6 +1343,7 @@ void JulesJackalPlanner::publishMetrics(const MPCPlanner::PlannerOutput &output,
     {
     case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
     case MPCPlanner::PlannerState::PLANNING_ACTIVE:
+    case MPCPlanner::PlannerState::GOAL_REACHED:
     {
         mpc_planner_msgs::MPCMetrics metrics;
         
@@ -1374,6 +1376,7 @@ void JulesJackalPlanner::publishMetrics(const MPCPlanner::PlannerOutput &output,
         metrics.current_linear_x = cmd.linear.x;
         metrics.current_angular_vel = cmd.angular.z;
         
+        metrics.reset_signal = (_current_state == MPCPlanner::PlannerState::GOAL_REACHED)? true : false;
         // Planner objective values (from guidance_constraints module)
         // Parallel arrays: planner_names[i] corresponds to planner_objective_values[i]
         for (const auto& entry : output.cost_per_planner)

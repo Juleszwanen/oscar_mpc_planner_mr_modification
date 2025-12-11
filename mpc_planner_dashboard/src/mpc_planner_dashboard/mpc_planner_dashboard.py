@@ -8,9 +8,52 @@ from python_qt_binding.QtWidgets import (
 from python_qt_binding.QtCore import Qt, Signal, QObject
 from python_qt_binding.QtGui import QPalette, QColor
 
+# Matplotlib imports for X-Y plots
+# Set Qt5Agg backend BEFORE importing FigureCanvas
+import matplotlib
+matplotlib.use('Qt5Agg')
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+import numpy as np
+
  # Resolve path to the .ui file in the package
 from rospkg import RosPack
 from mpc_planner_msgs.msg import MPCMetrics
+
+
+# Color maps for different communication triggers and topologies
+COMM_TRIGGER_COLORS = {
+    'TOPOLOGY_CHANGE': '#e74c3c',           # Red
+    'INFEASIBLE': '#9b59b6',                # Purple
+    'INFEASIBLE_TO_FEASIBLE': '#2ecc71',    # Green
+    'GEOMETRIC': '#f39c12',                 # Orange
+    'TIME': '#3498db',                      # Blue
+    'NON_GUIDED_HOMOLOGY_FAIL': '#e91e63',  # Pink
+    'UNKNOWN': '#95a5a6',                   # Gray
+    'NO_COMMUNICATION': '#95a5a6',          # Gray (shouldn't be plotted)
+}
+
+# Topology colors as dictionary to handle special cases (-1 and 8)
+TOPOLOGY_COLORS = {
+    -1: '#ffffff',  # White - Just started planning (from INITIALIZING_OBSTACLES)
+    0: '#e74c3c',   # Red - Topology 0
+    1: '#3498db',   # Blue - Topology 1
+    2: '#2ecc71',   # Green - Topology 2
+    3: '#9b59b6',   # Purple - Topology 3
+    4: '#f39c12',   # Orange - Topology 4
+    5: '#1abc9c',   # Teal - Topology 5
+    6: '#e91e63',   # Pink - Topology 6
+    7: '#00bcd4',   # Cyan - Topology 7
+    8: '#8b4513',   # Brown - Non-guided planner (unmapped topology)
+}
+# Fallback color for any topology ID not in the dictionary
+TOPOLOGY_COLOR_FALLBACK = '#808080'  # Gray
+
+# Fixed axis bounds for X-Y plots (meters)
+PLOT_X_MIN = -1.0
+PLOT_X_MAX = 15.0
+PLOT_Y_MIN = -1.0
+PLOT_Y_MAX = 15.0
 
 
 class MetricsSignalBridge(QObject):
@@ -95,6 +138,19 @@ class MPCPlannerDashboard(Plugin):
         
         # Reference the UI-defined container for objective cost bars
         self._initializeObjectiveCostsFromUI()
+        
+        # --- X-Y Plot Data Storage ---
+        # Communication trigger plot: {trigger_type: [(x, y), ...]}
+        self._comm_plot_data = {}
+        # Topology selection plot: {topology_id: [(x, y), ...]}
+        self._topology_plot_data = {}
+        # Track previous state to detect when to clear plots (goal reached)
+        self._previous_state = None
+        # Flag to avoid repeated clearing while reset_signal stays True
+        self._plots_already_cleared = False
+        
+        # Initialize the X-Y plots
+        self._initializeXYPlots()
 
     # ---------------------------------------------------------------------
     # ROS subscription management
@@ -134,6 +190,237 @@ class MPCPlannerDashboard(Plugin):
         self._objective_costs_group = self._widget.objectiveCostsGroupBox
         self._objective_costs_layout = self._widget.objectiveCostsLayout
         self._objective_costs_placeholder = self._widget.objectiveCostsPlaceholder
+
+    # ---------------------------------------------------------------------
+    # X-Y Plot Initialization (with blitting for performance)
+    # ---------------------------------------------------------------------
+    def _initializeXYPlots(self):
+        """
+        Initialize the matplotlib X-Y plots for communication triggers and topology.
+        Uses blitting for efficient real-time updates.
+        
+        Blitting works by:
+        1. Drawing the static background (axes, grid, labels) once
+        2. Saving this background
+        3. On updates, restore background and only redraw the data points
+        """
+        # --- Communication Events Plot ---
+        self._comm_figure = Figure(figsize=(5, 4), dpi=100, facecolor='#2b2b2b')
+        self._comm_ax = self._comm_figure.add_subplot(111)
+        self._comm_canvas = FigureCanvas(self._comm_figure)
+        self._comm_canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        
+        # Style and configure the communication plot
+        self._setupAxis(self._comm_ax, "Communication Events")
+        
+        # Add canvas to UI container
+        self._widget.commPlotLayout.addWidget(self._comm_canvas)
+        
+        # --- Topology Selection Plot ---
+        self._topo_figure = Figure(figsize=(5, 4), dpi=100, facecolor='#2b2b2b')
+        self._topo_ax = self._topo_figure.add_subplot(111)
+        self._topo_canvas = FigureCanvas(self._topo_figure)
+        self._topo_canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        
+        # Style and configure the topology plot
+        self._setupAxis(self._topo_ax, "Topology Path")
+        
+        # Add canvas to UI container
+        self._widget.topoPlotLayout.addWidget(self._topo_canvas)
+        
+        # Initial draw to render the static elements
+        self._comm_canvas.draw()
+        self._topo_canvas.draw()
+        
+        # --- Blitting Setup ---
+        # Store scatter artists for each category (will be created on first data)
+        # Format: {trigger_type: PathCollection} or {topology_id: PathCollection}
+        self._comm_scatter_artists = {}
+        self._topo_scatter_artists = {}
+        
+        # Save backgrounds after initial draw (for blitting)
+        self._comm_background = self._comm_canvas.copy_from_bbox(self._comm_ax.bbox)
+        self._topo_background = self._topo_canvas.copy_from_bbox(self._topo_ax.bbox)
+        
+        # Track which categories have been added to legend
+        self._comm_legend_categories = set()
+        self._topo_legend_categories = set()
+    
+    def _setupAxis(self, ax, title):
+        """
+        Configure axis with dark theme styling and fixed bounds.
+        
+        Args:
+            ax: Matplotlib axis to configure
+            title: Title string for the plot
+        """
+        ax.set_facecolor('#1e1e1e')
+        ax.set_title(title, color='white', fontsize=9)
+        ax.set_xlabel('X (m)', color='white', fontsize=8)
+        ax.set_ylabel('Y (m)', color='white', fontsize=8)
+        
+        # Fixed axis bounds
+        ax.set_xlim(PLOT_X_MIN, PLOT_X_MAX)
+        ax.set_ylim(PLOT_Y_MIN, PLOT_Y_MAX)
+        
+        # Style ticks and spines
+        ax.tick_params(colors='white', labelsize=7)
+        for spine in ax.spines.values():
+            spine.set_color('white')
+        
+        # Add grid
+        ax.grid(True, alpha=0.3, color='gray')
+        
+        # Equal aspect ratio so circles look like circles
+        ax.set_aspect('equal', adjustable='box')
+    
+    def _clearPlots(self):
+        """
+        Clear all plot data and redraw empty plots.
+        Called when reset_signal is True (robot reached goal).
+        """
+        rospy.loginfo("Clearing X-Y plots (reset signal received)")
+        
+        # Clear data storage
+        self._comm_plot_data.clear()
+        self._topology_plot_data.clear()
+        
+        # Remove all scatter artists from comm plot
+        for artist in self._comm_scatter_artists.values():
+            artist.remove()
+        self._comm_scatter_artists.clear()
+        self._comm_legend_categories.clear()
+        
+        # Remove all scatter artists from topo plot
+        for artist in self._topo_scatter_artists.values():
+            artist.remove()
+        self._topo_scatter_artists.clear()
+        self._topo_legend_categories.clear()
+        
+        # Clear any existing legend
+        legend = self._comm_ax.get_legend()
+        if legend:
+            legend.remove()
+        legend = self._topo_ax.get_legend()
+        if legend:
+            legend.remove()
+        
+        # Redraw and save new backgrounds
+        self._comm_canvas.draw()
+        self._topo_canvas.draw()
+        self._comm_background = self._comm_canvas.copy_from_bbox(self._comm_ax.bbox)
+        self._topo_background = self._topo_canvas.copy_from_bbox(self._topo_ax.bbox)
+    
+    def _updateCommPlot(self, x, y, trigger_type):
+        """
+        Add a point to the communication trigger plot using blitting.
+        Only plots when actual communication happened (not NONE).
+        
+        Args:
+            x, y: Robot position in meters
+            trigger_type: String like 'TOPOLOGY_SWITCH', 'TIME_BASED', etc.
+        """
+        # Skip if no communication happened
+        if trigger_type == 'NONE' or trigger_type == '' or trigger_type == 'NO_COMMUNICATION':
+            return
+        
+        # Debug: log trigger type and resolved color
+        color = COMM_TRIGGER_COLORS.get(trigger_type, '#ffffff')
+        rospy.loginfo_once(f"Comm plot: trigger_type='{trigger_type}', color={color}")
+        
+        # Add point to data storage
+        if trigger_type not in self._comm_plot_data:
+            self._comm_plot_data[trigger_type] = []
+        self._comm_plot_data[trigger_type].append((x, y))
+        
+        # Check if we need to create a new scatter artist for this trigger type
+        need_legend_update = False
+        if trigger_type not in self._comm_scatter_artists:
+            color = COMM_TRIGGER_COLORS.get(trigger_type, '#ffffff')
+            # Create empty scatter, will be populated below
+            scatter = self._comm_ax.scatter([], [], c=color, s=10, label=trigger_type, alpha=0.8)
+            self._comm_scatter_artists[trigger_type] = scatter
+            need_legend_update = True
+            self._comm_legend_categories.add(trigger_type)
+        
+        # Update the scatter artist with all points for this trigger type
+        points = self._comm_plot_data[trigger_type]
+        if points:
+            import numpy as np
+            offsets = np.array(points)
+            self._comm_scatter_artists[trigger_type].set_offsets(offsets)
+        
+        # If new category added, update legend and redraw background
+        if need_legend_update:
+            legend = self._comm_ax.legend(loc='upper left', fontsize=6, 
+                                         facecolor='#2b2b2b', edgecolor='white')
+            for text in legend.get_texts():
+                text.set_color('white')
+            # Must do full draw when legend changes, then save new background
+            self._comm_canvas.draw()
+            self._comm_background = self._comm_canvas.copy_from_bbox(self._comm_ax.bbox)
+        else:
+            # Fast blit update - restore background, draw artists, blit
+            self._comm_canvas.restore_region(self._comm_background)
+            for artist in self._comm_scatter_artists.values():
+                self._comm_ax.draw_artist(artist)
+            self._comm_canvas.blit(self._comm_ax.bbox)
+    
+    def _updateTopoPlot(self, x, y, topology_id):
+        """
+        Add a point to the topology selection plot using blitting.
+        Shows the robot's path colored by which topology was followed.
+        
+        Args:
+            x, y: Robot position in meters
+            topology_id: Integer topology ID (-1, 0-7, or 8)
+        """
+        # Add point to data storage
+        if topology_id not in self._topology_plot_data:
+            self._topology_plot_data[topology_id] = []
+        self._topology_plot_data[topology_id].append((x, y))
+        
+        # Check if we need to create a new scatter artist for this topology
+        need_legend_update = False
+        if topology_id not in self._topo_scatter_artists:
+            color = TOPOLOGY_COLORS.get(topology_id, TOPOLOGY_COLOR_FALLBACK)
+            
+            # Create label based on topology ID
+            if topology_id == -1:
+                label = 'Init (-1)'
+            elif topology_id == 8:
+                label = 'Non-guided (8)'
+            else:
+                label = f'Topo {topology_id}'
+            
+            # Create empty scatter, will be populated below
+            scatter = self._topo_ax.scatter([], [], c=color, s=10, label=label, alpha=0.8)
+            self._topo_scatter_artists[topology_id] = scatter
+            need_legend_update = True
+            self._topo_legend_categories.add(topology_id)
+        
+        # Update the scatter artist with all points for this topology
+        points = self._topology_plot_data[topology_id]
+        if points:
+            import numpy as np
+            offsets = np.array(points)
+            self._topo_scatter_artists[topology_id].set_offsets(offsets)
+        
+        # If new category added, update legend and redraw background
+        if need_legend_update:
+            legend = self._topo_ax.legend(loc='upper left', fontsize=6,
+                                         facecolor='#2b2b2b', edgecolor='white')
+            for text in legend.get_texts():
+                text.set_color('white')
+            # Must do full draw when legend changes, then save new background
+            self._topo_canvas.draw()
+            self._topo_background = self._topo_canvas.copy_from_bbox(self._topo_ax.bbox)
+        else:
+            # Fast blit update - restore background, draw artists, blit
+            self._topo_canvas.restore_region(self._topo_background)
+            for artist in self._topo_scatter_artists.values():
+                self._topo_ax.draw_artist(artist)
+            self._topo_canvas.blit(self._topo_ax.bbox)
 
     def _getOrCreateObjectiveBar(self, planner_name):
         """
@@ -409,6 +696,28 @@ class MPCPlannerDashboard(Plugin):
                         planner_names=list(msg.planner_names),
                         planner_objective_values=list(msg.planner_objective_values)
                     )
+            
+            # --- X-Y Plots Section ---
+            # Check for reset signal (robot reached goal) - clear plots once
+            if hasattr(msg, 'reset_signal') and msg.reset_signal:
+                if not self._plots_already_cleared:
+                    self._clearPlots()
+                    self._plots_already_cleared = True
+            else:
+                # Reset the flag when reset_signal goes back to False
+                self._plots_already_cleared = False
+                # Update plots with current position data
+                if len(msg.current_position) >= 2:
+                    x = msg.current_position[0]
+                    y = msg.current_position[1]
+                    
+                    # Update communication plot (only when communication happened)
+                    if hasattr(msg, 'last_communication_trigger'):
+                        self._updateCommPlot(x, y, msg.last_communication_trigger)
+                    
+                    # Update topology plot (always, to show path)
+                    if hasattr(msg, 'current_topology_id'):
+                        self._updateTopoPlot(x, y, msg.current_topology_id)
             
         except Exception as e:
             rospy.logerr(f"Error in _handle_metrics_in_main_thread: {e}")

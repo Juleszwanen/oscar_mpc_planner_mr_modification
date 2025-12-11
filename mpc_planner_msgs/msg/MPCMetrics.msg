@@ -26,6 +26,7 @@ float64   current_angular_vel
 string[]  planner_names
 float64[] planner_objective_values
 
+bool reset_signal
 
 # Communication metrics
 string last_communication_trigger
