@@ -520,23 +520,27 @@ class BicycleModel2ndOrderCurvatureAware(DynamicsModel):
 
 class ContouringSecondOrderUnicycleModelWithEC(DynamicsModel):
     """
-    Extended unicycle model that includes EC (Ego-Conditioned) robot state variables.
+    Joint planning model: Ego robot (with spline) + M EC robots (without spline).
     
     This model is used for joint optimization (Variant B from Interactive Joint Planning paper).
-    It extends the base ContouringSecondOrderUnicycleModel by adding decision variables
-    for M EC robots that are jointly optimized with the ego robot.
+    It combines:
+    - Ego robot: ContouringSecondOrderUnicycleModel dynamics (5 states: x, y, psi, v, spline)
+    - EC robots: SecondOrderUnicycleModel dynamics (4 states each: x, y, psi, v - NO SPLINE)
     
-    Each EC robot has:
-    - States: x_ec, y_ec, psi_ec, v_ec (4 states per EC robot)
-    - Inputs: a_ec, w_ec (2 inputs per EC robot)
+    IMPORTANT DESIGN DECISION - Why EC robots have NO spline state:
+        EC robots use SecondOrderUnicycleModel (not ContouringSecondOrderUnicycleModel)
+        because we only have geometric trajectory predictions for other robots,
+        not spline/path information. The spline state is specifically for MPCC
+        path tracking, which only applies to the ego robot. We receive the
+        EC robots' predicted trajectories as geometric [x, y] positions over time.
     
-    The ego robot uses the same dynamics as ContouringSecondOrderUnicycleModel:
-    - States: x, y, psi, v, spline (5 states)
-    - Inputs: a, w (2 inputs)
+    Decision Variables per stage:
+        Inputs:  [a, w, ec0_a, ec0_w, ec1_a, ec1_w, ...]
+        States:  [x, y, psi, v, spline, ec0_x, ec0_y, ec0_psi, ec0_v, ...]
     
-    Total dimensions:
-    - nx = 5 (ego) + max_ec_robots * 4 (EC states)
-    - nu = 2 (ego) + max_ec_robots * 2 (EC inputs)
+    Total dimensions (for max_ec_robots = M):
+        nx = 5 (ego) + M * 4 (EC states, no spline)
+        nu = 2 (ego) + M * 2 (EC inputs)
     
     Args:
         max_ec_robots: Maximum number of EC robots to jointly optimize (default: 2)
@@ -545,7 +549,9 @@ class ContouringSecondOrderUnicycleModelWithEC(DynamicsModel):
         This model is defined in solver_model.py to follow the same architecture as other
         dynamics models in the codebase. It inherits from DynamicsModel and implements
         all required methods (continuous_model, acados_symbolics, get_acados_dynamics, etc.)
-        to integrate seamlessly with the solver generator pipeline.
+        to integrate seamlessly with the solver generator pipeline. This is intentional
+        and follows the existing pattern (see SecondOrderUnicycleModel, 
+        ContouringSecondOrderUnicycleModel, BicycleModel2ndOrder, etc.).
     """
 
     def __init__(self, max_ec_robots=2):
@@ -585,8 +591,14 @@ class ContouringSecondOrderUnicycleModelWithEC(DynamicsModel):
         
         Bound order: [u0, u1, ..., x0, x1, ...]
         
-        Ego bounds are taken from ContouringSecondOrderUnicycleModel.
-        EC robot bounds are configurable but use reasonable defaults for unicycle robots.
+        Ego robot bounds are taken from ContouringSecondOrderUnicycleModel.
+        EC robot bounds are for SecondOrderUnicycleModel (no spline state).
+        
+        Note on EC robot state structure:
+            EC robots have 4 states: [x, y, psi, v] (NO spline)
+            This is because EC robots use SecondOrderUnicycleModel dynamics,
+            not ContouringSecondOrderUnicycleModel. We only receive geometric
+            trajectory predictions for other robots, not spline/path information.
         
         Design Note: Bounds are hardcoded here rather than loaded from settings for two reasons:
         1. Solver generation happens at compile time, not runtime, so bounds must be known
@@ -627,6 +639,7 @@ class ContouringSecondOrderUnicycleModelWithEC(DynamicsModel):
         ec_input_upper = [EC_MAX_ACCEL, EC_MAX_ANGULAR_VEL]
         
         # EC state bounds (per robot): [x_ec, y_ec, psi_ec, v_ec]
+        # Note: 4 states (SecondOrderUnicycleModel), not 5 (no spline state)
         ec_state_lower = [-POS_LIMIT, -POS_LIMIT, -np.pi * 4, EC_MIN_VEL]
         ec_state_upper = [POS_LIMIT, POS_LIMIT, np.pi * 4, EC_MAX_VEL]
         
@@ -652,25 +665,31 @@ class ContouringSecondOrderUnicycleModelWithEC(DynamicsModel):
         """
         Continuous dynamics for ego and all EC robots.
         
-        Ego dynamics (unicycle):
+        Ego dynamics (ContouringSecondOrderUnicycleModel - with spline):
             x_dot = v * cos(psi)
             y_dot = v * sin(psi)
             psi_dot = w
             v_dot = a
-            spline_dot = v
+            spline_dot = v  (arc length parameterized path progress)
         
-        EC robot dynamics (same unicycle model for each):
+        EC robot dynamics (SecondOrderUnicycleModel - NO spline):
             x_ec_dot = v_ec * cos(psi_ec)
             y_ec_dot = v_ec * sin(psi_ec)
             psi_ec_dot = w_ec
             v_ec_dot = a_ec
+            
+        NOTE: EC robots do NOT have spline state because:
+        1. We don't have spline/path information for other robots
+        2. We only receive geometric trajectory predictions [x, y] over time
+        3. The spline state is for MPCC path tracking (ego only)
         
         Args:
-            x: State vector [x_ego, x_ec_0, x_ec_1, ...]
-            u: Input vector [u_ego, u_ec_0, u_ec_1, ...]
+            x: State vector [x_ego, y_ego, psi_ego, v_ego, spline_ego, 
+                            x_ec0, y_ec0, psi_ec0, v_ec0, ...]
+            u: Input vector [a_ego, w_ego, a_ec0, w_ec0, ...]
         
         Returns:
-            np.array: State derivatives [x_dot_ego, x_dot_ec_0, x_dot_ec_1, ...]
+            np.array: State derivatives
         """
         # Ego dynamics
         a_ego = u[0]
@@ -689,7 +708,9 @@ class ContouringSecondOrderUnicycleModelWithEC(DynamicsModel):
             v_ego                      # spline_dot: arc length progress = velocity
         ]
         
-        # EC robot dynamics (unicycle model, no spline state)
+        # EC robot dynamics (SecondOrderUnicycleModel - NO spline state!)
+        # EC robots don't have spline because we only have geometric predictions,
+        # not path/spline information. This matches SecondOrderUnicycleModel dynamics.
         ec_dynamics = []
         for ec_idx in range(self.max_ec_robots):
             # Input offset for this EC robot
