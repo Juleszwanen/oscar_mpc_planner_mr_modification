@@ -2,7 +2,7 @@
 
 ## Document Information
 - **Version**: 3.0
-- **Last Updated**: 2025
+- **Last Updated**: December 2025
 - **Purpose**: Complete design and implementation guide for joint planning with acados solver
 - **Target**: Developers implementing Interactive Joint Planning (Variant B) in the MPC planner
 - **Reference**: See `JOINT_PLANNING_INTEGRATION_DESIGN.md` for theoretical background

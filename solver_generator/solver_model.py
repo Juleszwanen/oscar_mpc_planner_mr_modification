@@ -638,8 +638,8 @@ class ContouringSecondOrderUnicycleModelWithEC(DynamicsModel):
         ec_input_lower = [-EC_MAX_ACCEL, -EC_MAX_ANGULAR_VEL]
         ec_input_upper = [EC_MAX_ACCEL, EC_MAX_ANGULAR_VEL]
         
-        # EC state bounds (per robot): [x_ec, y_ec, psi_ec, v_ec] - NO spline!
-        # EC robots use SecondOrderUnicycleModel (4 states), not ContouringSecondOrderUnicycleModel (5 states)
+        # EC state bounds (per robot): [x_ec, y_ec, psi_ec, v_ec]
+        # Note: 4 states (SecondOrderUnicycleModel), not 5 (no spline state)
         ec_state_lower = [-POS_LIMIT, -POS_LIMIT, -np.pi * 4, EC_MIN_VEL]
         ec_state_upper = [POS_LIMIT, POS_LIMIT, np.pi * 4, EC_MAX_VEL]
         
