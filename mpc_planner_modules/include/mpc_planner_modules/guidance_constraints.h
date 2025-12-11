@@ -129,7 +129,8 @@ namespace MPCPlanner
         bool    _assign_meaningful_topology{false};
         
 
-        int TOPOLOGY_NO_MATCH{8}; // Indicates top
+        int TOPOLOGY_NO_MATCH{8};        // Indicates topology matching was attempted but failed
+        int TOPOLOGY_NOT_SELECTED{999};  // Indicates non-guided planner was not selected (matching not attempted)
         RealTimeData empty_data_;
 
         int best_planner_index_ = -1;
@@ -139,7 +140,7 @@ namespace MPCPlanner
         // when using consistency costs in the MPC formulation
         bool _consistency_module_available{false};   // True if solver has consistency_weight parameter
         bool _consistency_on_non_guided{false};      // Config: enable consistency tracking for non-guided planner
-        
+        int  _non_guided_toplogy_id{8};              // Topology ID: on which we map the non-guided, 2 * global_guidance_->GetConfig()->n_paths_; if we could not map the non-guided trajectory
         int  _prev_selected_topology_id{-1};          // Topology ID from previous iteration
         bool _prev_was_original_planner{false};      // Was non-guided planner selected last time?
         bool _has_previous_trajectory{false};        // Do we have valid previous trajectory data?
@@ -173,6 +174,22 @@ namespace MPCPlanner
         GuidancePlanner::GeometricPath convertMPCTrajectoryToGeometricPath(
             std::shared_ptr<Solver> solver,
             GuidancePlanner::NodeType node_type = GuidancePlanner::NodeType::CONNECTOR);
+
+        /**
+         * @brief Assign color to non-guided planner based on matched topology
+         *
+         * When the non-guided planner successfully matches a guidance topology,
+         * this function searches for the corresponding guidance trajectory and
+         * assigns its color to the planner for consistent visualization.
+         *
+         * @param best_planner Reference to the best planner (non-guided)
+         * @param meaningful_topology_id The topology ID that was matched
+         *
+         * @note If no matching guidance trajectory is found, assigns color -1 (dark red)
+         *       and logs a warning. This ensures visualization remains functional even
+         *       if topology mapping succeeds but color lookup fails.
+         */
+        void assignColorToNonGuidedPlanner(LocalPlanner& best_planner, int meaningful_topology_id);
 
         /**
          * @brief Storage for temporary nodes created during MPC trajectory conversion

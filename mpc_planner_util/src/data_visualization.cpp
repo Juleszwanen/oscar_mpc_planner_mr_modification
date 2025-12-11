@@ -22,11 +22,17 @@ namespace MPCPlanner
         line.setScale(0.15, 0.15);
 
         double z = 0.;
-        if (color_index == -1) // Plot a red trajectory above other trajectories
+        if (color_index == -1) // Plot a dark red trajectory above other trajectories (selected trajectory)
         {
             cylinder.setColor(131. / 255., 10. / 255., 72. / 255., alpha);
             line.setColor(131. / 255., 10. / 255., 72. / 255., alpha);
             z = 0.05;
+        }
+        else if (color_index == -2) // Plot a black trajectory (non-guided planner with no topology match)
+        {
+            cylinder.setColor(0.0, 0.0, 0.0, alpha);
+            line.setColor(0.0, 0.0, 0.0, alpha);
+            z = 0.0;
         }
         else
         {

@@ -1459,12 +1459,12 @@ bool JulesJackalPlanner::shouldCommunicate(const MPCPlanner::PlannerOutput &outp
             return true;
         }
         
-        // Priority 2: Non-guided / Homology fail (Enum 6)
+        // Priority 2: Choose Non-Guided / Mapping Homology Fail (Enum 6)
         // This happens when solver chose non-guided topology (no matching homology found)
         if (MPCPlanner::CommunicationTriggers::checkNonGuidedHomologyFail(output, n_paths))
         {
-            _communication_trigger_reason = MPCPlanner::CommunicationTriggerReason::NON_GUIDED_HOMOLOGY_FAIL;
-            LOG_DEBUG(_ego_robot_ns + ": Communication trigger: NON_GUIDED_HOMOLOGY_FAIL");
+            _communication_trigger_reason = MPCPlanner::CommunicationTriggerReason::CHOOSE_NON_GUIDED_MAPPING_HOMOLOGY_FAIL;
+            LOG_DEBUG(_ego_robot_ns + ": Communication trigger: CHOOSE_NON_GUIDED_MAPPING_HOMOLOGY_FAIL");
             return true;
         }
         

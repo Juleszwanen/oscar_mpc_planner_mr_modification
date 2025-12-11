@@ -28,7 +28,7 @@ COMM_TRIGGER_COLORS = {
     'INFEASIBLE_TO_FEASIBLE': '#2ecc71',    # Green
     'GEOMETRIC': '#f39c12',                 # Orange
     'TIME': '#3498db',                      # Blue
-    'NON_GUIDED_HOMOLOGY_FAIL': '#e91e63',  # Pink
+    'CHOOSE_NON_GUIDED_MAPPING_HOMOLOGY_FAIL': "#f5f5f5",  # Pink
     'UNKNOWN': '#95a5a6',                   # Gray
     'NO_COMMUNICATION': '#95a5a6',          # Gray (shouldn't be plotted)
 }

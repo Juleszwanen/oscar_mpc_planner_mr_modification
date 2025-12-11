@@ -13,7 +13,7 @@ namespace MPCPlanner {
             case CommunicationTriggerReason::TOPOLOGY_CHANGE: return "TOPOLOGY_CHANGE";
             case CommunicationTriggerReason::GEOMETRIC: return "GEOMETRIC";
             case CommunicationTriggerReason::TIME: return "TIME";
-            case CommunicationTriggerReason::NON_GUIDED_HOMOLOGY_FAIL: return "NON_GUIDED_HOMOLOGY_FAIL";
+            case CommunicationTriggerReason::CHOOSE_NON_GUIDED_MAPPING_HOMOLOGY_FAIL: return "CHOOSE_NON_GUIDED_MAPPING_HOMOLOGY_FAIL";
             default: return "UNKNOWN";
         }
     }
@@ -70,7 +70,7 @@ namespace MPCPlanner {
         return (time_elapsed >= heartbeat_period);
     }
 
-    // 6. Non-Guided / Homology Fail Trigger
+    // 6. Choose Non-Guided / Mapping Homology Fail Trigger
     bool CommunicationTriggers::checkNonGuidedHomologyFail(const PlannerOutput& output, int n_paths)
     {
         if (!output.success) 

@@ -235,7 +235,7 @@ settings = load_settings()
 # model, modules = configuration_tmpc(settings)
 
 # NOTE: T-MPC++ with consistency cost (current default)
-# model, modules = configuration_tmpc_consistency_cost(settings)
+model, modules = configuration_tmpc_consistency_cost(settings)
 
 # NOTE: T-MPC++ with joint EC robot optimization (Variant B from IJP paper)
 # Use this when joint_planning.enabled = true in settings.yaml
@@ -275,6 +275,6 @@ def select_configuration(settings):
 
 
 # Select configuration and generate solver
-model, modules = select_configuration(settings)
+# model, modules = select_configuration(settings)
 generate_solver(modules, model, settings)
 exit(0)

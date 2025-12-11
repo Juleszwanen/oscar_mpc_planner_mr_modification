@@ -17,7 +17,7 @@ namespace MPCPlanner {
         TOPOLOGY_CHANGE = 3,
         GEOMETRIC = 4,
         TIME = 5,
-        NON_GUIDED_HOMOLOGY_FAIL = 6
+        CHOOSE_NON_GUIDED_MAPPING_HOMOLOGY_FAIL = 6
     };
 
     /**
@@ -78,7 +78,7 @@ public:
     static bool checkTime(const ros::Time& last_send_time,const ros::Time& current_time,double heartbeat_period_sec);
 
     // =========================================================================
-    // 6. Non-Guided / Homology Fail Trigger (Enum 6)
+    // 6. Choose Non-Guided / Mapping Homology Fail Trigger (Enum 6)
     // =========================================================================
     /**
      * @brief Check if the solver selected the non-guided topology (fallback).
