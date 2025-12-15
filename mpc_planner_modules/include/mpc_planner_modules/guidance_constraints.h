@@ -87,6 +87,7 @@ namespace MPCPlanner
         // void GetMethodName(std::string &name) override;
 
     private: // Private functions
+
         struct LocalPlanner
         {
             int id;
@@ -190,6 +191,35 @@ namespace MPCPlanner
          *       if topology mapping succeeds but color lookup fails.
          */
         void assignColorToNonGuidedPlanner(LocalPlanner& best_planner, int meaningful_topology_id);
+
+        /**
+         * @brief Attempt topology matching for non-guided planner
+         *
+         * Compares the non-guided MPC trajectory against guidance trajectories
+         * to determine which topology class it belongs to. Updates the planner's
+         * guidance_ID and color based on the matching result.
+         *
+         * @param planner Reference to the non-guided planner
+         * @param solver Solver containing the MPC trajectory
+         *
+         * @note Sets guidance_ID to TOPOLOGY_NO_MATCH if matching fails
+         * @note Only called when _assign_meaningful_topology is enabled
+         */
+        void attemptTopologyMatchingForNonGuidedPlanner(LocalPlanner& planner, std::shared_ptr<Solver> solver);
+
+        /**
+         * @brief Visualize topology matching using pre-computed results
+         *
+         * This version is called from visualize() and uses the topology matching
+         * results already computed in optimize(). It reads the matched topology ID
+         * from the planner result and visualizes accordingly.
+         *
+         * @param non_guided_solver The solver containing the non-guided MPC trajectory
+         *
+         * @note Topology matching must have already been computed in optimize().
+         *       This function only handles visualization, not the matching logic.
+         */
+        void visualizeTopologyMatchingFromResult(std::shared_ptr<Solver> non_guided_solver);
 
         /**
          * @brief Storage for temporary nodes created during MPC trajectory conversion

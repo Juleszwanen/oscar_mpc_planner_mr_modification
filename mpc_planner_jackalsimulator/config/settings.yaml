@@ -9,7 +9,7 @@ control_frequency: 20 # [Hz] Control frequency of the MPC 20-> normal
 
 debug_output: false # Show debug output
 debug_limits: false # Show when state/input limits are hit
-debug_visuals: true # Show extra visuals
+debug_visuals: false # Show extra visuals
 
 solver_settings:
   solver: "acados" # acados or forces
@@ -35,12 +35,12 @@ recording:
 
 deceleration_at_infeasible: 3.0 # [m/s^2] Deceleration when MPC is infeasible
 max_obstacles: 4 # Max. number of dynamic obstacles, normally 12
-robot_radius: 0.325 # [m] Robot radius
+robot_radius: 0.425 # [m] Robot radius  normal 0.325
 robot:
   length: 0.65 # [m]
   width: 0.65 # [m]
   com_to_back: 0.0 # [m] Distance from center of mass to the back of the robot
-obstacle_radius: 0.325 # [m] Radius of obstacles (not used when provided in the obstacle message)
+obstacle_radius: 0.425 # [m] Radius of obstacles (not used when provided in the obstacle message) 0.325
 
 linearized_constraints:
   add_halfspaces: 0  # Add static constraints in T-MPC (e.g., for road boundaries)
@@ -92,11 +92,15 @@ weights: # Weights of the MPC, need to correspond to declared weights in the sol
   consistency: 0.05
 
 visualization:
-  draw_every: 5 # Visualize every x stages
+  draw_every: 1 # Visualize every x stages
+
+baseline:
+  mode: "normal_mode" #"constant_velocity"
 
 JULES:
     use_extra_params_module_data: true
     assign_meaningful_topology_id_to_non_guided: true
+    visualize_topology_matching: true #visualize the guidance mapping for debugging purposes
     have_non_guided_standout: true #Enable special markers for non-guided planner
     override_selected_traject_of_topology_non_guided: true # override the chosen global_guidance topology with that of the mapped non_guided topology
     communicate_on_topology_switch_only: true # This turns on and off if we want to communicate our trajectory only on a topology switch
@@ -107,10 +111,11 @@ JULES:
     robot_max_velocity: 2.5        # m/s
     robot_max_angular_velocity: 2.5  # rad/s
     safe_extra_data: true
-    max_geometric_deviation: 5 # Should somehow be related to the radius of the robot, I think
+    max_geometric_deviation: 2 # Should somehow be related to the radius of the robot, I think
     heartbeat_time: 2.0 # time in between which we should send a new trajectory of we did not broadcast
     consistency_enabled: true
-    consistency_on_non_guided_planner: true
+    consistency_on_non_guided_planner: false
+    subtract_consistency: false
 
 # ============================================================================
 # Joint Planning Configuration (Variant B from IJP paper)

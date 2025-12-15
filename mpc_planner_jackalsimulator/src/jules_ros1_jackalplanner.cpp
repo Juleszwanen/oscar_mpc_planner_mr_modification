@@ -94,6 +94,18 @@ void JulesJackalPlanner::applyConfiguration(const JackalPlanner::InitializationC
     _rqt_dead_man_switch = config.rqt_dead_man_switch;
     _jules_controller_deadman_switch = config.jules_controller_deadman_switch;
     _num_non_com_obj = config.num_non_com_obj;
+    
+    // Load baseline mode from CONFIG
+    if (CONFIG["baseline"] && CONFIG["baseline"]["mode"])
+    {
+        _baseline_mode = CONFIG["baseline"]["mode"].as<std::string>();
+        LOG_INFO(_ego_robot_ns + ": Baseline mode set to: " + _baseline_mode);
+    }
+    else
+    {
+        _baseline_mode = "trajectory";  // Default to full system
+        LOG_INFO(_ego_robot_ns + ": No baseline mode specified, defaulting to: " + _baseline_mode);
+    }
 }
 
 bool JulesJackalPlanner::initializeOtherRobotsAsObstacles(const std::set<std::string> &other_robot_namespaces, MPCPlanner::RealTimeData &data, const double radius)
@@ -212,6 +224,15 @@ void JulesJackalPlanner::initializeSubscribersAndPublishers(ros::NodeHandle &nh)
     _jules_controller_sub = nh.subscribe<sensor_msgs::Joy>("/joy", 1, boost::bind(&JulesJackalPlanner::julesControllerCallback, this, _1) ); 
     // Subscribe to other robots
     this->subscribeToOtherRobotTopics(nh, _other_robot_nss);
+    
+    // Subscribe to constant velocity obstacles if in baseline mode
+    if (_baseline_mode == "constant_velocity")
+    {
+        _cv_obstacle_sub = nh.subscribe<mpc_planner_msgs::ObstacleArray>(
+            "/constant_velocity_obstacles", 10,
+            boost::bind(&JulesJackalPlanner::cvObstacleCallback, this, _1));
+        LOG_INFO(_ego_robot_ns + ": Subscribed to /constant_velocity_obstacles (baseline mode)");
+    }
 
     // Output publishers
     _cmd_pub = nh.advertise<geometry_msgs::Twist>("output/command", 1);
@@ -253,7 +274,6 @@ void JulesJackalPlanner::subscribeToOtherRobotTopics(ros::NodeHandle &nh, const 
         this->_other_robot_trajectory_sub_list.push_back(sub_traject_i);
     }
 }
-
 
 void JulesJackalPlanner::loop(const ros::TimerEvent &event)
 {
@@ -403,7 +423,6 @@ void JulesJackalPlanner::loop(const ros::TimerEvent &event)
     LOG_DEBUG("============= End Loop =============");
 }
 
-
 void JulesJackalPlanner::statePoseCallback(const geometry_msgs::PoseStamped::ConstPtr &msg)
 {
     // Write planar pose directly from the encoded message fields.
@@ -474,6 +493,84 @@ void JulesJackalPlanner::pathCallback(const nav_msgs::Path::ConstPtr &msg)
 void JulesJackalPlanner::obstacleCallback(const mpc_planner_msgs::ObstacleArray::ConstPtr &msg)
 {
     return;
+    
+
+
+    
+}
+
+void JulesJackalPlanner::cvObstacleCallback(const mpc_planner_msgs::ObstacleArray::ConstPtr &msg)
+{
+    // Mimic pedestrian obstacle callback pattern: clear and repopulate each cycle
+    LOG_DEBUG(_ego_robot_ns + ": CV obstacle callback received " + std::to_string(msg->obstacles.size()) + " obstacles");
+    
+    _data.dynamic_obstacles.clear();
+
+    for (const auto &obstacle : msg->obstacles)
+    {
+        // Filter out ego robot - don't plan around yourself
+        if (obstacle.id == _ego_robot_id)
+        {
+            LOG_DEBUG_THROTTLE(2000, _ego_robot_ns + ": Filtering out ego robot (ID: " + std::to_string(_ego_robot_id) + ") from CV obstacles");
+            continue;
+        }
+        
+        // Save the obstacle (ID, position, orientation, radius)
+        _data.dynamic_obstacles.emplace_back(
+            obstacle.id,
+            Eigen::Vector2d(obstacle.pose.position.x, obstacle.pose.position.y),
+            RosTools::quaternionToAngle(obstacle.pose),
+            CONFIG["robot_radius"].as<double>());
+        
+        auto &dynamic_obstacle = _data.dynamic_obstacles.back();
+
+        // Check if predictions exist
+        if (obstacle.probabilities.size() == 0 || obstacle.gaussians.empty())
+        {
+            // No predictions - just current position (stationary assumption)
+            LOG_DEBUG_THROTTLE(4000, _ego_robot_ns + ": CV obstacle " + std::to_string(obstacle.id) + " has no predictions");
+            continue;
+        }
+
+        // Process CV prediction (expected: single mode with deterministic prediction)
+        if (obstacle.probabilities.size() == 1)
+        {
+            dynamic_obstacle.prediction = MPCPlanner::Prediction(MPCPlanner::PredictionType::DETERMINISTIC);
+            
+            const auto &mode = obstacle.gaussians[0];
+            for (size_t k = 0; k < mode.mean.poses.size(); k++)
+            {
+                // Add prediction at time step k
+                dynamic_obstacle.prediction.modes[0].emplace_back(
+                    Eigen::Vector2d(mode.mean.poses[k].pose.position.x, mode.mean.poses[k].pose.position.y),
+                    RosTools::quaternionToAngle(mode.mean.poses[k].pose.orientation),
+                    0.0,  // No uncertainty (deterministic CV)
+                    0.0);
+            }
+        }
+        else
+        {
+            LOG_WARN(_ego_robot_ns + ": CV obstacle has multiple modes, using only first mode");
+            // Handle gracefully - just use first mode
+            dynamic_obstacle.prediction = MPCPlanner::Prediction(MPCPlanner::PredictionType::DETERMINISTIC);
+            const auto &mode = obstacle.gaussians[0];
+            for (size_t k = 0; k < mode.mean.poses.size(); k++)
+            {
+                dynamic_obstacle.prediction.modes[0].emplace_back(
+                    Eigen::Vector2d(mode.mean.poses[k].pose.position.x, mode.mean.poses[k].pose.position.y),
+                    RosTools::quaternionToAngle(mode.mean.poses[k].pose.orientation),
+                    0.0, 0.0);
+            }
+        }
+    }
+
+    // Ensure we have exactly max_obstacles (add dummies if needed)
+    MPCPlanner::ensureObstacleSize(_data.dynamic_obstacles, _state);
+
+    // Notify planner that obstacle data has been updated
+    _planner->onDataReceived(_data, "dynamic obstacles");
+
+    LOG_DEBUG(_ego_robot_ns + ": CV obstacles processed: " + std::to_string(_data.dynamic_obstacles.size()) + " total");
 }
 
 void JulesJackalPlanner::julesControllerCallback(const sensor_msgs::Joy::ConstPtr &msg){
@@ -805,6 +902,25 @@ void JulesJackalPlanner::prepareObstacleData()
         LOG_ERROR(_ego_robot_ns << "Received " << _data.dynamic_obstacles.size() << "That is too much removing most distant obstacles......");
     }
 
+    // ===== BASELINE MODE HANDLING =====
+    if (_baseline_mode == "constant_velocity")
+    {
+        // In CV baseline mode, obstacles are already populated by cvObstacleCallback
+        // Just ensure correct size (add dummies if needed)
+        LOG_DEBUG(_ego_robot_ns + ": CV baseline mode - using obstacles from cvObstacleCallback");
+        // MPCPlanner::ensureObstacleSize(_data.dynamic_obstacles, _state);
+        
+        // // Notify planner (redundant with callback, but ensures consistency)
+        // _planner->onDataReceived(_data, "dynamic obstacles");
+        
+        if (CONFIG["debug_output"].as<bool>())
+        {
+            _state.print();
+        }
+        return;  // Skip trajectory-based processing
+    }
+    
+    // ===== TRAJECTORY MODE (FULL SYSTEM) =====
     // Interpolate ego's last communicated trajectory forward in time
     // This maintains what other robots believe we're doing between communications
     if (!_data.last_communicated_trajectory.positions.empty())
@@ -833,6 +949,12 @@ void JulesJackalPlanner::prepareObstacleData()
         // this->logDataState(_ego_robot_ns + ": Obstacle data prepared");
     }
 }
+
+// void JulesJackalPlanner::prepareLinearObstacleData()
+// {
+
+// }
+
 
 void JulesJackalPlanner::interpolateTrajectoryPredictionsByTime()
 {
@@ -1247,8 +1369,6 @@ void JulesJackalPlanner::publishCmdAndVisualize(const geometry_msgs::Twist &cmd,
     _planner->visualize(_state, _data);
 }
 
-
-
 // Helper: Log the decision (throttled)
 void JulesJackalPlanner::logCommunicationDecision(bool communicated, const MPCPlanner::PlannerOutput &output)
 {
@@ -1405,8 +1525,6 @@ void JulesJackalPlanner::publishMetrics(const MPCPlanner::PlannerOutput &output,
         break;
     }
 }
-
-
 
 // Helper: Extract communication decision logic
 bool JulesJackalPlanner::decideCommunication(const MPCPlanner::PlannerOutput &output)

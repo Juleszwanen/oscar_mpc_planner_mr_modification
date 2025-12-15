@@ -338,7 +338,7 @@ class MPCPlannerDashboard(Plugin):
         if trigger_type not in self._comm_scatter_artists:
             color = COMM_TRIGGER_COLORS.get(trigger_type, '#ffffff')
             # Create empty scatter, will be populated below
-            scatter = self._comm_ax.scatter([], [], c=color, s=10, label=trigger_type, alpha=0.8)
+            scatter = self._comm_ax.scatter([], [], c=color, s=5, label=trigger_type, alpha=0.8)
             self._comm_scatter_artists[trigger_type] = scatter
             need_legend_update = True
             self._comm_legend_categories.add(trigger_type)
@@ -394,7 +394,7 @@ class MPCPlannerDashboard(Plugin):
                 label = f'Topo {topology_id}'
             
             # Create empty scatter, will be populated below
-            scatter = self._topo_ax.scatter([], [], c=color, s=10, label=label, alpha=0.8)
+            scatter = self._topo_ax.scatter([], [], c=color, s=5, label=label, alpha=0.8)
             self._topo_scatter_artists[topology_id] = scatter
             need_legend_update = True
             self._topo_legend_categories.add(topology_id)

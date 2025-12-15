@@ -98,6 +98,7 @@ public:
     void poseOtherRobotCallback(const geometry_msgs::PoseStamped::ConstPtr &msg, const std::string ns);
     void trajectoryCallback(const mpc_planner_msgs::ObstacleGMM::ConstPtr &msg, const std::string ns);
     void allRobotsReachedObjectiveCallback(const std_msgs::Bool::ConstPtr &msg);
+    void cvObstacleCallback(const mpc_planner_msgs::ObstacleArray::ConstPtr &msg);  // Constant velocity baseline obstacles
     // void rqtDeadManSwitchCallback(const geometry_msgs::Twist::ConstPtr &msg);
     void julesControllerCallback(const sensor_msgs::Joy::ConstPtr &msg);
     
@@ -147,6 +148,7 @@ private:
     ros::Subscriber _all_robots_reached_objective_sub;             // Subscriber for central aggregator signal
     std::vector<ros::Subscriber> _other_robot_pose_sub_list;       // List of otherrobot pose subcribers
     std::vector<ros::Subscriber> _other_robot_trajectory_sub_list; // List of otherRobot trajectory subscribers
+    ros::Subscriber _cv_obstacle_sub;                              // Subscriber for constant velocity baseline obstacles
 
     ros::Publisher _reverse_roadmap_pub;
     ros::Publisher _cmd_pub;
@@ -180,6 +182,9 @@ private:
 
     MPCPlanner::PlannerState _current_state{MPCPlanner::PlannerState::UNINITIALIZED};
     MPCPlanner::PlannerState _previous_state{MPCPlanner::PlannerState::UNINITIALIZED};
+    
+    // Baseline mode configuration
+    std::string _baseline_mode{"trajectory"};  // "trajectory" or "constant_velocity"
     
     // Communication trigger tracking
     MPCPlanner::CommunicationTriggerReason _communication_trigger_reason{MPCPlanner::CommunicationTriggerReason::NO_COMMUNICATION};

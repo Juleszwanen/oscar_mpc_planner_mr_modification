@@ -312,12 +312,14 @@ namespace MPCPlanner
         for (auto &planner : planners_)
         {
             PROFILE_SCOPE("Guidance Constraints: Parallel Optimization");
+            LOG_INFO(_ego_robot_ns + ": [PARALLEL LOOP START] Planner ID=" + std::to_string(planner.id) + " is_original=" + std::to_string(planner.is_original_planner));
             planner.result.Reset();
             planner.disabled = false;
 
             if (planner.id >= global_guidance_->NumberOfGuidanceTrajectories()) // Only enable the solvers that are needed JULES: this means we did not find the solver for the specific homology class
             {
-                if (!planner.is_original_planner) // We still want to add the original planner!
+                // Unless it is the non-guided planner then we want it
+                if (!planner.is_original_planner)
                 {
                     planner.disabled = true;
                     continue;
@@ -383,44 +385,60 @@ namespace MPCPlanner
 
             if (planner.is_original_planner) // We did not use any guidance!
             {
+                // Default fallback values
                 planner.result.guidance_ID = 2 * global_guidance_->GetConfig()->n_paths_; // one higher than the maximum number of topology classes
                 planner.result.color = -1;
 
-                // ========== JULES: Subtract consistency cost for non-guided planner ==========
-                // This ensures fair comparison: raw cost without consistency penalty
-                if (planner.has_consistency_enabled)
+                // ========== JULES: Topology matching for non-guided planner ==========
+                // Compute this EVERY iteration (not just when selected) for consistent data logging
+                // SAFETY: Only attempt topology matching if:
+                // 1. Feature is enabled (_assign_meaningful_topology)
+                // 2. Solver succeeded (planner.result.success)
+                // 3. Solver is valid and has outputs (solver != nullptr && solver->N > 1)
+                // 4. Guidance trajectories are available (global_guidance_->NumberOfGuidanceTrajectories() > 0)
+                // CRITICAL: Cache the guidance count to avoid race condition between log call and if-condition
+                LOG_INFO(_ego_robot_ns + ": [PRE-CACHE] About to call NumberOfGuidanceTrajectories() - global_guidance_ valid=" + std::to_string(global_guidance_ != nullptr));
+                int n_guidance_trajectories = global_guidance_->NumberOfGuidanceTrajectories();
+                LOG_INFO(_ego_robot_ns + ": [POST-CACHE] Successfully cached n_guidance=" + std::to_string(n_guidance_trajectories));
+                LOG_INFO(_ego_robot_ns + ": [TOPOLOGY CHECK] Non-guided planner - assign_topology=" + std::to_string(_assign_meaningful_topology) + 
+                         " success=" + std::to_string(planner.result.success) + " solver_valid=" + std::to_string(solver != nullptr) + 
+                         " solver_N=" + (solver ? std::to_string(solver->N) : "NULL") + 
+                         " n_guidance=" + std::to_string(n_guidance_trajectories));
+                LOG_INFO(_ego_robot_ns + ": [PRE-IF] About to evaluate if-condition");
+                if (_assign_meaningful_topology && 
+                    planner.result.success && 
+                    solver != nullptr && 
+                    solver->N > 1 && 
+                    n_guidance_trajectories > 0)
                 {
-                    double consistency_cost = calculateConsistencyCostForSolver(planner.local_solver);
-                    planner.result.objective -= consistency_cost;
-                    
-                    LOG_DEBUG(_ego_robot_ns + ": Planner [" << planner.id << "] (non-guided)"
-                              << " | raw=" << solver->_info.pobj
-                              << " | consistency=" << consistency_cost
-                              << " | fair=" << planner.result.objective);
+                    LOG_INFO(_ego_robot_ns + ": [TOPOLOGY MATCHING START] Calling attemptTopologyMatchingForNonGuidedPlanner");
+                    attemptTopologyMatchingForNonGuidedPlanner(planner, solver);
+                    LOG_INFO(_ego_robot_ns + ": [TOPOLOGY MATCHING END] Completed successfully");
                 }
-                // =============================================================================
+                else
+                {
+                    LOG_INFO(_ego_robot_ns + ": [TOPOLOGY MATCH SKIPPED] Condition not met (likely n_guidance=" + std::to_string(n_guidance_trajectories) + ")");
+                }
+                // =====================================================================
+
+                
             }
             else
             {
+                // CRITICAL SAFETY CHECK: Ensure guidance trajectory exists before accessing
+                // This prevents segfault when guidance planner hasn't found trajectories yet
+                if (planner.id >= global_guidance_->NumberOfGuidanceTrajectories())
+                {
+                    LOG_WARN(_ego_robot_ns + ": Planner " << planner.id << " disabled - guidance trajectory doesn't exist (only " 
+                             << global_guidance_->NumberOfGuidanceTrajectories() << " trajectories available)");
+                    planner.disabled = true;
+                    planner.result.success = false;
+                    continue; // Skip this planner
+                }
+                
                 auto &guidance_trajectory = global_guidance_->GetGuidanceTrajectory(planner.id); // planner.local_solver->_solver_id);
                 planner.result.guidance_ID = guidance_trajectory.topology_class;                 // We were using this guidance
                 planner.result.color = guidance_trajectory.color_;                               // A color index to visualize with
-
-                // ========== JULES: Subtract consistency cost BEFORE selection_weight ==========
-                // This ensures selection_weight_consistency_ is applied to fair cost (C1)
-                // Result: selection_weight_consistency_ * C1 (not selection_weight * (C1 + C2))
-                if (planner.has_consistency_enabled)
-                {
-                    double consistency_cost = calculateConsistencyCostForSolver(planner.local_solver);
-                    planner.result.objective -= consistency_cost;
-                    
-                    LOG_DEBUG(_ego_robot_ns + ": Planner [" << planner.id << "] (guided, topology=" << planner.result.guidance_ID << ")"
-                              << " | raw=" << solver->_info.pobj
-                              << " | consistency=" << consistency_cost
-                              << " | fair=" << planner.result.objective);
-                    
-                }
-                // ==============================================================================
 
                 if (guidance_trajectory.previously_selected_) // Prefer the selected trajectory
                     planner.result.objective *= global_guidance_->GetConfig()->selection_weight_consistency_;
@@ -428,10 +446,10 @@ namespace MPCPlanner
         }
 
         omp_set_dynamic(1);
-
+        // DECISION MAKING
         {
             PROFILE_SCOPE("Decision");
-            // DECISION MAKING
+            
             best_planner_index_ = FindBestPlanner();
             if (best_planner_index_ == -1)
             {
@@ -439,9 +457,7 @@ namespace MPCPlanner
                 
                 // ========== JULES: Reset consistency tracking when all solvers fail ==========
                 // We have no valid trajectory or topology to track
-                _has_previous_trajectory = false;
-                _prev_selected_topology_id = -1;
-                _prev_was_original_planner = false;
+                resetConsistencyParameters();
                 LOG_DEBUG(_ego_robot_ns + ": All solvers infeasible - resetting consistency tracking");
                 // =============================================================================
                 
@@ -452,62 +468,26 @@ namespace MPCPlanner
             auto &best_solver = best_planner.local_solver;
             // LOG_INFO("Best Planner ID: " << best_planner.id);
             
-            // ========== JULES: Track non-guided topology mapping for data logging ==========
-            // Start each decision with TOPOLOGY_NOT_SELECTED (default: not the best planner)
-            // Will be updated to TOPOLOGY_NO_MATCH if selected but no match found
-            // Or updated to actual topology ID (0-7) if selected and matched
-            _non_guided_toplogy_id = TOPOLOGY_NOT_SELECTED;
-            // ================================================================================
-            
-            /** @note Jules: This is what you added to the planner to find the topology of the non guided planner whenever the is_original_planner is chosen */
-            /** we only match it when it is the best planner */ 
-            if (best_planner.is_original_planner && _assign_meaningful_topology)
+            // ========== JULES: Store topology mapping for data logging ==========
+            // Topology matching was already computed in the parallel loop above
+            // Here we just extract it for data logging purposes
+            if (best_planner.is_original_planner)
             {
-                if (global_guidance_->NumberOfGuidanceTrajectories() > 0)
-                {
-                    LOG_DEBUG("Assigning meaningful topology ID to non-guided trajectory");
-
-                    try
-                    {
-                        GuidancePlanner::GeometricPath mpc_path = convertMPCTrajectoryToGeometricPath(best_solver);
-
-                        int meaningful_topology_id = global_guidance_->FindTopologyClassForPath(mpc_path, _ego_robot_ns);
-
-                        if (meaningful_topology_id != TOPOLOGY_NO_MATCH)
-                        {
-                            // Override the default fallback ID with the meaningful one
-                            best_planner.result.guidance_ID = meaningful_topology_id;
-                            
-                            // Store the matched topology ID for data logging
-                            _non_guided_toplogy_id = meaningful_topology_id;
-                            
-                            // Assign the matching guidance trajectory's color
-                            assignColorToNonGuidedPlanner(best_planner, meaningful_topology_id);
-                        }
-                        else
-                        {
-                            // Non-guided was selected but matching failed
-                            _non_guided_toplogy_id = TOPOLOGY_NO_MATCH;
-                            
-                            LOG_DEBUG_THROTTLE(5000, "NON-GUIDED PLANNER SELECTED AS BEST PLANNER| Topology match FAILED - TOPOLOGY SWITCH detected | Fallback ID: "
-                                                        << best_planner.result.guidance_ID << " | Visualization: Dark red elevated");
-                        }
-                    }
-                    catch (const std::exception &e)
-                    {
-                        // Non-guided was selected but exception occurred during matching
-                        _non_guided_toplogy_id = TOPOLOGY_NO_MATCH;
-                        
-                        LOG_ERROR("Exception during topology assignment: " << e.what()
-                                                                           << ", keeping fallback ID: " << best_planner.result.guidance_ID);
-                    }
-                }
-                else
-                {
-                    LOG_ERROR(_ego_robot_ns + "...No guidance trajectories available for topology comparison");
-                    // _non_guided_toplogy_id already set to TOPOLOGY_NO_MATCH above
-                }
+                // Use the pre-computed guidance_ID from the parallel loop
+                // This will be either:
+                // - A matched topology ID (0-7) if matching succeeded
+                // - 2*n_paths (fallback) if matching wasn't attempted or failed
+                _non_guided_toplogy_id = best_planner.result.guidance_ID;
+                
+                LOG_DEBUG(_ego_robot_ns + ": Non-guided planner selected | Topology ID: " 
+                          << _non_guided_toplogy_id);
             }
+            else
+            {
+                // Guided planner was selected - not relevant for non-guided topology tracking
+                _non_guided_toplogy_id = TOPOLOGY_NOT_SELECTED;
+            }
+            // ====================================================================
 
             // Communicate to the guidance which topology class we follow (none if it was the original planner)
             // Determine if we should clear the selection
@@ -515,14 +495,27 @@ namespace MPCPlanner
 
             if (CONFIG["JULES"]["override_selected_traject_of_topology_non_guided"].as<bool>())
             {
-                // Feature enabled: Clear only if non-guided planner didn't match any topology
+                // Feature enabled: Allow topology consistency when non-guided matches a topology
+                // The topology matching already verified this topology exists, so we can safely use it
                 bool non_guided_matched = (best_planner.result.guidance_ID != (2 * global_guidance_->GetConfig()->n_paths_));
-                clear_selection = best_planner.is_original_planner && !non_guided_matched;
+                
+                if (best_planner.is_original_planner && non_guided_matched)
+                {
+                    // Non-guided matched an existing topology - don't clear selection
+                    // This marks the topology as selected for next iteration (consistency bonus)
+                    clear_selection = false;
+                    
+                    LOG_DEBUG(_ego_robot_ns + ": Non-guided planner matched topology " 
+                              << best_planner.result.guidance_ID 
+                              << " - marking as selected for next iteration (topology consistency)");
+                }
             }
 
             // original line
             // global_guidance_->OverrideSelectedTrajectory(best_planner.result.guidance_ID, best_planner.is_original_planner);
             // Single call to OverrideSelectedTrajectory
+            // When clear_selection=false, this marks the topology as selected
+            // This gives it a consistency bonus (selection_weight_consistency_) in next iteration
             global_guidance_->OverrideSelectedTrajectory(best_planner.result.guidance_ID, clear_selection);
 
             _solver->_output = best_solver->_output; // Load the solution into the main lmpcc solver
@@ -558,7 +551,34 @@ namespace MPCPlanner
             // This enables consistency tracking across iterations
             storePreviousTrajectoryFromSolver(best_solver);
             _prev_selected_topology_id = best_planner.result.guidance_ID;
-            _prev_was_original_planner = best_planner.is_original_planner;
+            
+            // CRITICAL: Determine if we should treat this as "guided" for consistency purposes
+            // If non-guided planner matched a valid topology, treat it as guided for next iteration
+            // This allows guided planners with the same topology to get consistency bonus
+            if (best_planner.is_original_planner)
+            {
+                // Check if non-guided matched a valid topology (not the fallback value)
+                bool matched_topology = (best_planner.result.guidance_ID != (2 * global_guidance_->GetConfig()->n_paths_));
+                
+                if (matched_topology)
+                {
+                    // Non-guided matched a topology → treat as guided for consistency
+                    // This gives guided planners with the same topology a consistency bonus next iteration
+                    _prev_was_original_planner = false;
+                    LOG_DEBUG(_ego_robot_ns + ": Non-guided matched topology " << best_planner.result.guidance_ID 
+                              << " - treating as guided for consistency tracking");
+                }
+                else
+                {
+                    // Non-guided didn't match any topology → stay as non-guided
+                    _prev_was_original_planner = true;
+                }
+            }
+            else
+            {
+                // Guided planner selected → straightforward
+                _prev_was_original_planner = false;
+            }
             // ==================================================================================
 
             return best_planner.result.exit_code; // Return its exit code
@@ -568,6 +588,17 @@ namespace MPCPlanner
     void GuidanceConstraints::initializeSolverWithGuidance(LocalPlanner &planner)
     {
         auto &solver = planner.local_solver;
+
+        // CRITICAL SAFETY CHECK: Verify guidance trajectory exists before accessing
+        // This prevents segfault when guidance planner hasn't found trajectories yet
+        if (planner.id >= global_guidance_->NumberOfGuidanceTrajectories())
+        {
+            LOG_ERROR(_ego_robot_ns + ": Cannot initialize planner " << planner.id 
+                      << " with guidance - trajectory doesn't exist (only " 
+                      << global_guidance_->NumberOfGuidanceTrajectories() << " available)");
+            // Cannot warmstart with non-existent guidance - solver will use default initialization
+            return;
+        }
 
         // // Initialize the solver with the guidance trajectory
         // RosTools::CubicSpline2D<tk::spline> &trajectory_spline = global_guidance_->GetGuidanceTrajectory(solver->_solver_id).spline.GetTrajectory();
@@ -619,6 +650,8 @@ namespace MPCPlanner
         PROFILE_SCOPE("GuidanceConstraints::Visualize");
         LOG_MARK("Guidance Constraints: Visualize()");
 
+        
+
         // global_guidance_->Visualize(highlight_selected_guidance_, visualized_guidance_trajectory_nr_);
         if (!(_use_tmpcpp && global_guidance_->GetConfig()->n_paths_ == 0)) // If global guidance
             // Jules: visualize if we got more than 0 guidance trajectories and when we set _use_tmpcpp = true, -1 show all topology alternatives
@@ -656,7 +689,7 @@ namespace MPCPlanner
 
                 if ((int)i == best_planner_index_)
                 {
-                    // CASE 1: This is THE SELECTED trajectory (will be executed)
+                    // CASE 1: This is THE SELECTED trajectory (will be executed) -> -1 color
                     visualizeTrajectory(trajectory, _name + "/optimized_trajectories", false, 1.0, -1, 12, true, false);
 
                     /** @note Jules: you implemented this to make the non-guided more visible */
@@ -684,8 +717,12 @@ namespace MPCPlanner
                 else if (planner.is_original_planner)
                 {
                     // CASE 2: This is the NON-GUIDED planner (T-MPC++), but NOT selected
-                    // Use topology color if matched, otherwise black (-2 indicates black in visualization)
-                    int viz_color = (planner.result.color == -1) ? -2 : planner.result.color;
+                    // Color mapping: -1 → black (-2), -3 → gray (keep -3), otherwise use topology color
+                    int viz_color = planner.result.color;
+                    if (planner.result.color == -1) {
+                        viz_color = -2;  // Black for fallback when no topology matching attempted
+                    }
+                    // Note: -3 (gray) is passed through directly for visualization
                     visualizeTrajectory(trajectory, _name + "/optimized_trajectories", false, 1.0, viz_color, global_guidance_->GetConfig()->n_paths_, true, false);
 
                     /** @note Jules: you implemented this to make the non-guided more visible */
@@ -706,7 +743,14 @@ namespace MPCPlanner
                         }
                         marker_pub.publish();
 
-                        std::string color_desc = (planner.result.color == -1) ? "BLACK" : "Topology color " + std::to_string(planner.result.color);
+                        std::string color_desc;
+                        if (planner.result.color == -1) {
+                            color_desc = "BLACK";
+                        } else if (planner.result.color == -3) {
+                            color_desc = "GRAY";
+                        } else {
+                            color_desc = "Topology color " + std::to_string(planner.result.color);
+                        }
                         LOG_DEBUG(_ego_robot_ns + ": NON-GUIDED PLANNER (not selected) | Topology ID: " << planner.result.guidance_ID
                                                                                                         << " | Visualization: " << color_desc << " path + CYAN SPHERES");
                     }
@@ -720,9 +764,193 @@ namespace MPCPlanner
         }
 
         {
+            // here the publish() is called 
             VISUALS.getPublisher(_name + "/optimized_trajectories").publish();
             if (CONFIG["debug_visuals"].as<bool>())
                 VISUALS.getPublisher(_name + "/warmstart_trajectories").publish();
+        }
+
+
+        // ========== JULES: Visualize topology matching for non-guided planner ==========
+        // Show topology matching visualization whenever non-guided planner has a feasible solution and the number of guidance_traj
+        // This happens every iteration (not just when selected) for consistent debugging
+        // bool should_visualize_topology = false;
+        // std::shared_ptr<Solver> non_guided_solver = nullptr;
+        
+        // for (auto &planner : planners_)
+        // {
+        //     // SAFETY: Only visualize if solver succeeded AND is valid
+        //     if (planner.is_original_planner && 
+        //         planner.result.success && 
+        //         !planner.disabled && 
+        //         planner.local_solver != nullptr && 
+        //         planner.local_solver->N > 1)
+        //     {
+        //         should_visualize_topology = true;
+        //         non_guided_solver = planner.local_solver;
+        //         break;
+        //     }
+        // }
+        
+        // if (should_visualize_topology && non_guided_solver != nullptr)
+        // {
+        //     // Topology matching was already computed in optimize(), just visualize the result
+        //     visualizeTopologyMatchingFromResult(non_guided_solver);
+        // }
+        // else
+        // {
+        //     // Clear visualization when non-guided planner is disabled or infeasible
+        //     VISUALS.getPublisher(_name + "/mpc_geometric_path").publish();
+        //     VISUALS.getPublisher(_name + "/matched_topology").publish();
+        //     VISUALS.getPublisher(_name + "/topology_mismatch").publish();
+        //     VISUALS.getPublisher(_name + "/all_topologies_labeled").publish();
+        // }
+        // ================================================================================
+    }
+
+    void GuidanceConstraints::visualizeTopologyMatchingFromResult(const std::shared_ptr<Solver> non_guided_solver)
+    {
+        // Check if visualization is enabled
+        bool viz_enabled = false;
+        try {
+            viz_enabled = CONFIG["JULES"]["visualize_topology_matching"].as<bool>();
+        } catch (...) {
+            return; // Config not found, visualization disabled
+        }
+        
+        if (!viz_enabled)
+            return;
+
+        // Find the non-guided planner to get its pre-computed topology result
+        int meaningful_topology_id = TOPOLOGY_NO_MATCH;
+        LOG_INFO(_ego_robot_ns + ": [VIS SEARCH] Searching for non-guided planner result");
+        for (auto &planner : planners_)
+        {
+            LOG_INFO(_ego_robot_ns + ": [VIS SEARCH ITER] Planner ID=" + std::to_string(planner.id) + 
+                     " is_original=" + std::to_string(planner.is_original_planner) + 
+                     " success=" + std::to_string(planner.result.success));
+            if (planner.is_original_planner && planner.result.success)
+            {
+                meaningful_topology_id = planner.result.guidance_ID;
+                break;
+            }
+        }
+
+        // ========== Step 1: Visualize the MPC trajectory (yellow/gold) ==========
+        {
+            auto &mpc_path_vis = VISUALS.getPublisher(_name + "/non_gd_mpc_geometric_path");
+            RosTools::ROSLine &mpc_line = mpc_path_vis.getNewLine();
+            mpc_line.setColor(1.0, 1.0, 0.0, 1.0); // Bright yellow
+            mpc_line.setScale(0.08); // Thicker than normal
+            
+            // Draw lines connecting trajectory points
+            for (int k = 1; k < non_guided_solver->N; k++)
+            {
+                Eigen::Vector3d p1(non_guided_solver->getOutput(k-1, "x"),
+                                  non_guided_solver->getOutput(k-1, "y"),
+                                  0.1);
+                Eigen::Vector3d p2(non_guided_solver->getOutput(k, "x"),
+                                  non_guided_solver->getOutput(k, "y"),
+                                  0.1);
+                mpc_line.addLine(p1, p2);
+            }
+            
+            mpc_path_vis.publish();
+            LOG_DEBUG(_ego_robot_ns + ": Visualized MPC trajectory (yellow)");
+        }
+
+       
+        
+        // Check if we matched a valid topology (not the fallback value)
+        bool matched = (meaningful_topology_id != TOPOLOGY_NO_MATCH && 
+                       meaningful_topology_id != 2 * global_guidance_->GetConfig()->n_paths_);
+        
+        if (matched)
+        {
+            // SUCCESS: Find and highlight the matched guidance trajectory
+            // Delete the stale topology
+             VISUALS.getPublisher(_name + "/topology_mismatch").publish();
+            auto &match_vis = VISUALS.getPublisher(_name + "/matched_topology");
+            
+            for (int i = 0; i < global_guidance_->NumberOfGuidanceTrajectories(); i++)
+            {
+                auto &guidance_traj = global_guidance_->GetGuidanceTrajectory(i);
+                if (guidance_traj.topology_class == meaningful_topology_id)
+                {
+                    // Add large green spheres along the matched guidance trajectory
+                    auto &spheres = match_vis.getNewPointMarker("SPHERE");
+                    spheres.setColor(0.0, 1.0, 0.0, 0.8); // Green = success
+                    spheres.setScale(0.2, 0.2, 0.2);
+                    
+                    auto &samples = guidance_traj.spline.GetSamples();
+                    for (size_t j = 0; j < samples.size(); j += 3) // Every 3rd point
+                    {
+                        spheres.addPointMarker(samples[j]);
+                    }
+                    
+                    match_vis.publish();
+                    LOG_DEBUG(_ego_robot_ns + ": Topology match SUCCESS - Highlighted topology " 
+                             << meaningful_topology_id << " with GREEN spheres");
+                    break;
+                }
+            }
+        }
+        else
+        {
+            // we should delete the matching info topology info
+            VISUALS.getPublisher(_name + "/matched_topology").publish();
+            // FAILURE: Show red markers to indicate no match found
+            auto &fail_vis = VISUALS.getPublisher(_name + "/topology_mismatch");
+            
+            
+            // Draw RED cube markers along the non-guided trajectory
+            auto &cubes = fail_vis.getNewPointMarker("CUBE");
+            cubes.setColor(1.0, 0.0, 0.0, 0.9); // Red = failure
+            cubes.setScale(0.2, 0.2, 0.2);
+            
+            for (int k = 0; k < non_guided_solver->N; k += 4)
+            {
+                Eigen::Vector3d point(non_guided_solver->getOutput(k, "x"),
+                                     non_guided_solver->getOutput(k, "y"),
+                                     0.15); // Elevated to stand out
+                cubes.addPointMarker(point);
+            }
+            
+            fail_vis.publish();
+            LOG_DEBUG(_ego_robot_ns + ": Topology match FAILED - Marked non-guided trajectory with RED cubes");
+        }
+
+        // ========== Step 3: Visualize all guidance trajectories with text labels ==========
+        {
+            auto &all_guidance_vis = VISUALS.getPublisher(_name + "/all_topologies_labeled");
+            RosTools::ROSTextMarker text_marker = all_guidance_vis.getNewTextMarker();
+            text_marker.setScale(0.5);
+            
+            for (int i = 0; i < global_guidance_->NumberOfGuidanceTrajectories(); i++)
+            {
+                auto &guidance_traj = global_guidance_->GetGuidanceTrajectory(i);
+                auto &samples = guidance_traj.spline.GetSamples();
+                
+                if (!samples.empty())
+                {
+                    // Place text label at the midpoint of trajectory
+                    Eigen::Vector3d mid_point = samples[samples.size() / 2];
+                    mid_point(2) += 0.3; // Elevate text above trajectory
+                    
+                    std::string label = "T" + std::to_string(guidance_traj.topology_class);
+                    if (guidance_traj.topology_class == meaningful_topology_id && matched)
+                        label += " (MATCHED)";
+                    
+                    // Set text content and color, then add marker at position
+                    text_marker.setText(label);
+                    text_marker.setColorInt(guidance_traj.color_, global_guidance_->GetConfig()->n_paths_, 1.0);
+                    text_marker.addPointMarker(mid_point);
+                }
+            }
+            
+            all_guidance_vis.publish();
+            LOG_DEBUG(_ego_robot_ns + ": Labeled all " << global_guidance_->NumberOfGuidanceTrajectories() 
+                      << " guidance trajectories");
         }
     }
 
@@ -815,6 +1043,7 @@ namespace MPCPlanner
         
         LOG_DEBUG(_ego_robot_ns + ": Reset consistency parameters");
     }
+
     void GuidanceConstraints::saveData(RosTools::DataSaver &data_saver)
     {
         data_saver.AddData("runtime_guidance", global_guidance_->GetLastRuntime());
@@ -853,13 +1082,60 @@ namespace MPCPlanner
 
         data_saver.AddData("gmpcc_objective", best_objective);
         // Save the isolated consistency cost
-        data_saver.AddData("jules_consistency_cost", _consistency_cost);
+        // data_saver.AddData("jules_consistency_cost", _consistency_cost);
         data_saver.AddData("jules_non_guided_mapped_topology", _non_guided_toplogy_id);
         global_guidance_->saveData(data_saver); // Save data from the guidance planner
     }
 
+    void GuidanceConstraints::attemptTopologyMatchingForNonGuidedPlanner(LocalPlanner& planner, std::shared_ptr<Solver> solver)
+    {
+        LOG_INFO(_ego_robot_ns + ": [FUNC ENTRY] attemptTopologyMatchingForNonGuidedPlanner - solver=" + 
+                 (solver ? "VALID" : "NULL") + " N=" + (solver ? std::to_string(solver->N) : "0"));
+        try
+        {
+            LOG_INFO(_ego_robot_ns + ": [CONVERT CALL] About to call convertMPCTrajectoryToGeometricPath");
+            GuidancePlanner::GeometricPath mpc_path = convertMPCTrajectoryToGeometricPath(solver);
+            LOG_INFO(_ego_robot_ns + ": [CONVERT DONE] convertMPCTrajectoryToGeometricPath returned successfully");
+            int meaningful_topology_id = global_guidance_->FindTopologyClassForPath(mpc_path, _ego_robot_ns);
+
+            if (meaningful_topology_id != TOPOLOGY_NO_MATCH)
+            {
+
+                // Successfully matched to a guidance topology
+                planner.result.guidance_ID = meaningful_topology_id;
+                
+                // Use helper function to assign color (handles case where color lookup fails)
+                assignColorToNonGuidedPlanner(planner, meaningful_topology_id);
+                
+                LOG_DEBUG_THROTTLE(5000, _ego_robot_ns + ": Non-guided matched topology " 
+                                 << meaningful_topology_id << " (color: " << planner.result.color << ")");
+            }
+            else
+            {
+                // Matching failed - keep fallback values
+                LOG_DEBUG_THROTTLE(5000, _ego_robot_ns + ": Non-guided topology matching FAILED");
+            }
+        }
+        catch (const std::exception &e)
+
+        {
+            LOG_ERROR(_ego_robot_ns + ": Exception during topology matching: " << e.what());
+            // Keep fallback values
+        }
+    }
+
     GuidancePlanner::GeometricPath GuidanceConstraints::convertMPCTrajectoryToGeometricPath(std::shared_ptr<Solver> solver, GuidancePlanner::NodeType node_type)
     {
+        LOG_INFO(_ego_robot_ns + ": [CONVERT FUNC ENTRY] convertMPCTrajectoryToGeometricPath - solver=" + 
+                 (solver ? "VALID" : "NULL") + " N=" + (solver ? std::to_string(solver->N) : "0"));
+        // SAFETY: Validate solver before accessing outputs
+        if (!solver || solver->N <= 1)
+        {
+            LOG_ERROR(_ego_robot_ns + ": Cannot convert MPC trajectory - solver is null or has insufficient horizon (N=" 
+                      + std::to_string(solver ? solver->N : 0) + ")");
+            return GuidancePlanner::GeometricPath();
+        }
+
         // Clear any previous temporary nodes to avoid memory issues
         mpc_trajectory_nodes_.clear();
 
@@ -869,11 +1145,24 @@ namespace MPCPlanner
 
         // Create nodes for each MPC trajectory point
         // Starting from k=0 to include the current state
+        LOG_INFO(_ego_robot_ns + ": [CONVERT LOOP START] Creating nodes for N=" + std::to_string(solver->N));
         for (int k = 0; k < solver->N; k++)
         {
+            LOG_INFO(_ego_robot_ns + ": [CONVERT LOOP ITER] k=" + std::to_string(k) + " about to access solver outputs");
+            // SAFETY: Bounds check before accessing solver outputs
+            if (k < 0 || k >= solver->N)
+            {
+                LOG_ERROR(_ego_robot_ns + ": Index out of bounds in convertMPCTrajectoryToGeometricPath (k=" 
+                          + std::to_string(k) + ", N=" + std::to_string(solver->N) + ")");
+                break;
+            }
+
             // Extract position from MPC solver output
+            LOG_INFO(_ego_robot_ns + ": [GETOUTPUT CALL] k=" + std::to_string(k) + " calling solver->getOutput(k, 'x')");
             double x = solver->getOutput(k, "x");
+            LOG_INFO(_ego_robot_ns + ": [GETOUTPUT CALL] k=" + std::to_string(k) + " calling solver->getOutput(k, 'y')");
             double y = solver->getOutput(k, "y");
+            LOG_INFO(_ego_robot_ns + ": [GETOUTPUT DONE] k=" + std::to_string(k) + " x=" + std::to_string(x) + " y=" + std::to_string(y));
 
             // Create SpaceTimePoint with discrete time index k
             // CRITICAL: Use discrete time index k (NOT k*dt)
@@ -918,8 +1207,14 @@ namespace MPCPlanner
         return mpc_path;
     }
 
-    void GuidanceConstraints::assignColorToNonGuidedPlanner(LocalPlanner& best_planner, int meaningful_topology_id)
+    void GuidanceConstraints::assignColorToNonGuidedPlanner(LocalPlanner& best_matched_planner, int meaningful_topology_id)
     {
+
+        // -1: Black (when topology matching not attempted)
+        // -2: Black visualization fallback
+        // -3: Gray (when topology matched but color lookup failed)
+        // 0+: Actual topology colors
+
         bool color_found = false;
         
         // Search through all guidance trajectories to find the matching topology
@@ -929,12 +1224,12 @@ namespace MPCPlanner
             if (guidance_traj.topology_class == meaningful_topology_id)
             {
                 // Found matching topology - assign its color
-                best_planner.result.color = guidance_traj.color_;
+                best_matched_planner.result.color = guidance_traj.color_;
                 color_found = true;
                 
                 LOG_DEBUG_THROTTLE(5000, _ego_robot_ns + " NON-GUIDED PLANNER → Topology match SUCCESS"
                                         << " | ID: " << meaningful_topology_id
-                                        << " | Color: " << best_planner.result.color
+                                        << " | Color: " << best_matched_planner.result.color
                                         << " | Visualization: Colored by topology (same as guided)");
                 break;
             }
@@ -942,11 +1237,11 @@ namespace MPCPlanner
         
         if (!color_found)
         {
-            // Fallback: Use -1 (dark red elevated) if no matching color found
-            best_planner.result.color = -1;
+            // Fallback: Use -3 (gray) if no matching color found
+            best_matched_planner.result.color = -3;
             LOG_WARN_THROTTLE(5000, _ego_robot_ns + " NON-GUIDED PLANNER → Topology matched ID " 
                                    << meaningful_topology_id 
-                                   << " but no guidance trajectory found with this ID. Using fallback color.");
+                                   << " but no guidance trajectory found with this ID. Using fallback color (gray).");
         }
     }
 
@@ -1067,6 +1362,7 @@ namespace MPCPlanner
         
         if (planner.has_consistency_enabled && is_valid_stage)
         {
+            // Full consistency weight for matching topology
             weight = CONFIG["weights"]["consistency"].as<double>();
             // Use the TIME-INTERPOLATED trajectory (computed in interpolatePrevTrajectoryByElapsedTime)
             prev_x = _interpolated_prev_trajectory[k](0);
