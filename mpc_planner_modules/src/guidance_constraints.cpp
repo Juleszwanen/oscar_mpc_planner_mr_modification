@@ -312,7 +312,6 @@ namespace MPCPlanner
         for (auto &planner : planners_)
         {
             PROFILE_SCOPE("Guidance Constraints: Parallel Optimization");
-            LOG_INFO(_ego_robot_ns + ": [PARALLEL LOOP START] Planner ID=" + std::to_string(planner.id) + " is_original=" + std::to_string(planner.is_original_planner));
             planner.result.Reset();
             planner.disabled = false;
 
@@ -396,28 +395,13 @@ namespace MPCPlanner
                 // 2. Solver succeeded (planner.result.success)
                 // 3. Solver is valid and has outputs (solver != nullptr && solver->N > 1)
                 // 4. Guidance trajectories are available (global_guidance_->NumberOfGuidanceTrajectories() > 0)
-                // CRITICAL: Cache the guidance count to avoid race condition between log call and if-condition
-                LOG_INFO(_ego_robot_ns + ": [PRE-CACHE] About to call NumberOfGuidanceTrajectories() - global_guidance_ valid=" + std::to_string(global_guidance_ != nullptr));
-                int n_guidance_trajectories = global_guidance_->NumberOfGuidanceTrajectories();
-                LOG_INFO(_ego_robot_ns + ": [POST-CACHE] Successfully cached n_guidance=" + std::to_string(n_guidance_trajectories));
-                LOG_INFO(_ego_robot_ns + ": [TOPOLOGY CHECK] Non-guided planner - assign_topology=" + std::to_string(_assign_meaningful_topology) + 
-                         " success=" + std::to_string(planner.result.success) + " solver_valid=" + std::to_string(solver != nullptr) + 
-                         " solver_N=" + (solver ? std::to_string(solver->N) : "NULL") + 
-                         " n_guidance=" + std::to_string(n_guidance_trajectories));
-                LOG_INFO(_ego_robot_ns + ": [PRE-IF] About to evaluate if-condition");
                 if (_assign_meaningful_topology && 
                     planner.result.success && 
                     solver != nullptr && 
                     solver->N > 1 && 
-                    n_guidance_trajectories > 0)
+                    global_guidance_->NumberOfGuidanceTrajectories() > 0)
                 {
-                    LOG_INFO(_ego_robot_ns + ": [TOPOLOGY MATCHING START] Calling attemptTopologyMatchingForNonGuidedPlanner");
                     attemptTopologyMatchingForNonGuidedPlanner(planner, solver);
-                    LOG_INFO(_ego_robot_ns + ": [TOPOLOGY MATCHING END] Completed successfully");
-                }
-                else
-                {
-                    LOG_INFO(_ego_robot_ns + ": [TOPOLOGY MATCH SKIPPED] Condition not met (likely n_guidance=" + std::to_string(n_guidance_trajectories) + ")");
                 }
                 // =====================================================================
 
@@ -823,12 +807,8 @@ namespace MPCPlanner
 
         // Find the non-guided planner to get its pre-computed topology result
         int meaningful_topology_id = TOPOLOGY_NO_MATCH;
-        LOG_INFO(_ego_robot_ns + ": [VIS SEARCH] Searching for non-guided planner result");
         for (auto &planner : planners_)
         {
-            LOG_INFO(_ego_robot_ns + ": [VIS SEARCH ITER] Planner ID=" + std::to_string(planner.id) + 
-                     " is_original=" + std::to_string(planner.is_original_planner) + 
-                     " success=" + std::to_string(planner.result.success));
             if (planner.is_original_planner && planner.result.success)
             {
                 meaningful_topology_id = planner.result.guidance_ID;
@@ -1089,13 +1069,9 @@ namespace MPCPlanner
 
     void GuidanceConstraints::attemptTopologyMatchingForNonGuidedPlanner(LocalPlanner& planner, std::shared_ptr<Solver> solver)
     {
-        LOG_INFO(_ego_robot_ns + ": [FUNC ENTRY] attemptTopologyMatchingForNonGuidedPlanner - solver=" + 
-                 (solver ? "VALID" : "NULL") + " N=" + (solver ? std::to_string(solver->N) : "0"));
         try
         {
-            LOG_INFO(_ego_robot_ns + ": [CONVERT CALL] About to call convertMPCTrajectoryToGeometricPath");
             GuidancePlanner::GeometricPath mpc_path = convertMPCTrajectoryToGeometricPath(solver);
-            LOG_INFO(_ego_robot_ns + ": [CONVERT DONE] convertMPCTrajectoryToGeometricPath returned successfully");
             int meaningful_topology_id = global_guidance_->FindTopologyClassForPath(mpc_path, _ego_robot_ns);
 
             if (meaningful_topology_id != TOPOLOGY_NO_MATCH)
@@ -1126,8 +1102,6 @@ namespace MPCPlanner
 
     GuidancePlanner::GeometricPath GuidanceConstraints::convertMPCTrajectoryToGeometricPath(std::shared_ptr<Solver> solver, GuidancePlanner::NodeType node_type)
     {
-        LOG_INFO(_ego_robot_ns + ": [CONVERT FUNC ENTRY] convertMPCTrajectoryToGeometricPath - solver=" + 
-                 (solver ? "VALID" : "NULL") + " N=" + (solver ? std::to_string(solver->N) : "0"));
         // SAFETY: Validate solver before accessing outputs
         if (!solver || solver->N <= 1)
         {
@@ -1145,10 +1119,8 @@ namespace MPCPlanner
 
         // Create nodes for each MPC trajectory point
         // Starting from k=0 to include the current state
-        LOG_INFO(_ego_robot_ns + ": [CONVERT LOOP START] Creating nodes for N=" + std::to_string(solver->N));
         for (int k = 0; k < solver->N; k++)
         {
-            LOG_INFO(_ego_robot_ns + ": [CONVERT LOOP ITER] k=" + std::to_string(k) + " about to access solver outputs");
             // SAFETY: Bounds check before accessing solver outputs
             if (k < 0 || k >= solver->N)
             {
@@ -1158,11 +1130,8 @@ namespace MPCPlanner
             }
 
             // Extract position from MPC solver output
-            LOG_INFO(_ego_robot_ns + ": [GETOUTPUT CALL] k=" + std::to_string(k) + " calling solver->getOutput(k, 'x')");
             double x = solver->getOutput(k, "x");
-            LOG_INFO(_ego_robot_ns + ": [GETOUTPUT CALL] k=" + std::to_string(k) + " calling solver->getOutput(k, 'y')");
             double y = solver->getOutput(k, "y");
-            LOG_INFO(_ego_robot_ns + ": [GETOUTPUT DONE] k=" + std::to_string(k) + " x=" + std::to_string(x) + " y=" + std::to_string(y));
 
             // Create SpaceTimePoint with discrete time index k
             // CRITICAL: Use discrete time index k (NOT k*dt)
@@ -1254,7 +1223,7 @@ namespace MPCPlanner
     void GuidanceConstraints::initializeConsistencyTracking()
     {
         // Check if the solver has consistency parameters available AND config enables it
-        bool explict_config_enabled = CONFIG["JULES"]["consistency_enabled"].as<bool>(false);
+        bool explict_config_enabled = CONFIG["JULES"]["consistency_enabled"].as<bool>();
         if(!explict_config_enabled) {
             LOG_WARN(_ego_robot_ns + ": Config 'JULES/consistency_enabled' not found, defaulting to false");
        
