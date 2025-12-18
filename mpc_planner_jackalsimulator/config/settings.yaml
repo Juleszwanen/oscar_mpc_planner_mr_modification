@@ -89,33 +89,34 @@ weights: # Weights of the MPC, need to correspond to declared weights in the sol
   slack: 10000.
   terminal_angle: 100.0 # 0.0
   terminal_contouring: 10.0 # 0.0
-  consistency: 0.05
+  consistency: 0.4
+
 
 visualization:
   draw_every: 1 # Visualize every x stages
 
 baseline:
-  mode: "normal_mode" #"constant_velocity"
+  mode: "trajectory" #"constant_velocity" or "trajectory"
 
 JULES:
     use_extra_params_module_data: true
     assign_meaningful_topology_id_to_non_guided: true
-    visualize_topology_matching: true #visualize the guidance mapping for debugging purposes
-    have_non_guided_standout: true #Enable special markers for non-guided planner
+    visualize_topology_matching: false #visualize the guidance mapping for debugging purposes
+    have_non_guided_standout: false #Enable special markers for non-guided planner
     override_selected_traject_of_topology_non_guided: true # override the chosen global_guidance topology with that of the mapped non_guided topology
     communicate_on_topology_switch_only: true # This turns on and off if we want to communicate our trajectory only on a topology switch
     save_only_on_planning_active: false # Only save data when in PLANNING_ACTIVE state (excludes WAITING_FOR_TRAJECTORY_DATA)
     n_paths: 4 # This is hardcoded now but 
-    enable_trajectory_interpolation: true # Enable that we itnerpolate and extrapolate stale trajectories
+    enable_trajectory_interpolation: true # Enable that we itnerpolate and extrapolate stale trajectories of the other robots
     # Robot physical limits (for velocity clamping during extrapolation)
     robot_max_velocity: 2.5        # m/s
     robot_max_angular_velocity: 2.5  # rad/s
     safe_extra_data: true
-    max_geometric_deviation: 2 # Should somehow be related to the radius of the robot, I think
-    heartbeat_time: 2.0 # time in between which we should send a new trajectory of we did not broadcast
-    consistency_enabled: true
+    max_geometric_deviation: 10 # Should somehow be related to the radius of the robot, I think
+    heartbeat_time: 10.0 # time in between which we should send a new trajectory of we did not broadcast
+    consistency_enabled: false
     consistency_on_non_guided_planner: false
-    subtract_consistency: false
+    subtract_consistency: true
 
 # ============================================================================
 # Joint Planning Configuration (Variant B from IJP paper)

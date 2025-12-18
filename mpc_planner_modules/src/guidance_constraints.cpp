@@ -403,9 +403,20 @@ namespace MPCPlanner
                 {
                     attemptTopologyMatchingForNonGuidedPlanner(planner, solver);
                 }
-                // =====================================================================
 
-                
+                // if (planner.has_consistency_enabled)
+                // {
+                //     double consistency_cost = calculateConsistencyCostForSolver(planner.local_solver);
+                //     planner.result.objective -= consistency_cost;
+                    
+                //     if(_ego_robot_ns == "/jackal1"){
+                //     LOG_WARN(_ego_robot_ns + ": Planner [" << planner.id << "] (non-guided)"
+                //               << " | raw=" << solver->_info.pobj
+                //               << " | consistency=" << consistency_cost
+                //               << " | fair=" << planner.result.objective);
+                //     }
+                // }
+                // =====================================================================               
             }
             else
             {
@@ -424,6 +435,22 @@ namespace MPCPlanner
                 planner.result.guidance_ID = guidance_trajectory.topology_class;                 // We were using this guidance
                 planner.result.color = guidance_trajectory.color_;                               // A color index to visualize with
 
+                 // ========== JULES: Subtract consistency cost BEFORE selection_weight ==========
+                // This ensures selection_weight_consistency_ is applied to fair cost (C1)
+                // Result: selection_weight_consistency_ * C1 (not selection_weight * (C1 + C2))
+                // if (planner.has_consistency_enabled)
+                // {
+                //     double consistency_cost = calculateConsistencyCostForSolver(planner.local_solver);
+                //     planner.result.objective -= consistency_cost;
+                    
+                //     if(_ego_robot_ns == "/jackal1"){
+                //     LOG_WARN(_ego_robot_ns + ": Planner [" << planner.id << "] (guided, topology=" << planner.result.guidance_ID << ")"
+                //               << " | raw=" << solver->_info.pobj
+                //               << " | consistency=" << consistency_cost
+                //               << " | fair=" << planner.result.objective);
+                //     }
+                // }
+                // ==============================================================================
                 if (guidance_trajectory.previously_selected_) // Prefer the selected trajectory
                     planner.result.objective *= global_guidance_->GetConfig()->selection_weight_consistency_;
             }
@@ -537,7 +564,7 @@ namespace MPCPlanner
             _prev_selected_topology_id = best_planner.result.guidance_ID;
             
             // CRITICAL: Determine if we should treat this as "guided" for consistency purposes
-            // If non-guided planner matched a valid topology, treat it as guided for next iteration
+            // If non-guided planner matched a valid topology, treat it as if a guided-followed that topology for next iteration
             // This allows guided planners with the same topology to get consistency bonus
             if (best_planner.is_original_planner)
             {
@@ -1350,6 +1377,7 @@ namespace MPCPlanner
         // Get the consistency weight from config
         double weight = CONFIG["weights"]["consistency"].as<double>();
         double sum_squared_distances = 0.0;
+        double dt = CONFIG["integrator_step"].as<double>();
         
         // Sum up the squared distances over stages [1, N-2] only
         // This matches what was set in the solver via setConsistencyParametersForPlanner
@@ -1368,8 +1396,8 @@ namespace MPCPlanner
         }
         
         // Save and return the consistency cost
-        _consistency_cost = weight * sum_squared_distances;
-        return weight * sum_squared_distances;
+        _consistency_cost = 0.5*dt*weight * sum_squared_distances;
+        return _consistency_cost;
     }
 
     void GuidanceConstraints::storePreviousTrajectoryFromSolver(std::shared_ptr<Solver> selected_solver)

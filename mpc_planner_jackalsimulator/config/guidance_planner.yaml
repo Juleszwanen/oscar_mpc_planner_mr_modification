@@ -34,7 +34,7 @@ guidance_planner:
     velocity: true
     acceleration: false
   selection_weights: # Weights on the spline selection heuristic cost
-    consistency: 0.5 # 0 = consistent, 1 = inconsistent, prev 0.75
+    consistency: 0.75 # 0 = consistent, 1 = inconsistent, prev 0.75
     length: 5.
     velocity: 0.
     acceleration: 1.
