@@ -45,9 +45,9 @@ JulesJackalPlanner::JulesJackalPlanner(ros::NodeHandle &nh)
     // Define robot footprint from CONFIG (simulator uses detailed footprint)
     _data.robot_area = MPCPlanner::defineRobotArea( config.robot_length, config.robot_width, config.n_discs);
     
-    // Initialize common components using shared initializer
-    bool initialization_successful = JackalPlanner::JackalPlannerInitializer::initializeOtherRobotsAsObstacles(
-        config.other_robot_nss, _data, config.robot_radius);
+    // The initializiation of the obstacles is happening inside the loop funciton, below is here for legacy reasons.
+    // bool initialization_successful = JackalPlanner::JackalPlannerInitializer::initializeOtherRobotsAsObstacles(
+    //     config.other_robot_nss, _data, config.robot_radius);
     
     
     _planner = std::make_unique<MPCPlanner::Planner>(
@@ -64,7 +64,10 @@ JulesJackalPlanner::JulesJackalPlanner(ros::NodeHandle &nh)
     LOG_INFO(_ego_robot_ns + ": COMMUNICATION CONFIG: communicate_on_topology_switch_only = " + 
              std::string(_communicate_on_topology_switch_only ? "TRUE (topology-based filtering)" : "FALSE (always communicate)"));
     JackalPlanner::JackalPlannerInitializer::logInitializationSummary(config, _ego_robot_ns);
+
+   
     LOG_DIVIDER();
+    
 }
 
 JulesJackalPlanner::~JulesJackalPlanner()
@@ -106,70 +109,6 @@ void JulesJackalPlanner::applyConfiguration(const JackalPlanner::InitializationC
         _baseline_mode = "trajectory";  // Default to full system
         LOG_INFO(_ego_robot_ns + ": No baseline mode specified, defaulting to: " + _baseline_mode);
     }
-}
-
-bool JulesJackalPlanner::initializeOtherRobotsAsObstacles(const std::set<std::string> &other_robot_namespaces, MPCPlanner::RealTimeData &data, const double radius)
-{
-    // Early validation
-    if (other_robot_namespaces.empty())
-    {
-        LOG_WARN(_ego_robot_ns + ": No other robots to initialize as obstacles");
-        return false;
-    }
-
-    // Constants for readability
-    const Eigen::Vector2d FAR_AWAY_POSITION(100.0, 100.0);
-    const Eigen::Vector2d ZERO_VELOCITY(0.0, 0.0);
-
-    std::string summary = _ego_robot_ns + " created obstacles for: ";
-
-    for (const auto &robot_ns : other_robot_namespaces)
-    {
-        summary += robot_ns + " ";
-
-        // Create trajectory obstacle for this robot
-        data.trajectory_dynamic_obstacles.emplace(
-            robot_ns,
-            MPCPlanner::DynamicObstacle(
-                MultiRobot::extractRobotIdFromNamespace(robot_ns),
-                FAR_AWAY_POSITION,
-                0.0,
-                radius));
-
-        auto &traj_obs = data.trajectory_dynamic_obstacles.at((robot_ns));
-        traj_obs.last_trajectory_update_time = ros::Time::now();
-        traj_obs.trajectory_needs_interpolation = false;
-
-        // Create corresponding dynamic obstacle
-        MPCPlanner::DynamicObstacle dummy_obstacle = data.trajectory_dynamic_obstacles.at(robot_ns);
-        data.dynamic_obstacles.push_back(dummy_obstacle);
-
-        // Initialize with zero velocity prediction (stationary dummy obstacle)
-        auto &obstacle = data.dynamic_obstacles.back();
-        obstacle.prediction = MPCPlanner::getConstantVelocityPrediction(
-            obstacle.position,
-            ZERO_VELOCITY,
-            CONFIG["integrator_step"].as<double>(),
-            CONFIG["N"].as<int>());
-
-        LOG_INFO(_ego_robot_ns + ": Created obstacle for robot " + robot_ns +
-                 " with index " + std::to_string(obstacle.index));
-    }
-
-    LOG_INFO(summary);
-
-    // Validate that initialization was successful
-    const bool initialization_successful =
-        !data.trajectory_dynamic_obstacles.empty() &&
-        !data.dynamic_obstacles.empty() &&
-        data.trajectory_dynamic_obstacles.size() == other_robot_namespaces.size();
-
-    if (!initialization_successful)
-    {
-        LOG_ERROR(_ego_robot_ns + ": Failed to initialize robot obstacles properly");
-    }
-
-    return initialization_successful;
 }
 
 void JulesJackalPlanner::initializeSimulatorComponents(ros::NodeHandle& nh, const JackalPlanner::InitializationConfig& config)
@@ -323,7 +262,7 @@ void JulesJackalPlanner::loop(const ros::TimerEvent &event)
     }
     case MPCPlanner::PlannerState::INITIALIZING_OBSTACLES:
     {
-        bool initialization_successful = initializeOtherRobotsAsObstacles(_other_robot_nss, _data, CONFIG["robot_radius"].as<double>());
+        bool initialization_successful = JackalPlanner::JackalPlannerInitializer::initializeOtherRobotsAsObstacles(_other_robot_nss, _data, CONFIG["robot_radius"].as<double>());
         MultiRobot::transitionTo(_current_state, _previous_state, MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA, _ego_robot_ns);
         // Try and visualize the reference path
         _planner->visualize(_state, _data);
@@ -502,75 +441,78 @@ void JulesJackalPlanner::obstacleCallback(const mpc_planner_msgs::ObstacleArray:
 void JulesJackalPlanner::cvObstacleCallback(const mpc_planner_msgs::ObstacleArray::ConstPtr &msg)
 {
     // Mimic pedestrian obstacle callback pattern: clear and repopulate each cycle
-    LOG_DEBUG(_ego_robot_ns + ": CV obstacle callback received " + std::to_string(msg->obstacles.size()) + " obstacles");
-    
-    _data.dynamic_obstacles.clear();
-
-    for (const auto &obstacle : msg->obstacles)
+    if(_baseline_mode =="constant_velocity")
     {
-        // Filter out ego robot - don't plan around yourself
-        if (obstacle.id == _ego_robot_id)
-        {
-            LOG_DEBUG_THROTTLE(2000, _ego_robot_ns + ": Filtering out ego robot (ID: " + std::to_string(_ego_robot_id) + ") from CV obstacles");
-            continue;
-        }
+        LOG_DEBUG(_ego_robot_ns + ": CV obstacle callback received " + std::to_string(msg->obstacles.size()) + " obstacles");
         
-        // Save the obstacle (ID, position, orientation, radius)
-        _data.dynamic_obstacles.emplace_back(
-            obstacle.id,
-            Eigen::Vector2d(obstacle.pose.position.x, obstacle.pose.position.y),
-            RosTools::quaternionToAngle(obstacle.pose),
-            CONFIG["robot_radius"].as<double>());
-        
-        auto &dynamic_obstacle = _data.dynamic_obstacles.back();
+        _data.dynamic_obstacles.clear();
 
-        // Check if predictions exist
-        if (obstacle.probabilities.size() == 0 || obstacle.gaussians.empty())
+        for (const auto &obstacle : msg->obstacles)
         {
-            // No predictions - just current position (stationary assumption)
-            LOG_DEBUG_THROTTLE(4000, _ego_robot_ns + ": CV obstacle " + std::to_string(obstacle.id) + " has no predictions");
-            continue;
-        }
-
-        // Process CV prediction (expected: single mode with deterministic prediction)
-        if (obstacle.probabilities.size() == 1)
-        {
-            dynamic_obstacle.prediction = MPCPlanner::Prediction(MPCPlanner::PredictionType::DETERMINISTIC);
+            // Filter out ego robot - don't plan around yourself
+            if (obstacle.id == _ego_robot_id)
+            {
+                LOG_DEBUG_THROTTLE(2000, _ego_robot_ns + ": Filtering out ego robot (ID: " + std::to_string(_ego_robot_id) + ") from CV obstacles");
+                continue;
+            }
             
-            const auto &mode = obstacle.gaussians[0];
-            for (size_t k = 0; k < mode.mean.poses.size(); k++)
+            // Save the obstacle (ID, position, orientation, radius)
+            _data.dynamic_obstacles.emplace_back(
+                obstacle.id,
+                Eigen::Vector2d(obstacle.pose.position.x, obstacle.pose.position.y),
+                RosTools::quaternionToAngle(obstacle.pose),
+                CONFIG["robot_radius"].as<double>());
+            
+            auto &dynamic_obstacle = _data.dynamic_obstacles.back();
+
+            // Check if predictions exist
+            if (obstacle.probabilities.size() == 0 || obstacle.gaussians.empty())
             {
-                // Add prediction at time step k
-                dynamic_obstacle.prediction.modes[0].emplace_back(
-                    Eigen::Vector2d(mode.mean.poses[k].pose.position.x, mode.mean.poses[k].pose.position.y),
-                    RosTools::quaternionToAngle(mode.mean.poses[k].pose.orientation),
-                    0.0,  // No uncertainty (deterministic CV)
-                    0.0);
+                // No predictions - just current position (stationary assumption)
+                LOG_DEBUG_THROTTLE(4000, _ego_robot_ns + ": CV obstacle " + std::to_string(obstacle.id) + " has no predictions");
+                continue;
+            }
+
+            // Process CV prediction (expected: single mode with deterministic prediction)
+            if (obstacle.probabilities.size() == 1)
+            {
+                dynamic_obstacle.prediction = MPCPlanner::Prediction(MPCPlanner::PredictionType::DETERMINISTIC);
+                
+                const auto &mode = obstacle.gaussians[0];
+                for (size_t k = 0; k < mode.mean.poses.size(); k++)
+                {
+                    // Add prediction at time step k
+                    dynamic_obstacle.prediction.modes[0].emplace_back(
+                        Eigen::Vector2d(mode.mean.poses[k].pose.position.x, mode.mean.poses[k].pose.position.y),
+                        RosTools::quaternionToAngle(mode.mean.poses[k].pose.orientation),
+                        0.0,  // No uncertainty (deterministic CV)
+                        0.0);
+                }
+            }
+            else
+            {
+                LOG_WARN(_ego_robot_ns + ": CV obstacle has multiple modes, using only first mode");
+                // Handle gracefully - just use first mode
+                dynamic_obstacle.prediction = MPCPlanner::Prediction(MPCPlanner::PredictionType::DETERMINISTIC);
+                const auto &mode = obstacle.gaussians[0];
+                for (size_t k = 0; k < mode.mean.poses.size(); k++)
+                {
+                    dynamic_obstacle.prediction.modes[0].emplace_back(
+                        Eigen::Vector2d(mode.mean.poses[k].pose.position.x, mode.mean.poses[k].pose.position.y),
+                        RosTools::quaternionToAngle(mode.mean.poses[k].pose.orientation),
+                        0.0, 0.0);
+                }
             }
         }
-        else
-        {
-            LOG_WARN(_ego_robot_ns + ": CV obstacle has multiple modes, using only first mode");
-            // Handle gracefully - just use first mode
-            dynamic_obstacle.prediction = MPCPlanner::Prediction(MPCPlanner::PredictionType::DETERMINISTIC);
-            const auto &mode = obstacle.gaussians[0];
-            for (size_t k = 0; k < mode.mean.poses.size(); k++)
-            {
-                dynamic_obstacle.prediction.modes[0].emplace_back(
-                    Eigen::Vector2d(mode.mean.poses[k].pose.position.x, mode.mean.poses[k].pose.position.y),
-                    RosTools::quaternionToAngle(mode.mean.poses[k].pose.orientation),
-                    0.0, 0.0);
-            }
-        }
+
+        // Ensure we have exactly max_obstacles (add dummies if needed)
+        MPCPlanner::ensureObstacleSize(_data.dynamic_obstacles, _state);
+
+        // Notify planner that obstacle data has been updated
+        _planner->onDataReceived(_data, "dynamic obstacles");
+
+        LOG_DEBUG(_ego_robot_ns + ": CV obstacles processed: " + std::to_string(_data.dynamic_obstacles.size()) + " total");
     }
-
-    // Ensure we have exactly max_obstacles (add dummies if needed)
-    MPCPlanner::ensureObstacleSize(_data.dynamic_obstacles, _state);
-
-    // Notify planner that obstacle data has been updated
-    _planner->onDataReceived(_data, "dynamic obstacles");
-
-    LOG_DEBUG(_ego_robot_ns + ": CV obstacles processed: " + std::to_string(_data.dynamic_obstacles.size()) + " total");
 }
 
 void JulesJackalPlanner::julesControllerCallback(const sensor_msgs::Joy::ConstPtr &msg){
@@ -845,6 +787,7 @@ void JulesJackalPlanner::reset()
     _planner->reset(_state, _data, true); // reset the complete planner: solver, modules, state and data
 
     _validated_trajectory_robots.clear();       // clear the set which records which robots have send a correct trajectory
+    _data.dynamic_obstacles.clear();
     _data.trajectory_dynamic_obstacles.clear(); //
 
     LOG_DIVIDER();
@@ -949,12 +892,6 @@ void JulesJackalPlanner::prepareObstacleData()
         // this->logDataState(_ego_robot_ns + ": Obstacle data prepared");
     }
 }
-
-// void JulesJackalPlanner::prepareLinearObstacleData()
-// {
-
-// }
-
 
 void JulesJackalPlanner::interpolateTrajectoryPredictionsByTime()
 {
