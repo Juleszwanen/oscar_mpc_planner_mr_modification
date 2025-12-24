@@ -37,8 +37,8 @@ JulesRealJackalPlanner::JulesRealJackalPlanner(ros::NodeHandle &nh)
     _data.robot_area = {MPCPlanner::Disc(0., config.robot_radius)};
     
     // Initialize common components using initializer
-    bool initialization_successful = initializeOtherRobotsAsObstaclesWithNonCom(
-        config.other_robot_nss, _data, config.robot_radius);
+    // bool initialization_successful = initializeOtherRobotsAsObstaclesWithNonCom(
+    //     config.other_robot_nss, _data, config.robot_radius);
     
     _planner = std::make_unique<MPCPlanner::Planner>(
         config.ego_robot_ns,
@@ -317,6 +317,8 @@ void JulesRealJackalPlanner::initializeSubscribersAndPublishers(ros::NodeHandle 
 
     _objective_pub = nh.advertise<std_msgs::Bool>("/events/objective_reached", 1);
 
+    _metrics_pub = nh.advertise<mpc_planner_msgs::MPCMetrics>("mpc_metrics", 1);
+
     // Roadmap reverse
     _reverse_roadmap_pub = nh.advertise<std_msgs::Empty>("/roadmap/reverse", 1);
 }
@@ -398,7 +400,7 @@ void JulesRealJackalPlanner::loop(const ros::TimerEvent &event)
     }
     case MPCPlanner::PlannerState::INITIALIZING_OBSTACLES:
     {
-        bool initialization_successful = initializeOtherRobotsAsObstacles(_other_robot_nss, _data, CONFIG["robot_radius"].as<double>());
+        bool initialization_successful = initializeOtherRobotsAsObstaclesWithNonCom(_other_robot_nss, _data, CONFIG["robot_radius"].as<double>());
         MultiRobot::transitionTo(_current_state, _previous_state, MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA, _ego_robot_ns);
         // Try and visualize the reference path
         _planner->visualize(_state, _data);
@@ -424,6 +426,7 @@ void JulesRealJackalPlanner::loop(const ros::TimerEvent &event)
         auto [cmd, output] = generatePlanningCommand(_current_state);
         
         publishCmdAndVisualize(cmd, output);
+        publishMetrics(output, cmd);
         _data.past_trajectory.replaceTrajectory(output.trajectory);
         // The state transition is be triggered by a trajectory callback function
 
@@ -446,6 +449,7 @@ void JulesRealJackalPlanner::loop(const ros::TimerEvent &event)
         auto [cmd, output] = generatePlanningCommand(_current_state);
         // LOG_INFO(_ego_robot_ns + output.logOutput());
         publishCmdAndVisualize(cmd, output);
+        publishMetrics(output, cmd);
         _data.past_trajectory.replaceTrajectory(output.trajectory);
 
         _benchmarker->stop();
@@ -458,6 +462,7 @@ void JulesRealJackalPlanner::loop(const ros::TimerEvent &event)
         _data.past_trajectory.replaceTrajectory(output.trajectory);
     
         publishCmdAndVisualize(cmd, output);
+        publishMetrics(output, cmd);
         break;
     }
     case MPCPlanner::PlannerState::RESETTING:
@@ -817,10 +822,17 @@ void JulesRealJackalPlanner::trajectoryCallback(const mpc_planner_msgs::Obstacle
         if (CONFIG["recording"]["enable"].as<bool>())
         {
             RosTools::DataSaver& ds = _planner->getDataSaver();
-            ds.AddData("rx_from_" + ns + "_trajectory", 1.0);
+            const int control_iteration = _planner->getControlIteration();
             
+            // Record received trajectory with control iteration for alignment
+            // Format: (1.0 = received, control_iteration) allows mapping to specific iteration
+            Eigen::Vector2d rx_data(1.0, static_cast<double>(control_iteration));
+            ds.AddData("rx_from_" + ns + "_trajectory", rx_data);
+            
+            // Record message delay with control iteration for alignment
             ros::Duration message_delay = ros::Time::now() - msg->gaussians.back().mean.header.stamp;
-            ds.AddData("rx_from_" + ns + "_delay_sec", message_delay.toSec());
+            Eigen::Vector2d delay_data(message_delay.toSec(), static_cast<double>(control_iteration));
+            ds.AddData("rx_from_" + ns + "_delay_sec", delay_data);
         }
         break;
     }
@@ -907,6 +919,7 @@ void JulesRealJackalPlanner::reset()
     _planner->reset(_state, _data, true); // reset the complete planner: solver, modules, state and data
 
     _validated_trajectory_robots.clear();       // clear the set which records which robots have send a correct trajectory
+    _data.dynamic_obstacles.clear();
     _data.trajectory_dynamic_obstacles.clear(); //
 
     LOG_DIVIDER();
@@ -1445,27 +1458,46 @@ void JulesRealJackalPlanner::publishCmdAndVisualize(const geometry_msgs::Twist &
 // Helper: Record decision to data saver
 void JulesRealJackalPlanner::recordCommunicationDecision(bool communicated)
 {
-    if (!CONFIG["recording"]["enable"].as<bool>())
+    if (!CONFIG["recording"]["enable"].as<bool>() || !_enable_output)
         return;
     
-    auto& ds = _planner->getDataSaver();
-    ds.AddData("publish_cmd_called", 1.0);              // Track function calls
-    ds.AddData("communicated", communicated ? 1.0 : 0.0);  // Track actual communication
+    const bool save_only_on_planning_active = CONFIG["JULES"]["save_only_on_planning_active"].as<bool>(false);
     
-    // Store in RealTimeData for downstream use
-    _data.communicated_trajectory = communicated;
+    switch (_current_state)
+    {
+    case MPCPlanner::PlannerState::PLANNING_ACTIVE:
+        // Always record in PLANNING_ACTIVE when recording is enabled
+        _data.communicated_trajectory = communicated ? 1.0 : 0.0;
+        _data.communication_trigger_reason = static_cast<int>(_communication_trigger_reason);
+        break;
+    
+    case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
+        // Only record if not restricted to PLANNING_ACTIVE only
+        if (!save_only_on_planning_active)
+        {
+            _data.communicated_trajectory = communicated ? 1.0 : 0.0;
+            _data.communication_trigger_reason = static_cast<int>(_communication_trigger_reason);
+        }
+        break;
+    
+    default:
+        // Don't record in other states
+        break;
+    }
 }
 
 // Helper: Log the decision (throttled)
-void JulesRealJackalPlanner::logCommunicationDecision(bool communicated, const MPCPlanner::PlannerOutput &output)
+void JulesRealJackalPlanner::logCommunicationDecision(bool communicated, const MPCPlanner::PlannerOutput &output) 
 {
     const std::string config_mode = _communicate_on_topology_switch_only ? "topology-based" : "always";
     const std::string action = communicated ? "SENT" : "SKIPPED";
+    const std::string trigger_reason = MPCPlanner::toString(_communication_trigger_reason);
     
-    LOG_DEBUG_THROTTLE(5000, _ego_robot_ns + ": " + action + " trajectory | " +
+    LOG_INFO_THROTTLE(5000, _ego_robot_ns + ": " + action + " trajectory | " +
                       "mode=" + config_mode + " | " +
                       "state=" + MPCPlanner::stateToString(_current_state) + " | " +
-                      "topology=" + std::to_string(output.selected_topology_id));
+                      "topology=" + std::to_string(output.selected_topology_id) + " | " +
+                      "trigger=" + trigger_reason);
 }
 
 void JulesRealJackalPlanner::publishDirectTrajectory(const MPCPlanner::PlannerOutput &output)
@@ -1526,8 +1558,10 @@ void JulesRealJackalPlanner::publishDirectTrajectory(const MPCPlanner::PlannerOu
     if (CONFIG["recording"]["enable"].as<bool>())
     {
         auto& ds = _planner->getDataSaver();
-        ds.AddData("tx_trajectory", 1.0);  // Records when trajectory was published
-        ds.AddData("tx_num_poses", static_cast<double>(gaussian.mean.poses.size()));  // Track trajectory length
+        Eigen::Vector2d tx_trajectory(1.0, _planner->getControlIteration());
+        ds.AddData("tx_trajectory", tx_trajectory);  // Records when trajectory was published
+        
+        // ds.AddData("tx_num_poses", static_cast<double>(gaussian.mean.poses.size()));  // Track trajectory length
     }
 }
 
@@ -1538,6 +1572,77 @@ void JulesRealJackalPlanner::publishObjectiveReachedEvent()
     _objective_pub.publish(event);
     // We warn here to make it more visible
     LOG_WARN_THROTTLE(1000, _ego_robot_ns + ": Objective reached - published event");
+}
+
+void JulesRealJackalPlanner::publishMetrics(const MPCPlanner::PlannerOutput &output, const geometry_msgs::Twist &cmd)
+{
+    // Only publish metrics in states where we have valid planning data
+    switch (_current_state)
+    {
+    case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
+    case MPCPlanner::PlannerState::PLANNING_ACTIVE:
+    case MPCPlanner::PlannerState::GOAL_REACHED:
+    {
+        mpc_planner_msgs::MPCMetrics metrics;
+        
+        // Header
+        metrics.header.stamp = ros::Time::now();
+        metrics.header.frame_id = _global_frame;
+        metrics.robot_name = _ego_robot_ns;
+        
+        // Solver metrics
+        metrics.solve_time_ms = _benchmarker->getLast() * 1000.0;  // Convert seconds to milliseconds
+        metrics.success_rate = -1.0;  // Not tracking rolling window yet
+        metrics.iterations = _planner->getControlIteration();
+        metrics.exit_code = output.solver_exit_code;
+        metrics.objective_value = output.trajectory_cost;
+        // objective_values_all_planners - leave empty for now
+        
+        // Topology metrics
+        metrics.current_topology_id = output.selected_topology_id;
+        metrics.previous_topology_id = output.previous_topology_id;
+        metrics.topology_switch = output.following_new_topology;
+        metrics.used_guidance = output.used_guidance;
+        metrics.selected_planner_index = output.selected_planner_index;
+        metrics.num_of_guidance_found = output.num_of_guidance_found;
+        
+        // State information
+        metrics.current_state = MPCPlanner::stateToString(_current_state);
+        metrics.previous_state = MPCPlanner::stateToString(_previous_state);
+        metrics.current_position.push_back(_state.get("x"));
+        metrics.current_position.push_back(_state.get("y"));
+        metrics.current_linear_x = cmd.linear.x;
+        metrics.current_angular_vel = cmd.angular.z;
+        
+        metrics.reset_signal = (_current_state == MPCPlanner::PlannerState::GOAL_REACHED) ? true : false;
+        
+        // Planner objective values (from guidance_constraints module)
+        // Parallel arrays: planner_names[i] corresponds to planner_objective_values[i]
+        for (const auto& entry : output.cost_per_planner)
+        {
+            metrics.planner_names.push_back(std::get<0>(entry));
+            metrics.planner_objective_values.push_back(std::get<1>(entry));
+        }
+        
+        // Communication metrics
+        metrics.last_communication_trigger = MPCPlanner::toString(_communication_trigger_reason);
+        metrics.messages_sent_total = 0;  // Track later
+        metrics.messages_saved_total = 0;  // Track later
+        metrics.communication_savings_percent = 0.0;  // Track later
+        
+        // Distribution arrays - implement later
+        // topology_selection_counts, topology_labels
+        // communication_trigger_counts, communication_trigger_labels
+        
+        _metrics_pub.publish(metrics);
+        break;
+    }
+    
+    default:
+        // Don't publish metrics in other states (UNINITIALIZED, TIMER_STARTUP,
+        // WAITING_FOR_FIRST_EGO_POSE, INITIALIZING_OBSTACLES, RESETTING, ERROR_STATE)
+        break;
+    }
 }
 
 bool JulesRealJackalPlanner::shouldCommunicate(const MPCPlanner::PlannerOutput &output, const MPCPlanner::RealTimeData &data)
@@ -1575,7 +1680,7 @@ bool JulesRealJackalPlanner::shouldCommunicate(const MPCPlanner::PlannerOutput &
         // This happens when solver chose non-guided topology (no matching homology found)
         if (MPCPlanner::CommunicationTriggers::checkNonGuidedHomologyFail(output, n_paths))
         {
-            _communication_trigger_reason = MPCPlanner::CommunicationTriggerReason::NON_GUIDED_HOMOLOGY_FAIL;
+            _communication_trigger_reason = MPCPlanner::CommunicationTriggerReason::CHOOSE_NON_GUIDED_MAPPING_HOMOLOGY_FAIL;
             LOG_DEBUG(_ego_robot_ns + ": Communication trigger: NON_GUIDED_HOMOLOGY_FAIL");
             return true;
         }
@@ -1627,10 +1732,10 @@ bool JulesRealJackalPlanner::shouldCommunicate(const MPCPlanner::PlannerOutput &
 // Helper: Extract communication decision logic
 bool JulesRealJackalPlanner::decideCommunication(const MPCPlanner::PlannerOutput &output)
 {
-    // if (!_enable_output)
-    // {
-    //     return false;
-    // }
+    if (!_enable_output)
+    {
+        return false;
+    }
 
     // If topology filtering is disabled, ALWAYS communicate in active states
     if (!_communicate_on_topology_switch_only)
@@ -1650,28 +1755,24 @@ bool JulesRealJackalPlanner::decideCommunication(const MPCPlanner::PlannerOutput
 
 void JulesRealJackalPlanner::saveDataStateBased()
 {
-    // Save state distribution for debugging communication issues
-    // if (CONFIG["recording"]["enable"].as<bool>())
-    // {
-    //     auto& ds = _planner->getDataSaver();
-        
-    //     // Track which state we're in (for debugging)
-    //     ds.AddData("current_state", static_cast<double>(_current_state));
-        
-    //     // Track if publishCmdAndVisualize was called (will be set in those states)
-    //     bool is_publishing_state = (_current_state == MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA ||
-    //                                 _current_state == MPCPlanner::PlannerState::PLANNING_ACTIVE ||
-    //                                 _current_state == MPCPlanner::PlannerState::GOAL_REACHED);
-    //     ds.AddData("is_publishing_state", is_publishing_state ? 1.0 : 0.0);
-    // }
+    if (!CONFIG["recording"]["enable"].as<bool>() || !_enable_output)
+        return;
+    
+    const bool save_only_on_planning_active = CONFIG["JULES"]["save_only_on_planning_active"].as<bool>(false);
     
     switch (_current_state)
     {
     case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
+        // Only save if not restricted to PLANNING_ACTIVE only
+        if (!save_only_on_planning_active)
+        {
+            _planner->saveData(_state, _data, static_cast<double>(_current_state), static_cast<double>(_previous_state));
+        }
+        break;
+
     case MPCPlanner::PlannerState::PLANNING_ACTIVE:
-        // Only record when in the correct state, recording enabled and we are allowed to plan/drive
-        if (CONFIG["recording"]["enable"].as<bool>() && _enable_output)
-            _planner->saveData(_state, _data);
+        // Always save in PLANNING_ACTIVE when recording is enabled
+        _planner->saveData(_state, _data, static_cast<double>(_current_state), static_cast<double>(_previous_state));
         break;
     
     default:
