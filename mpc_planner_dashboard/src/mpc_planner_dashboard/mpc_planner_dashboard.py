@@ -100,7 +100,7 @@ class MPCPlannerDashboard(Plugin):
 
         # --- GUI initialization ---
         # Populate the robot dropdown with available robot names
-        self._widget.robotComboBox.addItems(['jackal1', 'jackal2', 'jackal3'])
+        self._widget.robotComboBox.addItems(['jackal1', 'jackal2', 'jackal3', ""])
         # Connect the dropdown change event to our handler
         self._widget.robotComboBox.currentTextChanged.connect(self.onRobotChanged)
 

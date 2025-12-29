@@ -96,7 +96,7 @@ visualization:
   draw_every: 1 # Visualize every x stages
 
 baseline:
-  mode: "constant_velocity" #"constant_velocity" or "trajectory"
+  mode: "trajectory" #"constant_velocity" or "trajectory"
 
 JULES:
     use_extra_params_module_data: true

@@ -1372,7 +1372,7 @@ void JulesJackalPlanner::publishDirectTrajectory(const MPCPlanner::PlannerOutput
     // Publish the trajectory directly to other robots
     _direct_trajectory_pub.publish(ego_robot_trajectory_as_obstacle);
     _data.last_send_trajectory_time = ros::Time::now();
-    // Update the belief other robots have of our trajectory
+    // Update ego belief of the trajectory other robots have of our trajectory
     _data.last_communicated_trajectory = output.trajectory;
     // ALWAYS record trajectory transmission for analysis
     if (CONFIG["recording"]["enable"].as<bool>())
@@ -1515,7 +1515,7 @@ bool JulesJackalPlanner::shouldCommunicate(const MPCPlanner::PlannerOutput &outp
         }
         
         // Priority 2: Choose Non-Guided / Mapping Homology Fail (Enum 6)
-        // This happens when solver chose non-guided topology (no matching homology found)
+        // This happens when solver choose non-guided topology (no matching homology found)
         if (MPCPlanner::CommunicationTriggers::checkNonGuidedHomologyFail(output, n_paths))
         {
             _communication_trigger_reason = MPCPlanner::CommunicationTriggerReason::CHOOSE_NON_GUIDED_MAPPING_HOMOLOGY_FAIL;

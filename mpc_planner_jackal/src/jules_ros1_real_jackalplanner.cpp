@@ -317,7 +317,7 @@ void JulesRealJackalPlanner::initializeSubscribersAndPublishers(ros::NodeHandle 
 
     _objective_pub = nh.advertise<std_msgs::Bool>("/events/objective_reached", 1);
 
-    _metrics_pub = nh.advertise<mpc_planner_msgs::MPCMetrics>("mpc_metrics", 1);
+    _metrics_pub = nh.advertise<mpc_planner_msgs::MPCMetrics>("/mpc_metrics", 1);
 
     // Roadmap reverse
     _reverse_roadmap_pub = nh.advertise<std_msgs::Empty>("/roadmap/reverse", 1);
@@ -863,9 +863,19 @@ void JulesRealJackalPlanner::allRobotsReachedObjectiveCallback(const std_msgs::B
 
 bool JulesRealJackalPlanner::objectiveReached()
 {
+    
     bool reset_condition_forward_x = (_forward_x_experiment) && (_state.get("x") > x_max || _state.get("y") > y_max);
     bool reset_condition_backward_x = (!_forward_x_experiment) && (_state.get("x") < x_min || _state.get("y") < y_min);
     bool reset_condition = reset_condition_forward_x || reset_condition_backward_x;
+    
+
+    if(_ego_robot_ns == std::string("/jackal4"))
+    {
+        reset_condition_forward_x = (_forward_x_experiment) && (_state.get("x") > x_max || _state.get("y") < y_min);
+        reset_condition_backward_x = (!_forward_x_experiment) && (_state.get("x") < x_min || _state.get("y") > y_max);
+        reset_condition = reset_condition_forward_x || reset_condition_backward_x;
+    }
+    
     if (reset_condition)
     {
         _forward_x_experiment = !_forward_x_experiment;

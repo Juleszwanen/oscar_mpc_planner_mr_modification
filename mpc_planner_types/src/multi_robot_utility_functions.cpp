@@ -23,7 +23,7 @@ namespace MultiRobot
     {
         // Handle both "/jackalX" and "jackalX" formats
         // Returns 0-based index to match Vicon's 0-based object ID system
-        // jackal1 -> 0, jackal2 -> 1, jackal3 -> 2, etc.
+        // jackal1 -> 0, jackal2 -> 1, jackal3 -> 2, jackal4 -> 3
         if (ns.front() == '/')
             return std::stoi(ns.substr(7)) - 1; // skip "/jackal" and convert to 0-based
         else
