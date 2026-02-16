@@ -27,6 +27,7 @@ namespace MPCPlanner
         ros::Time last_send_trajectory_time{ros::Time(0)};
         std::vector<DynamicObstacle> dynamic_obstacles;
         std::map<std::string, DynamicObstacle> trajectory_dynamic_obstacles;
+        std::map<std::string, DynamicObstaclePosition> position_dynamic_obstacles;
 
         costmap_2d::Costmap2D *costmap{nullptr}; // Costmap for static obstacles
 

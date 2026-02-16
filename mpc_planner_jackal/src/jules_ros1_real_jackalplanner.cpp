@@ -81,6 +81,7 @@ void JulesRealJackalPlanner::applyConfiguration(
     _robot_ns_list = config.robot_ns_list;
     _enable_output = config.enable_output;
     _other_robot_nss = config.other_robot_nss;
+    _other_robot_vec = std::vector<std::string>(_other_robot_nss.begin(), _other_robot_nss.end());  // Cache vector version for indexed access
     _communicate_on_topology_switch_only = config.communicate_on_topology_switch_only;
     _goal_tolerance = config.goal_tolerance;
     _global_frame = config.global_frame;
@@ -288,9 +289,18 @@ void JulesRealJackalPlanner::initializeSubscribersAndPublishers(ros::NodeHandle 
         "/input/reference_path", 1,
         boost::bind(&JulesRealJackalPlanner::pathCallback, this, _1));
 
-    _obstacle_sub = nh.subscribe<derived_object_msgs::ObjectArray>(
+    if(CONFIG["JULES"]["real_world"]["constant_velocity"].as<bool>())
+    {
+        _obstacle_sub = nh.subscribe<derived_object_msgs::ObjectArray>(
+            "/input/obstacles", 1,
+            boost::bind(&JulesRealJackalPlanner::obstacleCallbackConstantVelocity, this, _1));
+    }
+    else
+    {
+         _obstacle_sub = nh.subscribe<derived_object_msgs::ObjectArray>(
         "/input/obstacles", 1,
         boost::bind(&JulesRealJackalPlanner::obstacleCallback, this, _1));
+    }
 
     _bluetooth_sub = nh.subscribe<sensor_msgs::Joy>(
         "/input/bluetooth", 1,
@@ -306,7 +316,16 @@ void JulesRealJackalPlanner::initializeSubscribersAndPublishers(ros::NodeHandle 
 
     _jules_controller_sub = nh.subscribe<sensor_msgs::Joy>("/joy", 1, boost::bind(&JulesRealJackalPlanner::julesControllerCallback, this, _1) );    
 
-    this->subscribeToOtherRobotTopics(nh, _other_robot_nss);
+    // Only subscribe to trajectory topics when NOT in constant velocity mode
+    if (!CONFIG["JULES"]["real_world"]["constant_velocity"].as<bool>())
+    {
+        this->subscribeToOtherRobotTopics(nh, _other_robot_nss);
+        LOG_INFO(_ego_robot_ns + ": Trajectory communication ENABLED - subscribing to other robot trajectories");
+    }
+    else
+    {
+        LOG_INFO(_ego_robot_ns + ": Constant velocity mode ENABLED - NOT subscribing to trajectory topics");
+    }
 
     _cmd_pub = nh.advertise<geometry_msgs::Twist>(
         "/output/command", 1);
@@ -559,9 +578,11 @@ void JulesRealJackalPlanner::obstacleCallback(const derived_object_msgs::ObjectA
         // Process non-communicating obstacles from Vicon
         for (auto &object : msg->objects)
         {   
-            // Skip robot obstacles (they're handled by trajectoryCallback)
-            if (object.id < _robot_ns_list.size())
+            // Skip ego robot (always object.id == 0 in Vicon bundle)
+            if (object.id == 0)
+            {
                 continue;
+            }
 
             // Calculate velocity magnitude
             double velocity = std::sqrt(object.twist.linear.x * object.twist.linear.x +
@@ -586,13 +607,28 @@ void JulesRealJackalPlanner::obstacleCallback(const derived_object_msgs::ObjectA
             Eigen::Matrix2d rot_matrix = RosTools::rotationMatrixFromHeading(-RosTools::quaternionToAngle(object.pose.orientation));
             Eigen::Vector2d global_twist = rot_matrix * Eigen::Vector2d(body_twist.linear.x, body_twist.linear.y);
 
-            // Find the dynamic obstacle with matching index
-            auto it = std::find_if(_data.dynamic_obstacles.begin(),
-                                   _data.dynamic_obstacles.end(),
-                                   [&object](const MPCPlanner::DynamicObstacle &obs)
-                                   {
-                                       return obs.index == object.id;
-                                   });
+            // Determine if this is a robot or non-communicating obstacle
+            // Vicon bundle: IDs [0, _robot_ns_list.size()-1] are robots, IDs >= _robot_ns_list.size() are non-comm objects
+            if (object.id < static_cast<int>(_robot_ns_list.size()))
+            {
+                // ===== ROBOT: Update ground truth tracking only (MPC uses trajectoryCallback) =====
+                std::string robot_ns = _other_robot_vec[object.id - 1];
+                int robot_id = MultiRobot::extractRobotIdFromNamespace(robot_ns);
+                updateRobotGroundTruthPosition(object, robot_id, robot_ns, "");
+                continue;  // Skip MPC update - robots use communicated trajectories
+            }
+            else
+            {
+                // ===== NON-COMMUNICATING OBSTACLE: Update MPC planning data =====
+                // Find the dynamic obstacle with matching object.id
+                auto it = std::find_if(_data.dynamic_obstacles.begin(),
+                                       _data.dynamic_obstacles.end(),
+                                       [&object](const MPCPlanner::DynamicObstacle &obs)
+                                       {
+                                           return obs.index == object.id;
+                                       });
+
+            
 
             if (it != _data.dynamic_obstacles.end())
             {
@@ -624,12 +660,13 @@ void JulesRealJackalPlanner::obstacleCallback(const derived_object_msgs::ObjectA
                          " at [" + std::to_string(dynamic_obstacle.position.x()) + ", " +
                          std::to_string(dynamic_obstacle.position.y()) + "] " +
                          "vel: " + std::to_string(velocity) + " m/s" + pred_info);
-            }
-            else
-            {
-                LOG_WARN_THROTTLE(2000, _ego_robot_ns + ": Could not find obstacle with ID " + std::to_string(object.id) +
-                                            " in dynamic_obstacles vector. Expected it to be initialized in initializeOtherRobotsAsObstacles()");
-            }
+                }
+                else
+                {
+                    LOG_WARN_THROTTLE(2000, _ego_robot_ns + ": Could not find obstacle with ID " + std::to_string(object.id) +
+                                                " in dynamic_obstacles vector. Expected it to be initialized in initializeOtherRobotsAsObstacles()");
+                }
+            }  // end non-comm object handling
         }
         break;
     default:
@@ -638,6 +675,223 @@ void JulesRealJackalPlanner::obstacleCallback(const derived_object_msgs::ObjectA
         break;
     }
 }
+
+void JulesRealJackalPlanner::obstacleCallbackConstantVelocity(const derived_object_msgs::ObjectArray::ConstPtr &msg)
+{
+    switch (_current_state)
+        {
+        case MPCPlanner::PlannerState::UNINITIALIZED:
+        case MPCPlanner::PlannerState::TIMER_STARTUP:
+        case MPCPlanner::PlannerState::WAITING_FOR_FIRST_EGO_POSE:
+        case MPCPlanner::PlannerState::INITIALIZING_OBSTACLES:
+        case MPCPlanner::PlannerState::RESETTING:
+        case MPCPlanner::PlannerState::ERROR_STATE:
+            LOG_DEBUG_THROTTLE(5000, _ego_robot_ns + ": Skipping obstacle update in state: " +
+                                        MPCPlanner::stateToString(_current_state));
+            return;
+
+        case MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA:
+        case MPCPlanner::PlannerState::PLANNING_ACTIVE:
+        case MPCPlanner::PlannerState::GOAL_REACHED:
+        {
+            // Lambda to update obstacle with Vicon data (reusable for robots and non-comm objects)
+            auto updateObstacleFromVicon = [this](
+                MPCPlanner::DynamicObstacle& obs,
+                const Eigen::Vector2d& position,
+                const double angle,
+                const Eigen::Vector2d& velocity_global,
+                const std::string& log_message) -> void
+            {
+                // Update position and orientation
+                obs.position = position;
+                obs.angle = angle;
+
+                // Update prediction with velocity (in global frame)
+                obs.prediction = MPCPlanner::getConstantVelocityPrediction(
+                    obs.position,
+                    velocity_global,
+                    CONFIG["integrator_step"].as<double>(),
+                    CONFIG["N"].as<int>());
+
+                // Log with first prediction point
+                std::string pred_info = "";
+                if (!obs.prediction.modes.empty() && !obs.prediction.modes[0].empty())
+                {
+                    const auto& first_pred = obs.prediction.modes[0][0];
+                    pred_info = ", pred[0]: [" + std::to_string(first_pred.position.x()) + 
+                               ", " + std::to_string(first_pred.position.y()) + "]";
+                }
+                
+                LOG_INFO_THROTTLE(9000, _ego_robot_ns + ": CV_MODE: " + log_message + pred_info);
+            };
+
+            // Process obstacles
+            bool received_valid_obstacle_data = false;
+            for (auto &object : msg->objects)
+            {   
+                // Skip ego robot (always object.id == 0 in Vicon bundle)
+                if (object.id == 0) continue;
+                
+                // Calculate velocity magnitude
+                double velocity = std::sqrt(object.twist.linear.x * object.twist.linear.x +
+                                            object.twist.linear.y * object.twist.linear.y);
+
+                // Align orientation with motion direction (if moving)
+                double object_angle = (velocity > 0.01) 
+                    ? RosTools::quaternionToAngle(object.pose.orientation) +
+                      std::atan2(object.twist.linear.y, object.twist.linear.x) + M_PI_2
+                    : RosTools::quaternionToAngle(object.pose.orientation);
+
+                // Transform velocity from body frame to global frame
+                Eigen::Matrix2d rot_matrix = RosTools::rotationMatrixFromHeading(
+                    -RosTools::quaternionToAngle(object.pose.orientation));
+                Eigen::Vector2d global_twist = rot_matrix * 
+                    Eigen::Vector2d(object.twist.linear.x, object.twist.linear.y);
+
+                Eigen::Vector2d position(object.pose.position.x, object.pose.position.y);
+
+                // Determine if this is a robot or non-communicating obstacle
+                // Vicon bundle: IDs [0, _robot_ns_list.size()-1] are robots, IDs >= _robot_ns_list.size() are non-comm objects
+                if (object.id < static_cast<int>(_robot_ns_list.size()))
+                {
+                    // ===== ROBOT: Update ground truth + MPC obstacles (use Vicon data for planning) =====
+                    std::string robot_ns = _other_robot_vec[object.id - 1];
+                    int robot_id = MultiRobot::extractRobotIdFromNamespace(robot_ns);
+
+                    // Update ground truth position tracking (for metrics/debugging)
+                    updateRobotGroundTruthPosition(object, robot_id, robot_ns, "CV_MODE ");
+                    
+                    // Find the dynamic obstacle with the robot's actual ID (for MPC planning)
+                    auto it = std::find_if(_data.dynamic_obstacles.begin(),
+                                          _data.dynamic_obstacles.end(),
+                                          [robot_id](const MPCPlanner::DynamicObstacle &obs) {
+                                              return obs.index == robot_id;
+                                          });
+
+                    if (it != _data.dynamic_obstacles.end())
+                    {
+                        std::string log_msg = "Updated robot " + robot_ns + 
+                            " (Vicon ID=" + std::to_string(object.id) + 
+                            ", robot_id=" + std::to_string(robot_id) + ")" +
+                            " at [" + std::to_string(position.x()) + ", " + 
+                            std::to_string(position.y()) + "] " +
+                            "vel: " + std::to_string(velocity) + " m/s";
+                        
+                        updateObstacleFromVicon(*it, position, object_angle, global_twist, log_msg);
+                        received_valid_obstacle_data = true;
+                    }
+                    else
+                    {
+                        LOG_ERROR(_ego_robot_ns + ": CV_MODE: Could not find robot obstacle with ID " + 
+                                 std::to_string(robot_id) + " in dynamic_obstacles vector.");
+                    }
+                }
+                else
+                {
+                    // ===== NON-COMMUNICATING OBSTACLE: Update MPC planning data =====
+                    auto it = std::find_if(_data.dynamic_obstacles.begin(),
+                                          _data.dynamic_obstacles.end(),
+                                          [&object](const MPCPlanner::DynamicObstacle &obs) {
+                                              return obs.index == object.id;
+                                          });
+
+                    if (it != _data.dynamic_obstacles.end())
+                    {
+                        std::string log_msg = "Updated non-comm obstacle ID " + 
+                            std::to_string(object.id) +
+                            " at [" + std::to_string(position.x()) + ", " + 
+                            std::to_string(position.y()) + "] " +
+                            "vel: " + std::to_string(velocity) + " m/s";
+                        
+                        updateObstacleFromVicon(*it, position, object_angle, global_twist, log_msg);
+                        received_valid_obstacle_data = true;
+                    }
+                    else
+                    {
+                        LOG_WARN_THROTTLE(2000, _ego_robot_ns + ": CV_MODE: Could not find non-comm obstacle with ID " + 
+                                         std::to_string(object.id) + " in dynamic_obstacles vector.");
+                    }
+                }  // end robot/non-comm branching
+            }
+
+            // State transition: In constant velocity mode, transition to PLANNING_ACTIVE when we receive valid Vicon data
+            if (received_valid_obstacle_data && _current_state == MPCPlanner::PlannerState::WAITING_FOR_TRAJECTORY_DATA)
+            {
+                MultiRobot::transitionTo(_current_state, _previous_state, MPCPlanner::PlannerState::PLANNING_ACTIVE, _ego_robot_ns);
+                LOG_INFO(_ego_robot_ns + ": Received valid Vicon obstacle data - transitioning to PLANNING_ACTIVE (constant velocity mode)");
+            }
+            break;
+        }
+        default:
+            LOG_WARN_THROTTLE(5000, _ego_robot_ns + ": Processing obstacles in unexpected state: " +
+                                        std::to_string(static_cast<int>(_current_state)));
+            break;
+        }
+}
+
+
+bool JulesRealJackalPlanner::updateRobotGroundTruthPosition(
+    const derived_object_msgs::Object &object,
+    const int& robot_id,
+    const std::string & robot_ns,
+    const std::string &log_prefix
+    )
+{
+    // Skip ego robot (always object.id == 0 in Vicon bundle)
+    // Each robot's bundle_obstacles.launch is configured with ego robot first
+    if (object.id == 0)
+    {
+        return false; // Not an "other" robot
+    }
+    
+    // Map Vicon object ID to robot namespace
+    // After skipping object.id==0 (ego), remaining objects are other robots in lexicographical order
+    
+    
+    
+    // Check if position obstacle exists for this robot
+    auto pos_it = _data.position_dynamic_obstacles.find(robot_ns);
+    if (pos_it == _data.position_dynamic_obstacles.end())
+    {
+        LOG_ERROR(_ego_robot_ns + ": " + log_prefix + "Robot " + robot_ns + 
+                         " not found in position_dynamic_obstacles");
+        return false;
+    }
+    
+    // Update ground truth position tracking
+    auto &pos_obs = pos_it->second;
+    
+    // Double-check: Verify stored index matches what we expect
+    if (pos_obs.index != robot_id)
+    {
+        LOG_ERROR(_ego_robot_ns + ": " + log_prefix + "Index mismatch for " + robot_ns + ": " +
+                 "pos_obs.index=" + std::to_string(pos_obs.index) + " " +
+                 "but Vicon object.id=" + std::to_string(object.id));
+    }
+    
+    // Calculate orientation
+    double velocity = std::sqrt(object.twist.linear.x * object.twist.linear.x +
+                                object.twist.linear.y * object.twist.linear.y);
+    double object_angle;
+    if (velocity > 0.01)
+    {
+        object_angle = RosTools::quaternionToAngle(object.pose.orientation) +
+                       std::atan2(object.twist.linear.y, object.twist.linear.x) +
+                       M_PI_2;
+    }
+    else
+    {
+        object_angle = RosTools::quaternionToAngle(object.pose.orientation);
+    }
+    
+    // Update ground truth fields
+    pos_obs.position = Eigen::Vector2d(object.pose.position.x, object.pose.position.y);
+    pos_obs.angle = object_angle;
+    pos_obs.current_speed = velocity;
+    
+    return true;
+}
+
 
 void JulesRealJackalPlanner::bluetoothCallback(const sensor_msgs::Joy::ConstPtr &msg)
 {
@@ -931,6 +1185,7 @@ void JulesRealJackalPlanner::reset()
     _validated_trajectory_robots.clear();       // clear the set which records which robots have send a correct trajectory
     _data.dynamic_obstacles.clear();
     _data.trajectory_dynamic_obstacles.clear(); //
+    _data.position_dynamic_obstacles.clear();
 
     LOG_DIVIDER();
     LOG_INFO(_ego_robot_ns + ": Cleared all data structures - " +
@@ -948,6 +1203,8 @@ void JulesRealJackalPlanner::reset()
     MultiRobot::transitionTo(_current_state, _previous_state, MPCPlanner::PlannerState::TIMER_STARTUP, _ego_robot_ns);
     LOG_INFO(_ego_robot_ns + ": Ready to resume planning with new objectives in 2 seconds");
 }
+
+
 
 void JulesRealJackalPlanner::visualize()
 {
@@ -1012,8 +1269,9 @@ void JulesRealJackalPlanner::prepareObstacleData()
     // Interpolate other robots' trajectories
     interpolateTrajectoryPredictionsByTime();
     
-    MPCPlanner::MultiRobot::updateRobotObstaclesFromTrajectories(_data, _validated_trajectory_robots, _ego_robot_ns);
-
+    if(CONFIG["JULES"]["real_world"]["constant_velocity"].as<bool>() == false){
+        MPCPlanner::MultiRobot::updateRobotObstaclesFromTrajectories(_data, _validated_trajectory_robots, _ego_robot_ns);
+    }    
     // LOG_ERROR(_ego_robot_ns + " Received " << _data.dynamic_obstacles.size() << " < " << max_obstacles << " obstacles. Adding dummies.");
     MPCPlanner::ensureObstacleSize(_data.dynamic_obstacles, _state); // Be aware what happens when you have more obstacles than allowed
 
@@ -1284,6 +1542,20 @@ std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> JulesRealJackalPlanne
             _state.set("v", cmd.linear.x);
             LOG_VALUE_DEBUG("Commanded", "v=" + std::to_string(cmd.linear.x) + ", w=" + std::to_string(cmd.angular.z));
             CONFIG["enable_output"] = true;
+
+
+            if (CONFIG["recording"]["enable"].as<bool>()) // Record data
+            {
+            
+                
+                    auto &data_saver = _planner->getDataSaver();
+                    data_saver.AddData("input_a", _state.get("a"));
+                    data_saver.AddData("input_v", _planner->getSolution(1, "v"));
+                    data_saver.AddData("input_w", _planner->getSolution(0, "w"));
+                
+
+                
+            }
         }
         else
         {
@@ -1305,6 +1577,19 @@ std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> JulesRealJackalPlanne
             _state.set("v", cmd.linear.x);
             LOG_VALUE_DEBUG("Commanded", "v=" + std::to_string(cmd.linear.x) + ", w=" + std::to_string(cmd.angular.z));
             CONFIG["enable_output"] = true;
+
+            if (CONFIG["recording"]["enable"].as<bool>()) // Record data
+            {
+            
+                
+                    auto &data_saver = _planner->getDataSaver();
+                    data_saver.AddData("input_a", _state.get("a"));
+                    data_saver.AddData("input_v", _planner->getSolution(1, "v"));
+                    data_saver.AddData("input_w", _planner->getSolution(0, "w"));
+                
+
+                
+            }
         }
         else if (!_enable_output)
         {
@@ -1744,6 +2029,14 @@ bool JulesRealJackalPlanner::decideCommunication(const MPCPlanner::PlannerOutput
 {
     if (!_enable_output)
     {
+        return false;
+    }
+
+    // In constant velocity mode, NEVER publish trajectories to other robots
+    // (each robot relies on Vicon constant velocity predictions instead)
+    if (CONFIG["JULES"]["real_world"]["constant_velocity"].as<bool>())
+    {
+        LOG_DEBUG_THROTTLE(5000, _ego_robot_ns + ": Communication DISABLED (constant velocity mode)");
         return false;
     }
 

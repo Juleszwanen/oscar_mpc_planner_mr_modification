@@ -40,20 +40,10 @@ namespace MPCPlanner
         _planning_time = 1. / _control_frequency;
 
         TOPOLOGY_NO_MATCH = 2 * global_guidance_->GetConfig()->n_paths_;
-        TOPOLOGY_NOT_SELECTED = 999;
-        _non_guided_toplogy_id = TOPOLOGY_NOT_SELECTED;
+        _non_guided_toplogy_id = TOPOLOGY_NO_MATCH;  // Initial value: no matching attempted yet
 
         // JULES: Load the meaningful topology assignment setting
-        try
-        {
-            _assign_meaningful_topology = CONFIG["JULES"]["assign_meaningful_topology_id_to_non_guided"].as<bool>();
-            LOG_VALUE("Assign Meaningful Topology", _assign_meaningful_topology);
-        }
-        catch (...)
-        {
-            _assign_meaningful_topology = false; // Default to false if config parameter not found
-            LOG_INFO("Config 'assign_meaningful_topology_id_to_non_guided' not found, defaulting to false");
-        }
+        _assign_meaningful_topology = CONFIG["JULES"]["assign_meaningful_topology_id_to_non_guided"].as<bool>();
         // Initialize the constraint modules
         int n_solvers = global_guidance_->GetConfig()->n_paths_; // + 1 for the main lmpcc solver?
 
@@ -388,35 +378,10 @@ namespace MPCPlanner
                 planner.result.guidance_ID = 2 * global_guidance_->GetConfig()->n_paths_; // one higher than the maximum number of topology classes
                 planner.result.color = -1;
 
-                // ========== JULES: Topology matching for non-guided planner ==========
-                // Compute this EVERY iteration (not just when selected) for consistent data logging
-                // SAFETY: Only attempt topology matching if:
-                // 1. Feature is enabled (_assign_meaningful_topology)
-                // 2. Solver succeeded (planner.result.success)
-                // 3. Solver is valid and has outputs (solver != nullptr && solver->N > 1)
-                // 4. Guidance trajectories are available (global_guidance_->NumberOfGuidanceTrajectories() > 0)
-                if (_assign_meaningful_topology && 
-                    planner.result.success && 
-                    solver != nullptr && 
-                    solver->N > 1 && 
-                    global_guidance_->NumberOfGuidanceTrajectories() > 0)
-                {
-                    attemptTopologyMatchingForNonGuidedPlanner(planner, solver);
-                }
-
-                // if (planner.has_consistency_enabled)
-                // {
-                //     double consistency_cost = calculateConsistencyCostForSolver(planner.local_solver);
-                //     planner.result.objective -= consistency_cost;
-                    
-                //     if(_ego_robot_ns == "/jackal1"){
-                //     LOG_WARN(_ego_robot_ns + ": Planner [" << planner.id << "] (non-guided)"
-                //               << " | raw=" << solver->_info.pobj
-                //               << " | consistency=" << consistency_cost
-                //               << " | fair=" << planner.result.objective);
-                //     }
-                // }
-                // =====================================================================               
+                // ========== JULES: Topology matching moved after parallel loop ==========
+                // See topology matching section after omp_set_dynamic(1)
+                // This ensures all solvers have finished before topology comparison
+                // ========================================================================
             }
             else
             {
@@ -435,21 +400,21 @@ namespace MPCPlanner
                 planner.result.guidance_ID = guidance_trajectory.topology_class;                 // We were using this guidance
                 planner.result.color = guidance_trajectory.color_;                               // A color index to visualize with
 
-                 // ========== JULES: Subtract consistency cost BEFORE selection_weight ==========
+                //  ========== JULES: Subtract consistency cost BEFORE selection_weight ==========
                 // This ensures selection_weight_consistency_ is applied to fair cost (C1)
                 // Result: selection_weight_consistency_ * C1 (not selection_weight * (C1 + C2))
-                // if (planner.has_consistency_enabled)
-                // {
-                //     double consistency_cost = calculateConsistencyCostForSolver(planner.local_solver);
-                //     planner.result.objective -= consistency_cost;
+                if (planner.has_consistency_enabled && CONFIG["JULES"]["subtract_consistency"].as<bool>())
+                {
+                    double consistency_cost = calculateConsistencyCostForSolver(planner.local_solver);
+                    planner.result.objective -= consistency_cost;
                     
-                //     if(_ego_robot_ns == "/jackal1"){
-                //     LOG_WARN(_ego_robot_ns + ": Planner [" << planner.id << "] (guided, topology=" << planner.result.guidance_ID << ")"
-                //               << " | raw=" << solver->_info.pobj
-                //               << " | consistency=" << consistency_cost
-                //               << " | fair=" << planner.result.objective);
-                //     }
-                // }
+                    // if(_ego_robot_ns == "/jackal1"){
+                    // LOG_WARN(_ego_robot_ns + ": Planner [" << planner.id << "] (guided, topology=" << planner.result.guidance_ID << ")"
+                    //           << " | raw=" << solver->_info.pobj
+                    //           << " | consistency=" << consistency_cost
+                    //           << " | fair=" << planner.result.objective);
+                    // }
+                }
                 // ==============================================================================
                 if (guidance_trajectory.previously_selected_) // Prefer the selected trajectory
                     planner.result.objective *= global_guidance_->GetConfig()->selection_weight_consistency_;
@@ -457,10 +422,36 @@ namespace MPCPlanner
         }
 
         omp_set_dynamic(1);
-        // DECISION MAKING
+        
+        
         {
             PROFILE_SCOPE("Decision");
             
+            // ========== JULES: Topology matching for non-guided planner ==========
+            // Execute AFTER parallel loop completes, BEFORE decision making
+            // This ensures:
+            // 1. All solvers have finished (parallel work complete)
+            // 2. Result is available for decision making and data logging
+            // 3. No race conditions from parallel access
+            
+            // ====================================================================
+            if (_assign_meaningful_topology && global_guidance_->NumberOfGuidanceTrajectories() > 0)
+            {
+                for (auto &planner : planners_)
+                {
+                    if (planner.is_original_planner && 
+                        planner.result.success && 
+                        !planner.disabled && 
+                        planner.local_solver != nullptr && 
+                        planner.local_solver->N > 1)
+                    {
+                        attemptTopologyMatchingForNonGuidedPlanner(planner, planner.local_solver);
+                        LOG_DEBUG(_ego_robot_ns + ": Computed topology matching for non-guided planner after parallel loop");
+                        break; // Only one non-guided planner exists
+                    }
+                }
+            }
+
             best_planner_index_ = FindBestPlanner();
             if (best_planner_index_ == -1)
             {
@@ -479,26 +470,11 @@ namespace MPCPlanner
             auto &best_solver = best_planner.local_solver;
             // LOG_INFO("Best Planner ID: " << best_planner.id);
             
-            // ========== JULES: Store topology mapping for data logging ==========
-            // Topology matching was already computed in the parallel loop above
-            // Here we just extract it for data logging purposes
-            if (best_planner.is_original_planner)
-            {
-                // Use the pre-computed guidance_ID from the parallel loop
-                // This will be either:
-                // - A matched topology ID (0-7) if matching succeeded
-                // - 2*n_paths (fallback) if matching wasn't attempted or failed
-                _non_guided_toplogy_id = best_planner.result.guidance_ID;
-                
-                LOG_DEBUG(_ego_robot_ns + ": Non-guided planner selected | Topology ID: " 
-                          << _non_guided_toplogy_id);
-            }
-            else
-            {
-                // Guided planner was selected - not relevant for non-guided topology tracking
-                _non_guided_toplogy_id = TOPOLOGY_NOT_SELECTED;
-            }
-            // ====================================================================
+            // ========== JULES: Topology matching for non-guided planner ==========
+            // If non-guided was selected: _non_guided_toplogy_id already set in attemptTopologyMatchingForNonGuidedPlanner
+            // If guided was selected: _non_guided_toplogy_id retains previous value (not relevant for this iteration)
+            // We only update _non_guided_toplogy_id when topology matching is actually attempted
+            // ======================================================================
 
             // Communicate to the guidance which topology class we follow (none if it was the original planner)
             // Determine if we should clear the selection
@@ -1112,10 +1088,13 @@ namespace MPCPlanner
                 
                 LOG_DEBUG_THROTTLE(5000, _ego_robot_ns + ": Non-guided matched topology " 
                                  << meaningful_topology_id << " (color: " << planner.result.color << ")");
+                
+                _non_guided_toplogy_id = meaningful_topology_id;
             }
             else
             {
                 // Matching failed - keep fallback values
+                _non_guided_toplogy_id = TOPOLOGY_NO_MATCH;
                 LOG_DEBUG_THROTTLE(5000, _ego_robot_ns + ": Non-guided topology matching FAILED");
             }
         }
@@ -1171,7 +1150,7 @@ namespace MPCPlanner
             // NodeType doesn't affect homology comparison (only positions matter),
             // but CONNECTOR is semantically correct for trajectory points
             auto node = std::make_unique<GuidancePlanner::Node>(
-                MPC_NODE_BASE_ID + k, // Unique ID: 1000000 + 0, 100000 + 1, ...
+                MPC_NODE_BASE_ID + k, // Unique ID: 1000000 + 0, 100000 + 1, ... so that you dont clash with already existing once
                 point,                // Space-time location
                 node_type             // Default: CONNECTOR
             );

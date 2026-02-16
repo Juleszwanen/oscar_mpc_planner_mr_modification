@@ -84,6 +84,19 @@ namespace MPCPlanner
         ROBOT // Jule: This one you added to make a differentiation between dynmic obstacles and other robots whihc are seen by the ego robot as dynamic obstacles
     };
 
+
+    struct DynamicObstaclePosition
+    {
+        int index{-1};
+
+        Eigen::Vector2d position{Eigen::Vector2d::Zero()};
+        double angle{0.0};
+        double current_speed{0.0};
+
+        DynamicObstaclePosition(int _index, const Eigen::Vector2d &_position, double _angle);
+
+    };
+
     struct DynamicObstacle
     {
         int index;

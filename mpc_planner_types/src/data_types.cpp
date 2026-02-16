@@ -108,6 +108,13 @@ namespace MPCPlanner
         return result;
     }
 
+    DynamicObstaclePosition::DynamicObstaclePosition(int _index, const Eigen::Vector2d &_position, double _angle)
+        : index(_index), position(_position), angle(_angle)
+    {
+        
+    }
+
+
     DynamicObstacle::DynamicObstacle(int _index, const Eigen::Vector2d &_position, double _angle, double _radius, ObstacleType _type)
         : index(_index), position(_position), angle(_angle), radius(_radius)
     {
@@ -150,6 +157,7 @@ namespace MPCPlanner
                ", type:" + type_str +
                ", prediction:" + prediction.toString() + "}";
     }
+
 
     ReferencePath::ReferencePath(int length)
     {

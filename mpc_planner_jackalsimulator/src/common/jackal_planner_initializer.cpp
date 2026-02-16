@@ -158,6 +158,12 @@ bool JackalPlannerInitializer::initializeOtherRobotsAsObstacles(
                 0.0,
                 robot_radius));
 
+        // Create the container in which we are going to store ground truth positions for alter data analysis
+        data.position_dynamic_obstacles.emplace(robot_ns, MPCPlanner::DynamicObstaclePosition(
+                MultiRobot::extractRobotIdFromNamespace(robot_ns),
+                FAR_AWAY_POSITION,
+                0.0));
+
         auto& traj_obs = data.trajectory_dynamic_obstacles.at(robot_ns);
         traj_obs.last_trajectory_update_time = ros::Time::now();
         traj_obs.trajectory_needs_interpolation = false;

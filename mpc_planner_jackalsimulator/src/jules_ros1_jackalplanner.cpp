@@ -199,7 +199,7 @@ void JulesJackalPlanner::subscribeToOtherRobotTopics(ros::NodeHandle &nh, const 
     for (const auto &ns : other_robot_namespaces)
     {
         // Subscribe to robot pose updates
-        const std::string topic_pose = ns + "/robot_to_robot/output/pose";
+        const std::string topic_pose = ns + "/robot_state";
         LOG_INFO(_ego_robot_ns + " is subscribing to: " + topic_pose);
         auto sub_pose_i = nh.subscribe<geometry_msgs::PoseStamped>(topic_pose, 1,
                                                                    boost::bind(&JulesJackalPlanner::poseOtherRobotCallback, this, _1, ns));
@@ -531,10 +531,10 @@ void JulesJackalPlanner::julesControllerCallback(const sensor_msgs::Joy::ConstPt
 void JulesJackalPlanner::poseOtherRobotCallback(const geometry_msgs::PoseStamped::ConstPtr &msg, const std::string ns)
 {
     // Check if trajectory obstacle exists for this namespace (prevents race condition crash)
-    auto it = _data.trajectory_dynamic_obstacles.find(ns);
-    if (it == _data.trajectory_dynamic_obstacles.end())
+    auto it = _data.position_dynamic_obstacles.find(ns);
+    if (it == _data.position_dynamic_obstacles.end())
     {
-        LOG_WARN(_ego_robot_ns + ": Received pose from " + ns + " but obstacle not initialized yet. Ignoring.");
+        LOG_WARN_THROTTLE(8000, _ego_robot_ns + ": Received pose from " + ns + " but obstacle not initialized yet. Ignoring.");
         return;
     }
 
@@ -545,7 +545,7 @@ void JulesJackalPlanner::poseOtherRobotCallback(const geometry_msgs::PoseStamped
         return;
     }
 
-    auto &robot_trajectory_obstacle = it->second;
+    auto &robot_position_obstacle = it->second;
     // Decode state from your encoded PoseStamped
     const double &psi = msg->pose.orientation.z; // encoded yaw
     const double &v = msg->pose.position.z;      // encoded speed
@@ -553,9 +553,9 @@ void JulesJackalPlanner::poseOtherRobotCallback(const geometry_msgs::PoseStamped
     // const double &vx = std::cos(psi) * v;
     // const double &vy = std::sin(psi) * v;
 
-    robot_trajectory_obstacle.angle = psi;
-    robot_trajectory_obstacle.position = Eigen::Vector2d(msg->pose.position.x, msg->pose.position.y);
-    robot_trajectory_obstacle.current_speed = v;
+    robot_position_obstacle.angle = psi;
+    robot_position_obstacle.position = Eigen::Vector2d(msg->pose.position.x, msg->pose.position.y);
+    robot_position_obstacle.current_speed = v;
 }
 
 void JulesJackalPlanner::trajectoryCallback(const mpc_planner_msgs::ObstacleGMM::ConstPtr &msg, const std::string ns)
@@ -789,6 +789,7 @@ void JulesJackalPlanner::reset()
     _validated_trajectory_robots.clear();       // clear the set which records which robots have send a correct trajectory
     _data.dynamic_obstacles.clear();
     _data.trajectory_dynamic_obstacles.clear(); //
+    _data.position_dynamic_obstacles.clear();
 
     LOG_DIVIDER();
     LOG_INFO(_ego_robot_ns + ": Cleared all data structures - " +
@@ -1151,6 +1152,18 @@ std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> JulesJackalPlanner::g
             _state.set("v", cmd.linear.x);
             LOG_VALUE_DEBUG("Commanded", "v=" + std::to_string(cmd.linear.x) + ", w=" + std::to_string(cmd.angular.z));
             CONFIG["enable_output"] = true;
+
+            if (CONFIG["recording"]["enable"].as<bool>()) // Record data
+            {
+            
+                
+                    auto &data_saver = _planner->getDataSaver();
+                    data_saver.AddData("input_a", _state.get("a"));
+                    data_saver.AddData("input_v", _planner->getSolution(1, "v"));
+                    data_saver.AddData("input_w", _planner->getSolution(0, "w"));
+                
+                
+            }
         }
 
         else if ((!_enable_output))
@@ -1222,6 +1235,8 @@ std::pair<geometry_msgs::Twist, MPCPlanner::PlannerOutput> JulesJackalPlanner::g
     default:
         break;
     }
+
+    
 
     return {cmd, output};
 }

@@ -421,9 +421,9 @@ namespace MPCPlanner
         // const auto& ego_position_y = state.get("y");
         
 
-        for (auto const& [other_robot_ns, robot_trajectory_obstacle] : data.trajectory_dynamic_obstacles)
+        for (auto const& [other_robot_ns, robot_position_obstacle] : data.position_dynamic_obstacles)
         {   
-            const auto& squared_distance = (robot_trajectory_obstacle.position - Eigen::Vector2d(state.get("x"), state.get("y"))).norm();
+            const auto& squared_distance = (robot_position_obstacle.position - Eigen::Vector2d(state.get("x"), state.get("y"))).norm();
 
             data_saver.AddData("squared_distance_" + other_robot_ns, squared_distance);
         }

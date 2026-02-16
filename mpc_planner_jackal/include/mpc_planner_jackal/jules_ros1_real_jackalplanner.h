@@ -87,7 +87,11 @@ public:
     void goalCallback(const geometry_msgs::PoseStamped::ConstPtr &msg);
     void pathCallback(const nav_msgs::Path::ConstPtr &msg);
     void obstacleCallback(const derived_object_msgs::ObjectArray::ConstPtr &msg);
+    void obstacleCallbackConstantVelocity(const derived_object_msgs::ObjectArray::ConstPtr &msg);
     void bluetoothCallback(const sensor_msgs::Joy::ConstPtr &msg);
+    
+    // Helper function for updating robot ground truth positions from Vicon
+    bool updateRobotGroundTruthPosition(const derived_object_msgs::Object &object, const int& robot_id, const std::string& robot_ns, const std::string &log_prefix = "");
     
 
 public:
@@ -122,10 +126,10 @@ private:
 
     double _measured_velocity{0.};
 
-    double y_max{2.4}; // 2.6 when the blocks are not at the wall
-    double y_min{-2.0};
-    double x_max{3.6};
-    double x_min{-3.6};
+    double y_max{2.6}; // 2.6 when the blocks are not at the wall
+    double y_min{-2.2};
+    double x_max{4.2};
+    double x_min{-3.0};
 
     std::unique_ptr<RosTools::Benchmarker> _benchmarker;
 
@@ -158,6 +162,7 @@ private:
     int _ego_robot_id{-1};
     int _num_non_com_obj{0};
     std::set<std::string> _other_robot_nss;
+    std::vector<std::string> _other_robot_vec;  // Cached vector version of _other_robot_nss for indexed access
     std::vector<std::string> _robot_ns_list;
 
     double _goal_tolerance{0.8};
